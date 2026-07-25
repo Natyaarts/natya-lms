@@ -16,7 +16,7 @@ export default function CheckoutButton({ courseId, price }: CheckoutButtonProps)
   useEffect(() => {
     const checkEnrollment = async () => {
       try {
-        const res = await fetch("http://localhost:8000/api/courses/my_courses/", {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/my_courses/`, {
           credentials: "include"
         });
         if (res.ok) {
@@ -36,7 +36,7 @@ export default function CheckoutButton({ courseId, price }: CheckoutButtonProps)
     setLoading(true);
     try {
       // 1. Create order on the backend
-      const res = await fetch("http://localhost:8000/api/orders/create/", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/orders/create/`, {
         method: "POST",
         credentials: "include", // Send auth cookies
         headers: {
@@ -63,7 +63,7 @@ export default function CheckoutButton({ courseId, price }: CheckoutButtonProps)
         order_id: orderData.order_id,
         handler: async function (response: any) {
           // 3. Verify payment on the backend
-          const verifyRes = await fetch("http://localhost:8000/api/orders/verify/", {
+          const verifyRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/orders/verify/`, {
             method: "POST",
             credentials: "include",
             headers: {

@@ -22,7 +22,7 @@ export default function AdminLayout({
     }
 
     // Check if user is superadmin
-    fetch("http://localhost:8000/api/auth/user/", { credentials: 'include' })
+    fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/user/`, { credentials: 'include' })
       .then(res => {
         if (res.ok) {
           return res.json();

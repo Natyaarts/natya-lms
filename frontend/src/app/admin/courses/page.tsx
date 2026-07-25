@@ -11,7 +11,7 @@ export default function AdminCourses() {
 
   const fetchCourses = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/courses/", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/`, {
         credentials: "include"
       });
       if (res.ok) {

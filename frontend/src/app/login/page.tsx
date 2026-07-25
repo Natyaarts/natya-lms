@@ -17,7 +17,7 @@ export default function Login() {
   const [countryCode, setCountryCode] = useState('+91');
 
   useEffect(() => {
-    fetch("http://localhost:8000/api/auth/user/", { credentials: 'include' })
+    fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/user/`, { credentials: 'include' })
       .then(res => {
         if (res.ok) {
           res.json().then(data => {
@@ -45,7 +45,7 @@ export default function Login() {
         ? `${countryCode}${formData.identifier}`
         : formData.identifier;
 
-      const res = await fetch("http://localhost:8000/api/users/send-otp/", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/send-otp/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ identifier: finalIdentifier })
@@ -71,7 +71,7 @@ export default function Login() {
         ? `${countryCode}${formData.identifier}`
         : formData.identifier;
 
-      const res = await fetch("http://localhost:8000/api/users/verify-otp/", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/verify-otp/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ identifier: finalIdentifier, otp: formData.otp })
@@ -80,7 +80,7 @@ export default function Login() {
       const data = await res.json();
       if (res.ok) {
         // Fetch user details to determine redirect
-        const userRes = await fetch("http://localhost:8000/api/auth/user/", { credentials: 'include' });
+        const userRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/user/`, { credentials: 'include' });
         if (userRes.ok) {
           const userData = await userRes.json();
           if (userData.is_superuser || userData.is_teacher) {
@@ -98,7 +98,7 @@ export default function Login() {
   };
 
   const handleSocialLogin = (provider: string) => {
-    window.location.href = `http://localhost:8000/accounts/${provider}/login/`;
+    window.location.href = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/accounts/${provider}/login/`;
   };
 
   return (

@@ -13,7 +13,7 @@ export default function AdminUsers() {
 
   const fetchUsers = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/users/admin-users/", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/`, {
         credentials: "include",
       });
       if (res.ok) {
@@ -35,7 +35,7 @@ export default function AdminUsers() {
 
   const toggleRole = async (userId: number, role: 'is_student' | 'is_teacher' | 'is_superuser', currentValue: boolean) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/users/admin-users/${userId}/`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${userId}/`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ [role]: !currentValue }),

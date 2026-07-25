@@ -10,12 +10,12 @@ export default function Home() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   useEffect(() => {
-    fetch("http://localhost:8000/api/cms/landing-page/")
+    fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/cms/landing-page/`)
       .then(res => res.json())
       .then(data => setContent(data))
       .catch(err => console.error("Error fetching CMS content", err));
 
-    fetch("http://localhost:8000/api/auth/user/", { credentials: 'include' })
+    fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/user/`, { credentials: 'include' })
       .then(res => {
         if (res.ok) setIsLoggedIn(true);
       })

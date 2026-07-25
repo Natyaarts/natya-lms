@@ -59,7 +59,7 @@ export default function CreateCourse() {
         data.append('thumbnail', thumbnail);
       }
 
-      const res = await fetch("http://localhost:8000/api/courses/", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/`, {
         method: "POST",
         headers: headers,
         body: data,

@@ -23,21 +23,21 @@ export default function UserDetailPage() {
   useEffect(() => {
     const fetchUserData = async () => {
       try {
-        const res = await fetch(`http://localhost:8000/api/users/admin-users/${id}/`, {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/`, {
           credentials: "include"
         });
         if (res.ok) {
           setUser(await res.json());
         }
 
-        const coursesRes = await fetch(`http://localhost:8000/api/users/admin-users/${id}/courses/`, {
+        const coursesRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/courses/`, {
           credentials: "include"
         });
         if (coursesRes.ok) {
           setCourses(await coursesRes.json());
         }
 
-        const purchasesRes = await fetch(`http://localhost:8000/api/users/admin-users/${id}/purchases/`, {
+        const purchasesRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/purchases/`, {
           credentials: "include"
         });
         if (purchasesRes.ok) {
@@ -70,7 +70,7 @@ export default function UserDetailPage() {
     // Fetch all courses for the assign modal
     const fetchAllCourses = async () => {
       try {
-        const res = await fetch("http://localhost:8000/api/courses/", { credentials: "include" });
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/`, { credentials: "include" });
         if (res.ok) setAllCourses(await res.json());
       } catch (err) {}
     };
@@ -96,7 +96,7 @@ export default function UserDetailPage() {
     if (!selectedCourse) return;
     setAssigning(true);
     try {
-      const res = await fetch(`http://localhost:8000/api/users/admin-users/${id}/assign_course/`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/assign_course/`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -111,11 +111,11 @@ export default function UserDetailPage() {
       });
       if (res.ok) {
         // Refresh assigned courses
-        const coursesRes = await fetch(`http://localhost:8000/api/users/admin-users/${id}/courses/`, { credentials: "include" });
+        const coursesRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/courses/`, { credentials: "include" });
         if (coursesRes.ok) setCourses(await coursesRes.json());
         
         // Refresh purchases (fees history)
-        const purchasesRes = await fetch(`http://localhost:8000/api/users/admin-users/${id}/purchases/`, { credentials: "include" });
+        const purchasesRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/purchases/`, { credentials: "include" });
         if (purchasesRes.ok) setPurchases(await purchasesRes.json());
         
         setShowAssignModal(false);
@@ -137,7 +137,7 @@ export default function UserDetailPage() {
 
   const handleMarkAsPaid = async (purchaseId: number) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/users/admin-users/${id}/mark_purchase_paid/`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/mark_purchase_paid/`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -147,7 +147,7 @@ export default function UserDetailPage() {
         credentials: 'include'
       });
       if (res.ok) {
-        const purchasesRes = await fetch(`http://localhost:8000/api/users/admin-users/${id}/purchases/`, { credentials: "include" });
+        const purchasesRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/purchases/`, { credentials: "include" });
         if (purchasesRes.ok) setPurchases(await purchasesRes.json());
       }
     } catch (err) {
@@ -159,7 +159,7 @@ export default function UserDetailPage() {
     if (!confirm(`Are you sure you want to unassign ${courseTitle}? This will delete the purchase record.`)) return;
     
     try {
-      const res = await fetch(`http://localhost:8000/api/users/admin-users/${id}/unassign_course/`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/unassign_course/`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -170,11 +170,11 @@ export default function UserDetailPage() {
       });
       if (res.ok) {
         // Refresh assigned courses
-        const coursesRes = await fetch(`http://localhost:8000/api/users/admin-users/${id}/courses/`, { credentials: "include" });
+        const coursesRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/courses/`, { credentials: "include" });
         if (coursesRes.ok) setCourses(await coursesRes.json());
         
         // Refresh purchases (fees history)
-        const purchasesRes = await fetch(`http://localhost:8000/api/users/admin-users/${id}/purchases/`, { credentials: "include" });
+        const purchasesRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/purchases/`, { credentials: "include" });
         if (purchasesRes.ok) setPurchases(await purchasesRes.json());
       } else {
         alert("Failed to unassign course.");

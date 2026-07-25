@@ -42,7 +42,7 @@ export default function AdminLogin() {
         headers["X-CSRFToken"] = csrfToken;
       }
 
-      const res = await fetch("http://localhost:8000/api/auth/login/", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/login/`, {
         method: "POST",
         headers: headers,
         body: JSON.stringify(payload),

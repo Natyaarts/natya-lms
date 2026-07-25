@@ -30,7 +30,7 @@ export default function Register() {
         ? `${countryCode}${formData.identifier}`
         : formData.identifier;
 
-      const res = await fetch("http://127.0.0.1:8000/api/users/send-otp/", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/send-otp/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ identifier: finalIdentifier })
@@ -56,7 +56,7 @@ export default function Register() {
         ? `${countryCode}${formData.identifier}`
         : formData.identifier;
 
-      const res = await fetch("http://127.0.0.1:8000/api/users/verify-otp/", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/verify-otp/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ identifier: finalIdentifier, otp: formData.otp })
@@ -74,7 +74,7 @@ export default function Register() {
   };
 
   const handleSocialLogin = (provider: string) => {
-    window.location.href = `http://127.0.0.1:8000/accounts/${provider}/login/`;
+    window.location.href = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/accounts/${provider}/login/`;
   };
 
   return (

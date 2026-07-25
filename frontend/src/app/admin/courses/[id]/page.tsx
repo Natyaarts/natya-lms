@@ -45,7 +45,7 @@ export default function CourseManager() {
 
   const fetchCourse = async () => {
     try {
-      const res = await fetch(`http://localhost:8000/api/courses/${id}/`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/${id}/`, {
         credentials: "include"
       });
       if (res.ok) {
@@ -71,7 +71,7 @@ export default function CourseManager() {
     
     setModuleLoading(true);
     try {
-      const res = await fetch("http://localhost:8000/api/courses/modules/", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/modules/`, {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
@@ -110,7 +110,7 @@ export default function CourseManager() {
     try {
       const moduleObj = course.modules.find((m: any) => m.id === moduleId);
       
-      const res = await fetch("http://localhost:8000/api/courses/lessons/", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/`, {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
@@ -156,7 +156,7 @@ export default function CourseManager() {
       const data = new FormData();
       data.append('thumbnail', file);
 
-      const res = await fetch(`http://localhost:8000/api/courses/${id}/`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/${id}/`, {
         method: "PATCH",
         headers: {
           "X-CSRFToken": getCsrfToken()
@@ -175,7 +175,7 @@ export default function CourseManager() {
 
   const handleTogglePublish = async () => {
     try {
-      const res = await fetch(`http://localhost:8000/api/courses/${id}/`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/${id}/`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
