@@ -12,6 +12,10 @@ const nextConfig: NextConfig = {
         hostname: 'localhost',
         port: '8000',
       },
+      {
+        protocol: 'http',
+        hostname: 'natya-lms-backend-env.eba-5tjxp8qg.ap-south-1.elasticbeanstalk.com',
+      },
     ],
   },
 };
