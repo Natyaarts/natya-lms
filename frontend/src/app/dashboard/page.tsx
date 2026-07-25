@@ -55,7 +55,7 @@ export default function Dashboard() {
         {/* Banner Section */}
         <div className="relative h-64 md:h-80 w-full">
           <Image 
-            src="/img/banner.jfif" 
+            src="/img/banner.jpg" 
             alt="Dashboard Banner" 
             fill 
             className="object-cover"
