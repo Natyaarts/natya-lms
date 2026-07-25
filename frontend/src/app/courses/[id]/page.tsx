@@ -2,6 +2,8 @@ import Image from "next/image";
 import CheckoutButton from "@/components/CheckoutButton";
 import Link from "next/link";
 
+export const dynamic = 'force-dynamic';
+
 async function getCourse(id: string) {
   try {
     const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/${id}/`, { cache: 'no-store' });

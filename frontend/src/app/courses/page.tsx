@@ -1,6 +1,8 @@
 import Image from "next/image";
 import Link from "next/link";
 
+export const dynamic = 'force-dynamic';
+
 async function getCourses() {
   try {
     const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/`, { cache: 'no-store' });
