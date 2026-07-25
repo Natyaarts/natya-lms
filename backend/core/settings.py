@@ -101,9 +101,10 @@ MIDDLEWARE = [
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "https://natya-lms.vercel.app",
+    "https://academy.natyaarts.com",
 ]
 CORS_ALLOW_CREDENTIALS = True
-CSRF_TRUSTED_ORIGINS = ["http://localhost:3000", "https://natya-lms.vercel.app"]
+CSRF_TRUSTED_ORIGINS = ["http://localhost:3000", "https://natya-lms.vercel.app", "https://academy.natyaarts.com"]
 
 ROOT_URLCONF = 'core.urls'
 
