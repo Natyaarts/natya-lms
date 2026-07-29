@@ -28,9 +28,9 @@ class VideoLesson(models.Model):
     module = models.ForeignKey(Module, related_name='lessons', on_delete=models.CASCADE)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
-    video_url = models.URLField(blank=True, help_text="S3 or hosted video URL for original English video")
+    video_file = models.FileField(upload_to='videos/lessons/', blank=True, null=True, help_text="Upload the original MP4 video file")
     
-    # We will expand this model to handle multiple dubbed audio tracks
+    # We will keep these for Phase 2, but make them more robust later
     audio_hi_url = models.URLField(blank=True, null=True, help_text="Hindi dubbed audio URL")
     audio_ta_url = models.URLField(blank=True, null=True, help_text="Tamil dubbed audio URL")
     audio_ml_url = models.URLField(blank=True, null=True, help_text="Malayalam dubbed audio URL")

@@ -18,13 +18,14 @@ export default function CourseManager() {
 
   // State for adding lesson
   const [addingLessonToModule, setAddingLessonToModule] = useState<number | null>(null);
-  const [lessonData, setLessonData] = useState({
+  const [lessonData, setLessonData] = useState<{
+    title: string;
+    description: string;
+    video_file: File | null;
+  }>({
     title: "",
     description: "",
-    video_url: "",
-    audio_hi_url: "",
-    audio_ta_url: "",
-    audio_ml_url: ""
+    video_file: null
   });
   const [lessonLoading, setLessonLoading] = useState(false);
 
@@ -104,23 +105,25 @@ export default function CourseManager() {
 
   const handleAddLesson = async (e: React.FormEvent, moduleId: number) => {
     e.preventDefault();
-    if (!lessonData.title.trim() || !lessonData.video_url.trim()) return;
+    if (!lessonData.title.trim() || !lessonData.video_file) return;
 
     setLessonLoading(true);
     try {
       const moduleObj = course.modules.find((m: any) => m.id === moduleId);
       
+      const formData = new FormData();
+      formData.append("title", lessonData.title);
+      formData.append("description", lessonData.description);
+      formData.append("video_file", lessonData.video_file);
+      formData.append("module", moduleId.toString());
+      formData.append("order", (moduleObj?.lessons?.length || 0).toString());
+
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/`, {
         method: "POST",
         headers: { 
-          "Content-Type": "application/json",
           "X-CSRFToken": getCsrfToken()
         },
-        body: JSON.stringify({
-          ...lessonData,
-          module: moduleId,
-          order: moduleObj?.lessons?.length || 0
-        }),
+        body: formData,
         credentials: "include"
       });
 
@@ -129,10 +132,7 @@ export default function CourseManager() {
         setLessonData({
           title: "",
           description: "",
-          video_url: "",
-          audio_hi_url: "",
-          audio_ta_url: "",
-          audio_ml_url: ""
+          video_file: null
         });
         fetchCourse(); // refresh
       } else {
@@ -346,7 +346,7 @@ export default function CourseManager() {
                           </div>
                           <div>
                             <h4 className="font-medium text-sm">{lIdx + 1}. {lesson.title}</h4>
-                            <div className="text-xs text-zinc-500 mt-1 line-clamp-1">{lesson.video_url}</div>
+                            <div className="text-xs text-zinc-500 mt-1 line-clamp-1">{lesson.video_file || "No video file"}</div>
                             {(lesson.audio_hi_url || lesson.audio_ta_url || lesson.audio_ml_url) && (
                               <div className="flex gap-2 mt-2">
                                 {lesson.audio_hi_url && <span className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400">Hindi</span>}
@@ -398,45 +398,14 @@ export default function CourseManager() {
                             </div>
 
                             <div>
-                              <label className="block text-xs font-medium text-zinc-400 mb-1">Original Video URL (English) *</label>
+                              <label className="block text-xs font-medium text-zinc-400 mb-1">Upload Original Video (MP4) *</label>
                               <input 
-                                type="url"
+                                type="file"
+                                accept="video/mp4,video/x-m4v,video/*"
                                 required
-                                placeholder="https://..."
-                                value={lessonData.video_url}
-                                onChange={(e) => setLessonData({...lessonData, video_url: e.target.value})}
-                                className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15]"
+                                onChange={(e) => setLessonData({...lessonData, video_file: e.target.files?.[0] || null})}
+                                className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15] file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[#facc15] file:text-black hover:file:bg-[#eab308]"
                               />
-                            </div>
-
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
-                              <div>
-                                <label className="block text-xs font-medium text-zinc-400 mb-1">Hindi Audio URL</label>
-                                <input 
-                                  type="url"
-                                  value={lessonData.audio_hi_url}
-                                  onChange={(e) => setLessonData({...lessonData, audio_hi_url: e.target.value})}
-                                  className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15]"
-                                />
-                              </div>
-                              <div>
-                                <label className="block text-xs font-medium text-zinc-400 mb-1">Tamil Audio URL</label>
-                                <input 
-                                  type="url"
-                                  value={lessonData.audio_ta_url}
-                                  onChange={(e) => setLessonData({...lessonData, audio_ta_url: e.target.value})}
-                                  className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15]"
-                                />
-                              </div>
-                              <div>
-                                <label className="block text-xs font-medium text-zinc-400 mb-1">Malayalam Audio URL</label>
-                                <input 
-                                  type="url"
-                                  value={lessonData.audio_ml_url}
-                                  onChange={(e) => setLessonData({...lessonData, audio_ml_url: e.target.value})}
-                                  className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15]"
-                                />
-                              </div>
                             </div>
 
                             <div className="flex justify-end gap-3 pt-4 border-t border-white/10 mt-4">

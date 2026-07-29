@@ -4,7 +4,7 @@ from .models import Course, Module, VideoLesson
 class VideoLessonSerializer(serializers.ModelSerializer):
     class Meta:
         model = VideoLesson
-        fields = ['id', 'title', 'description', 'video_url', 'audio_hi_url', 'audio_ta_url', 'audio_ml_url', 'order', 'module']
+        fields = ['id', 'title', 'description', 'video_file', 'audio_hi_url', 'audio_ta_url', 'audio_ml_url', 'order', 'module']
 
 class ModuleSerializer(serializers.ModelSerializer):
     lessons = VideoLessonSerializer(many=True, read_only=True)
