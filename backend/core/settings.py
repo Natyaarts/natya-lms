@@ -78,7 +78,16 @@ REST_AUTH = {
     'JWT_AUTH_COOKIE': 'natya-auth',
     'JWT_AUTH_REFRESH_COOKIE': 'natya-refresh',
     'USER_DETAILS_SERIALIZER': 'users.serializers.CustomUserDetailsSerializer',
+    'JWT_AUTH_SAMESITE': 'None',
+    'JWT_AUTH_SECURE': True,
 }
+
+# Allow cookies to be sent cross-domain (Frontend -> Backend API)
+CSRF_COOKIE_SAMESITE = 'None'
+CSRF_COOKIE_SECURE = True
+CSRF_COOKIE_HTTPONLY = False
+SESSION_COOKIE_SAMESITE = 'None'
+SESSION_COOKIE_SECURE = True
 
 ACCOUNT_EMAIL_VERIFICATION = 'none'
 ACCOUNT_AUTHENTICATION_METHOD = 'username_email'

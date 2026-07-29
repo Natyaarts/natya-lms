@@ -81,31 +81,34 @@ export default function CreateCourse() {
   };
 
   return (
-    <div className="max-w-3xl mx-auto">
-      <div className="flex items-center gap-4 mb-8">
-        <Link href="/admin/courses" className="w-10 h-10 bg-zinc-900 rounded-full flex items-center justify-center hover:bg-zinc-800 transition-colors">
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <div className="max-w-2xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex items-center gap-3 mb-6">
+        <Link href="/admin/courses" className="w-8 h-8 bg-white/5 border border-white/5 rounded-full flex items-center justify-center hover:bg-white/10 transition-colors text-zinc-400 hover:text-white">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <line x1="19" y1="12" x2="5" y2="12"></line>
             <polyline points="12 19 5 12 12 5"></polyline>
           </svg>
         </Link>
-        <h1 className="text-3xl font-bold">Create New Course</h1>
+        <div>
+          <h1 className="text-xl font-bold text-white tracking-tight">Create New Course</h1>
+        </div>
       </div>
 
       <motion.div 
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
-        className="bg-zinc-900 border border-white/10 rounded-2xl p-8"
+        className="bg-[#18181b] border border-white/5 rounded-xl p-6 shadow-sm"
       >
         {error && (
-          <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-xl mb-6 text-sm">
+          <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-lg mb-5 text-sm flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
             {error}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-6">
+        <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label className="block text-sm font-medium text-zinc-400 mb-2">Course Title</label>
+            <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Course Title</label>
             <input 
               type="text" 
               name="title"
@@ -113,27 +116,27 @@ export default function CreateCourse() {
               value={formData.title}
               onChange={handleChange}
               placeholder="e.g. Complete Web Development Bootcamp"
-              className="w-full px-4 py-3 bg-black border border-white/10 rounded-xl text-white focus:outline-none focus:border-[#facc15] transition-colors"
+              className="w-full px-3 py-2 bg-[#09090b] border border-white/10 rounded-lg text-sm text-white focus:outline-none focus:border-white/30 transition-colors placeholder:text-zinc-600"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-zinc-400 mb-2">Description</label>
+            <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Description</label>
             <textarea 
               name="description"
               required
-              rows={4}
+              rows={3}
               value={formData.description}
               onChange={handleChange}
               placeholder="What will students learn in this course?"
-              className="w-full px-4 py-3 bg-black border border-white/10 rounded-xl text-white focus:outline-none focus:border-[#facc15] transition-colors resize-none"
+              className="w-full px-3 py-2 bg-[#09090b] border border-white/10 rounded-lg text-sm text-white focus:outline-none focus:border-white/30 transition-colors resize-none placeholder:text-zinc-600"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-zinc-400 mb-2">Price (₹)</label>
+            <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Price (₹)</label>
             <div className="relative">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 font-medium">₹</span>
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-sm font-medium">₹</span>
               <input 
                 type="number" 
                 name="price"
@@ -142,30 +145,30 @@ export default function CreateCourse() {
                 required
                 value={formData.price}
                 onChange={handleChange}
-                className="w-full pl-8 pr-4 py-3 bg-black border border-white/10 rounded-xl text-white focus:outline-none focus:border-[#facc15] transition-colors"
+                className="w-full pl-7 pr-3 py-2 bg-[#09090b] border border-white/10 rounded-lg text-sm text-white focus:outline-none focus:border-white/30 transition-colors"
               />
             </div>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-zinc-400 mb-2">Course Thumbnail</label>
+            <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Course Thumbnail</label>
             <input 
               type="file" 
               accept="image/*"
               onChange={handleFileChange}
-              className="w-full px-4 py-3 bg-black border border-white/10 rounded-xl text-white focus:outline-none focus:border-[#facc15] transition-colors file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[#facc15] file:text-black hover:file:bg-[#eab308]"
+              className="w-full px-3 py-2 bg-[#09090b] border border-white/10 rounded-lg text-sm text-zinc-400 focus:outline-none focus:border-white/30 transition-colors file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-white/10 file:text-white hover:file:bg-white/20 cursor-pointer"
             />
           </div>
 
-          <div className="pt-6 border-t border-white/10">
+          <div className="pt-4 mt-2">
             <button 
               type="submit"
               disabled={loading}
-              className="w-full py-4 bg-[#facc15] text-black font-semibold rounded-xl hover:bg-[#eab308] transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full py-2.5 bg-white text-black text-sm font-medium rounded-lg hover:bg-zinc-200 transition-colors shadow-sm disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {loading ? (
                 <>
-                  <div className="w-5 h-5 border-2 border-black/20 border-t-black rounded-full animate-spin" />
+                  <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                   Creating...
                 </>
               ) : (
