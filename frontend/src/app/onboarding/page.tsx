@@ -69,7 +69,7 @@ export default function OnboardingPage() {
   };
 
   const handleInputChange = (name: string, value: any) => {
-    setFormData(prev => ({ ...prev, [name]: value }));
+    setFormData((prev: any) => ({ ...prev, [name]: value }));
   };
 
   if (loading) {
