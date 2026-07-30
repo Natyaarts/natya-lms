@@ -48,3 +48,17 @@ class VideoLessonViewSet(viewsets.ModelViewSet):
         # For now, if they are authenticated, they can see videos.
         # Next step: check if user is in course purchases
         return super().get_queryset()
+
+    @action(detail=True, methods=['post'])
+    def generate_ai_audio(self, request, pk=None):
+        import threading
+        from .services.ai_translator import generate_dubbed_audio
+        
+        lesson = self.get_object()
+        
+        if not lesson.transcript:
+            return Response({"error": "No English transcript provided for this lesson."}, status=400)
+            
+        threading.Thread(target=generate_dubbed_audio, args=(lesson.id,)).start()
+        
+        return Response({"message": f"AI Audio generation started in background for '{lesson.title}'."})

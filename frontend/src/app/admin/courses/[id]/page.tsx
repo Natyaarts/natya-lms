@@ -31,6 +31,19 @@ export default function CourseManager() {
   });
   const [lessonLoading, setLessonLoading] = useState(false);
 
+  // State for editing lesson
+  const [editingLessonId, setEditingLessonId] = useState<number | null>(null);
+  const [editLessonData, setEditLessonData] = useState<{
+    title: string;
+    description: string;
+    transcript: string;
+  }>({
+    title: "",
+    description: "",
+    transcript: ""
+  });
+  const [editLessonLoading, setEditLessonLoading] = useState(false);
+
   const getCsrfToken = () => {
     let csrfToken = "";
     if (typeof document !== 'undefined' && document.cookie) {
@@ -149,6 +162,63 @@ export default function CourseManager() {
       alert("Network error creating lesson");
     } finally {
       setLessonLoading(false);
+    }
+  };
+
+  const handleEditLessonSubmit = async (e: React.FormEvent, lessonId: number) => {
+    e.preventDefault();
+    if (!editLessonData.title.trim()) return;
+
+    setEditLessonLoading(true);
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lessonId}/`, {
+        method: "PATCH",
+        headers: { 
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCsrfToken()
+        },
+        body: JSON.stringify(editLessonData),
+        credentials: "include"
+      });
+
+      if (res.ok) {
+        setEditingLessonId(null);
+        fetchCourse(); // refresh
+      } else {
+        const errData = await res.text();
+        console.error("Lesson edit failed:", errData);
+        alert("Failed to edit lesson: " + errData);
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Network error editing lesson");
+    } finally {
+      setEditLessonLoading(false);
+    }
+  };
+
+  const handleGenerateAudio = async (lessonId: number) => {
+    if (!confirm("Start AI Audio Generation? This will take a minute.")) return;
+    
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lessonId}/generate_ai_audio/`, {
+        method: "POST",
+        headers: { 
+          "X-CSRFToken": getCsrfToken()
+        },
+        credentials: "include"
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        alert("Success: " + data.message);
+        fetchCourse(); // refresh to show processing status
+      } else {
+        alert("Error: " + data.error);
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Network error generating audio");
     }
   };
 
@@ -342,25 +412,113 @@ export default function CourseManager() {
 
                     <div className="p-4 space-y-3">
                       {module.lessons?.map((lesson: any, lIdx: number) => (
-                        <div key={lesson.id} className="bg-zinc-900/50 border border-white/5 p-4 rounded-lg flex items-start gap-4 hover:border-white/10 transition-colors">
-                          <div className="mt-1">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[#facc15]">
-                              <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                            </svg>
+                        <div key={lesson.id} className="bg-zinc-900/50 border border-white/5 p-4 rounded-lg hover:border-white/10 transition-colors">
+                          <div className="flex items-start gap-4">
+                            <div className="mt-1">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[#facc15]">
+                                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                              </svg>
+                            </div>
+                            <div className="flex-1">
+                              <h4 className="font-medium text-sm">{lIdx + 1}. {lesson.title}</h4>
+                              <div className="text-xs text-zinc-500 mt-1 line-clamp-1">{lesson.video_file || "No video file"}</div>
+                              {lesson.translated_audios && lesson.translated_audios.length > 0 && (
+                                <div className="flex gap-2 mt-2">
+                                  {lesson.translated_audios.map((audio: any) => (
+                                    <span key={audio.id} className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase">
+                                      {audio.language_code.split('-')[0]} {audio.status === 'completed' ? '✓' : '...'}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex flex-col gap-2 items-end">
+                              <button 
+                                onClick={() => {
+                                  setEditingLessonId(lesson.id);
+                                  setEditLessonData({
+                                    title: lesson.title,
+                                    description: lesson.description || "",
+                                    transcript: lesson.transcript || ""
+                                  });
+                                }}
+                                className="text-xs font-medium px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-md transition-colors"
+                              >
+                                Edit
+                              </button>
+                              <button 
+                                onClick={() => handleGenerateAudio(lesson.id)}
+                                className="text-xs font-medium px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded-md transition-colors flex items-center gap-1"
+                                title="Generates Hindi, Tamil, and Malayalam audio tracks from transcript"
+                              >
+                                🪄 Generate AI Audio
+                              </button>
+                            </div>
                           </div>
-                          <div>
-                            <h4 className="font-medium text-sm">{lIdx + 1}. {lesson.title}</h4>
-                            <div className="text-xs text-zinc-500 mt-1 line-clamp-1">{lesson.video_file || "No video file"}</div>
-                            {lesson.translated_audios && lesson.translated_audios.length > 0 && (
-                              <div className="flex gap-2 mt-2">
-                                {lesson.translated_audios.map((audio: any) => (
-                                  <span key={audio.id} className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase">
-                                    {audio.language_code.split('-')[0]} {audio.status === 'completed' ? '✓' : '...'}
-                                  </span>
-                                ))}
-                              </div>
+                          
+                          {/* Edit Lesson Inline Form */}
+                          <AnimatePresence>
+                            {editingLessonId === lesson.id && (
+                              <motion.form 
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                exit={{ opacity: 0, height: 0 }}
+                                onSubmit={(e) => handleEditLessonSubmit(e, lesson.id)}
+                                className="bg-black border border-white/10 rounded-xl p-5 mt-4 space-y-4 overflow-hidden"
+                              >
+                                <h4 className="text-sm font-semibold text-[#facc15]">Edit Video Lesson</h4>
+                                
+                                <div>
+                                  <label className="block text-xs font-medium text-zinc-400 mb-1">Lesson Title *</label>
+                                  <input 
+                                    type="text"
+                                    required
+                                    value={editLessonData.title}
+                                    onChange={(e) => setEditLessonData({...editLessonData, title: e.target.value})}
+                                    className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15]"
+                                  />
+                                </div>
+                                
+                                <div>
+                                  <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
+                                  <textarea 
+                                    rows={2}
+                                    value={editLessonData.description}
+                                    onChange={(e) => setEditLessonData({...editLessonData, description: e.target.value})}
+                                    className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15] resize-none"
+                                  />
+                                </div>
+
+                                <div>
+                                  <label className="block text-xs font-medium text-[#facc15] mb-1">English Transcript (For AI Translation)</label>
+                                  <textarea 
+                                    rows={4}
+                                    placeholder="Paste the spoken English text here. The AI will perfectly translate this to Hindi, Tamil, and Malayalam."
+                                    value={editLessonData.transcript}
+                                    onChange={(e) => setEditLessonData({...editLessonData, transcript: e.target.value})}
+                                    className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15] resize-vertical"
+                                  />
+                                </div>
+
+                                <div className="flex justify-end gap-3 pt-4 border-t border-white/10 mt-4">
+                                  <button 
+                                    type="button" 
+                                    onClick={() => setEditingLessonId(null)}
+                                    className="px-4 py-2 text-sm text-zinc-400 hover:text-white"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button 
+                                    type="submit"
+                                    disabled={editLessonLoading}
+                                    className="px-5 py-2 text-sm bg-[#facc15] text-black font-semibold rounded-lg hover:bg-[#eab308] transition-colors disabled:opacity-50"
+                                  >
+                                    Save Changes
+                                  </button>
+                                </div>
+                              </motion.form>
                             )}
-                          </div>
+                          </AnimatePresence>
                         </div>
                       ))}
 
