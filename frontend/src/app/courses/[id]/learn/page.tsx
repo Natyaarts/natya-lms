@@ -61,9 +61,7 @@ export default function CourseLearnPage() {
   };
 
   const handleSeek = () => {
-    if (videoRef.current && audioRef.current) {
-      audioRef.current.currentTime = videoRef.current.currentTime;
-    }
+    // Cannot reliably seek audio because TTS duration differs from video duration
   };
 
   const handleWaiting = () => {
@@ -96,7 +94,6 @@ export default function CourseLearnPage() {
       if (videoRef.current) videoRef.current.muted = true;
       if (audioRef.current && newAudioUrl) {
         audioRef.current.src = newAudioUrl;
-        audioRef.current.currentTime = videoRef.current ? videoRef.current.currentTime : 0;
         audioRef.current.load();
         if (videoRef.current && !videoRef.current.paused) {
           audioRef.current.play().catch(e => console.error("Audio play blocked", e));
@@ -194,11 +191,6 @@ export default function CourseLearnPage() {
               <audio 
                 ref={audioRef}
                 className="hidden"
-                onPlay={() => {
-                  if (videoRef.current && audioRef.current) {
-                    audioRef.current.currentTime = videoRef.current.currentTime;
-                  }
-                }}
               />
 
               {/* Netflix-style Language Selector Overlay */}
