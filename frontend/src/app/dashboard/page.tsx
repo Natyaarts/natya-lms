@@ -9,6 +9,19 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [courses, setCourses] = useState<any[]>([]);
   const [user, setUser] = useState<any>(null);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+
+  const handleLogout = async () => {
+    try {
+      await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/logout/`, {
+        method: 'POST',
+        credentials: 'include'
+      });
+    } catch (err) {
+      console.error(err);
+    }
+    window.location.href = '/login';
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -43,8 +56,33 @@ export default function Dashboard() {
             <Link href="/courses" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
               Browse Courses
             </Link>
-            <div className="w-10 h-10 rounded-full bg-zinc-800 border-2 border-[#facc15] flex items-center justify-center text-sm font-bold uppercase text-[#facc15]">
-              {user ? (user.first_name?.[0] || user.username?.[0] || "U") : "U"}
+            <div className="relative">
+              <button 
+                onClick={() => setDropdownOpen(!dropdownOpen)}
+                className="w-10 h-10 rounded-full bg-zinc-800 border-2 border-[#facc15] flex items-center justify-center text-sm font-bold uppercase text-[#facc15] hover:scale-105 transition-transform"
+              >
+                {user ? (user.first_name?.[0] || user.username?.[0] || "U") : "U"}
+              </button>
+
+              {dropdownOpen && (
+                <div className="absolute right-0 mt-2 w-48 bg-[#1a1a1a] border border-white/10 rounded-xl shadow-xl py-2 z-50">
+                  <div className="px-4 py-2 border-b border-white/10 mb-2">
+                    <p className="text-sm font-semibold text-white truncate">{user?.first_name || user?.username || 'User'}</p>
+                    <p className="text-xs text-zinc-400 truncate">{user?.email || user?.phone_number || ''}</p>
+                  </div>
+                  {user?.is_superuser || user?.is_teacher ? (
+                    <Link href="/admin" className="block px-4 py-2 text-sm text-zinc-300 hover:bg-white/5 hover:text-white transition-colors">
+                      Admin Dashboard
+                    </Link>
+                  ) : null}
+                  <button 
+                    onClick={handleLogout}
+                    className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-red-400/10 transition-colors"
+                  >
+                    Log Out
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>

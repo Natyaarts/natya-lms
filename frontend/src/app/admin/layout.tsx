@@ -13,6 +13,19 @@ export default function AdminLayout({
   const [isAdmin, setIsAdmin] = useState(false);
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+
+  const handleLogout = async () => {
+    try {
+      await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/logout/`, {
+        method: 'POST',
+        credentials: 'include'
+      });
+    } catch (err) {
+      console.error(err);
+    }
+    window.location.href = '/admin/login';
+  };
 
   useEffect(() => {
     // Skip auth check for login page
@@ -139,14 +152,34 @@ export default function AdminLayout({
           </div>
           
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 pl-4 border-l border-white/5">
+            <div className="flex items-center gap-2 pl-4 border-l border-white/5 relative">
               <div className="flex flex-col items-end">
-                <span className="text-sm font-medium text-white leading-none">Super Admin</span>
+                <span className="text-sm font-medium text-white leading-none">{user?.first_name || user?.username || 'Super Admin'}</span>
                 <span className="text-[10px] text-zinc-500 mt-1 uppercase tracking-wider">Authenticated</span>
               </div>
-              <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-[#facc15] to-[#eab308] text-black flex items-center justify-center text-sm font-bold shadow-sm ring-2 ring-[#09090b] uppercase">
+              <button 
+                onClick={() => setDropdownOpen(!dropdownOpen)}
+                className="w-8 h-8 rounded-full bg-gradient-to-tr from-[#facc15] to-[#eab308] text-black flex items-center justify-center text-sm font-bold shadow-sm ring-2 ring-[#09090b] uppercase hover:scale-105 transition-transform"
+              >
                 {user ? (user.first_name?.[0] || user.username?.[0] || "A") : "A"}
-              </div>
+              </button>
+
+              {dropdownOpen && (
+                <div className="absolute right-0 top-full mt-2 w-48 bg-[#1a1a1a] border border-white/10 rounded-xl shadow-xl py-2 z-50">
+                  <div className="px-4 py-2 border-b border-white/10 mb-2">
+                    <p className="text-sm font-semibold text-white truncate">{user?.email || user?.phone_number || ''}</p>
+                  </div>
+                  <Link href="/dashboard" className="block px-4 py-2 text-sm text-zinc-300 hover:bg-white/5 hover:text-white transition-colors">
+                    Student Dashboard
+                  </Link>
+                  <button 
+                    onClick={handleLogout}
+                    className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-red-400/10 transition-colors"
+                  >
+                    Log Out
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </header>
