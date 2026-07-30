@@ -419,9 +419,9 @@ export default function CourseManager() {
                                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
                               </svg>
                             </div>
-                            <div className="flex-1">
-                              <h4 className="font-medium text-sm">{lIdx + 1}. {lesson.title}</h4>
-                              <div className="text-xs text-zinc-500 mt-1 line-clamp-1">{lesson.video_file || "No video file"}</div>
+                            <div className="flex-1 min-w-0">
+                              <h4 className="font-medium text-sm truncate">{lIdx + 1}. {lesson.title}</h4>
+                              <div className="text-xs text-zinc-500 mt-1 truncate">{lesson.video_file || "No video file"}</div>
                               {lesson.translated_audios && lesson.translated_audios.length > 0 && (
                                 <div className="flex gap-2 mt-2">
                                   {lesson.translated_audios.map((audio: any) => (
