@@ -105,7 +105,7 @@ export default function CourseLearnPage() {
     }
   };
 
-  const currentAudioUrl = getAudioUrlForLang(activeLanguage);
+  // currentAudioUrl removed because React controlling src aborts synchronous play()
 
   // Make sure video is muted if we are playing a dubbed track
   useEffect(() => {
@@ -193,7 +193,6 @@ export default function CourseLearnPage() {
               {/* The Hidden Audio Player for Dubs */}
               <audio 
                 ref={audioRef}
-                src={currentAudioUrl || undefined}
                 className="hidden"
                 onPlay={() => {
                   if (videoRef.current && audioRef.current) {
