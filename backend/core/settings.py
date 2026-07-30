@@ -236,8 +236,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'users.User'
 
 # Interakt WhatsApp API
-INTERAKT_SECRET_KEY = os.getenv('INTERAKT_SECRET_KEY', '')
-INTERAKT_TEMPLATE_NAME = os.getenv('INTERAKT_TEMPLATE_NAME', '')
+INTERAKT_SECRET_KEY = os.getenv('INTERAKT_SECRET_KEY', 'aDRtZ09CT3FBVEZvRVhTbFU3UnFPSFJEVS1hbzl2alRyVE1JUWlma1lPUTo=')
+INTERAKT_TEMPLATE_NAME = os.getenv('INTERAKT_TEMPLATE_NAME', 'login_otp_v1')
 
 # Razorpay Settings
 RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID', '')
