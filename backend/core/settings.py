@@ -92,6 +92,9 @@ SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_DOMAIN = '.natyaarts.com'
 SESSION_COOKIE_DOMAIN = '.natyaarts.com'
 
+# Tell Django it's behind a secure proxy so it sends Secure cookies over HTTP from the load balancer
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 ACCOUNT_EMAIL_VERIFICATION = 'none'
 ACCOUNT_AUTHENTICATION_METHOD = 'username_email'
 ACCOUNT_EMAIL_REQUIRED = True
