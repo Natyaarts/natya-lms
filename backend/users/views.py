@@ -37,8 +37,10 @@ class SendOTPView(APIView):
                 "Content-Type": "application/json"
             }
             
+            # Interakt requires the phone number without the '+' sign
+            formatted_number = identifier.lstrip('+')
             payload = {
-                "fullPhoneNumber": identifier,
+                "fullPhoneNumber": formatted_number,
                 "type": "Template",
                 "template": {
                     "name": TEMPLATE_NAME,
