@@ -76,21 +76,36 @@ export default function CourseLearnPage() {
     }
   };
 
+  // Get audio URL for a specific language
+  const getAudioUrlForLang = (langCode: string) => {
+    if (!activeLesson || langCode === 'en') return null;
+    const audioTrack = activeLesson.translated_audios?.find((a: any) => a.language_code.startsWith(langCode) && a.status === 'completed');
+    return audioTrack ? audioTrack.audio_file : null;
+  };
+
   // Change Language
   const changeLanguage = (langCode: string) => {
     setActiveLanguage(langCode);
     setShowLanguageMenu(false);
+
+    if (langCode === 'en') {
+      if (videoRef.current) videoRef.current.muted = false;
+      if (audioRef.current) audioRef.current.pause();
+    } else {
+      const newAudioUrl = getAudioUrlForLang(langCode);
+      if (videoRef.current) videoRef.current.muted = true;
+      if (audioRef.current && newAudioUrl) {
+        audioRef.current.src = newAudioUrl;
+        audioRef.current.currentTime = videoRef.current ? videoRef.current.currentTime : 0;
+        audioRef.current.load();
+        if (videoRef.current && !videoRef.current.paused) {
+          audioRef.current.play().catch(e => console.error("Audio play blocked", e));
+        }
+      }
+    }
   };
 
-  // Get active audio URL based on language
-  const getActiveAudioUrl = () => {
-    if (!activeLesson || activeLanguage === 'en') return null;
-    
-    const audioTrack = activeLesson.translated_audios?.find((a: any) => a.language_code.startsWith(activeLanguage) && a.status === 'completed');
-    return audioTrack ? audioTrack.audio_file : null;
-  };
-
-  const currentAudioUrl = getActiveAudioUrl();
+  const currentAudioUrl = getAudioUrlForLang(activeLanguage);
 
   // Make sure video is muted if we are playing a dubbed track
   useEffect(() => {
@@ -103,28 +118,6 @@ export default function CourseLearnPage() {
       }
     }
   }, [activeLanguage]);
-
-  // Sync Audio when the URL changes (wait for it to load)
-  useEffect(() => {
-    const audio = audioRef.current;
-    const video = videoRef.current;
-    
-    if (audio && video && activeLanguage !== 'en') {
-      const syncAndPlay = () => {
-        audio.currentTime = video.currentTime;
-        if (!video.paused) {
-          audio.play().catch(e => console.error("Audio play blocked", e));
-        }
-      };
-      
-      if (audio.readyState >= 1) {
-        syncAndPlay();
-      } else {
-        audio.addEventListener('loadedmetadata', syncAndPlay);
-        return () => audio.removeEventListener('loadedmetadata', syncAndPlay);
-      }
-    }
-  }, [currentAudioUrl, activeLanguage]);
 
   // Reset language to English when changing lessons
   useEffect(() => {
@@ -198,13 +191,16 @@ export default function CourseLearnPage() {
               />
 
               {/* The Hidden Audio Player for Dubs */}
-              {currentAudioUrl && (
-                <audio 
-                  ref={audioRef}
-                  src={currentAudioUrl}
-                  className="hidden"
-                />
-              )}
+              <audio 
+                ref={audioRef}
+                src={currentAudioUrl || undefined}
+                className="hidden"
+                onPlay={() => {
+                  if (videoRef.current && audioRef.current) {
+                    audioRef.current.currentTime = videoRef.current.currentTime;
+                  }
+                }}
+              />
 
               {/* Netflix-style Language Selector Overlay */}
               <div className="absolute top-4 right-4 z-10">
