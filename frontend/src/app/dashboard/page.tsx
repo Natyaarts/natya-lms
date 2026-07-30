@@ -36,6 +36,9 @@ export default function Dashboard() {
             window.location.href = '/onboarding';
             return;
           }
+        } else {
+          window.location.href = '/login';
+          return;
         }
 
         const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/my_courses/`, {
