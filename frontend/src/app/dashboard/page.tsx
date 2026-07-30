@@ -8,27 +8,27 @@ import { motion } from "framer-motion";
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [courses, setCourses] = useState<any[]>([]);
+  const [user, setUser] = useState<any>(null);
 
   useEffect(() => {
-    const fetchMyCourses = async () => {
+    const fetchData = async () => {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/my_courses/`, {
-          credentials: "include" // Important for sessions!
+        const userRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/me/`, {
+          credentials: "include"
         });
-        if (res.ok) {
-          const data = await res.json();
-          setCourses(data);
-        } else {
-          console.error("Failed to fetch courses, status:", res.status);
-        }
+        if (userRes.ok) setUser(await userRes.json());
+
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/my_courses/`, {
+          credentials: "include"
+        });
+        if (res.ok) setCourses(await res.json());
       } catch (err) {
-        console.error("Error fetching courses:", err);
+        console.error("Error fetching data:", err);
       } finally {
         setLoading(false);
       }
     };
-
-    fetchMyCourses();
+    fetchData();
   }, []);
 
   return (
@@ -43,8 +43,8 @@ export default function Dashboard() {
             <Link href="/courses" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
               Browse Courses
             </Link>
-            <div className="w-10 h-10 rounded-full bg-zinc-800 border-2 border-zinc-700 flex items-center justify-center text-sm font-bold">
-              U
+            <div className="w-10 h-10 rounded-full bg-zinc-800 border-2 border-[#facc15] flex items-center justify-center text-sm font-bold uppercase text-[#facc15]">
+              {user ? (user.first_name?.[0] || user.username?.[0] || "U") : "U"}
             </div>
           </div>
         </div>

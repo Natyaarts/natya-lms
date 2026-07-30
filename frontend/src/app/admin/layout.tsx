@@ -11,6 +11,7 @@ export default function AdminLayout({
 }) {
   const pathname = usePathname();
   const [isAdmin, setIsAdmin] = useState(false);
+  const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -31,6 +32,7 @@ export default function AdminLayout({
         }
       })
       .then(data => {
+        setUser(data);
         if (data.is_superuser || data.is_teacher) {
           setIsAdmin(true);
         } else {
@@ -142,8 +144,8 @@ export default function AdminLayout({
                 <span className="text-sm font-medium text-white leading-none">Super Admin</span>
                 <span className="text-[10px] text-zinc-500 mt-1 uppercase tracking-wider">Authenticated</span>
               </div>
-              <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-[#facc15] to-[#eab308] text-black flex items-center justify-center text-sm font-bold shadow-sm ring-2 ring-[#09090b]">
-                A
+              <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-[#facc15] to-[#eab308] text-black flex items-center justify-center text-sm font-bold shadow-sm ring-2 ring-[#09090b] uppercase">
+                {user ? (user.first_name?.[0] || user.username?.[0] || "A") : "A"}
               </div>
             </div>
           </div>

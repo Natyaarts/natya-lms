@@ -350,9 +350,18 @@ export default function UserDetailPage() {
               <div className="space-y-4">
                 {courses.map(course => (
                   <div key={course.id} className="flex justify-between items-center p-4 bg-white/5 border border-white/10 rounded-xl">
-                    <div>
-                      <div className="font-semibold">{course.title}</div>
-                      <p className="text-sm text-zinc-500 mt-1">Assigned on: {new Date(course.assigned_at || Date.now()).toLocaleDateString()}</p>
+                    <div className="flex gap-4 items-center">
+                      <div className="w-16 h-12 rounded overflow-hidden bg-black shrink-0 relative border border-white/10">
+                        {course.thumbnail ? (
+                          <img src={course.thumbnail} alt={course.title} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full bg-zinc-800 flex items-center justify-center text-xs text-zinc-500">No Img</div>
+                        )}
+                      </div>
+                      <div>
+                        <div className="font-semibold">{course.title}</div>
+                        <p className="text-sm text-zinc-500 mt-1">Assigned on: {new Date(course.assigned_at || Date.now()).toLocaleDateString()}</p>
+                      </div>
                     </div>
                     <div className="flex gap-4 items-center">
                       <button 

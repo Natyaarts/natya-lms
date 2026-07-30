@@ -136,6 +136,7 @@ class AdminUserViewSet(viewsets.ModelViewSet):
                 "id": p.id,
                 "course_id": p.course.id,
                 "title": p.course.title,
+                "thumbnail": request.build_absolute_uri(p.course.thumbnail.url) if p.course.thumbnail else None,
                 "assigned_at": p.created_at
             })
         # Deduplicate courses if they bought it multiple times
@@ -240,4 +241,18 @@ class AdminStatsView(APIView):
             "total_students": total_students,
             "active_courses": active_courses,
             "total_revenue": float(revenue)
+        })
+
+class CurrentUserView(APIView):
+    def get(self, request):
+        if not request.user.is_authenticated:
+            return Response({"error": "Not authenticated"}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({
+            "id": request.user.id,
+            "username": request.user.username,
+            "email": request.user.email,
+            "phone_number": request.user.phone_number,
+            "is_student": getattr(request.user, 'is_student', False),
+            "is_teacher": getattr(request.user, 'is_teacher', False),
+            "is_superuser": request.user.is_superuser
         })
