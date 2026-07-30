@@ -18,13 +18,17 @@ class CourseViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
     def my_courses(self, request):
+        from django.db.models import Q
         # Fallback for local testing if cookie is blocked
         user = request.user
         if user.is_anonymous:
             from django.contrib.auth import get_user_model
             user = get_user_model().objects.first()
             
-        enrolled_courses = Course.objects.filter(purchases__user=user, purchases__status='SUCCESS').distinct()
+        enrolled_courses = Course.objects.filter(
+            Q(purchases__user=user, purchases__status='SUCCESS') | 
+            Q(enrollments__user=user)
+        ).distinct()
         serializer = self.get_serializer(enrolled_courses, many=True)
         return Response(serializer.data)
 

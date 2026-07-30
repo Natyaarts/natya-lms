@@ -19,5 +19,9 @@ class AdminUserSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'date_joined', 'courses_count')
         
     def get_courses_count(self, obj):
-        from orders.models import Purchase
-        return Purchase.objects.filter(user=obj, status='SUCCESS').count()
+        from courses.models import Course
+        from django.db.models import Q
+        return Course.objects.filter(
+            Q(purchases__user=obj, purchases__status='SUCCESS') | 
+            Q(enrollments__user=obj)
+        ).distinct().count()
