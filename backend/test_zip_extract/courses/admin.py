@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Course, Module, VideoLesson, TranslatedAudio
+from .models import Course, Module, VideoLesson
 
 class VideoLessonInline(admin.TabularInline):
     model = VideoLesson
@@ -21,30 +21,10 @@ class ModuleAdmin(admin.ModelAdmin):
     list_filter = ('course',)
     inlines = [VideoLessonInline]
 
-class TranslatedAudioInline(admin.TabularInline):
-    model = TranslatedAudio
-    extra = 0
-
-from django.contrib import messages
-import threading
-from .services.ai_translator import generate_dubbed_audio
-
-@admin.action(description='Generate AI Dubbed Audio Tracks')
-def generate_ai_audio(modeladmin, request, queryset):
-    for lesson in queryset:
-        if lesson.transcript:
-            # Run in a background thread to prevent blocking the admin UI
-            threading.Thread(target=generate_dubbed_audio, args=(lesson.id,)).start()
-            messages.success(request, f"AI Audio generation started in background for '{lesson.title}'. Refresh page in 30 seconds.")
-        else:
-            messages.error(request, f"Skipped '{lesson.title}' - no English transcript provided!")
-
 @admin.register(VideoLesson)
 class VideoLessonAdmin(admin.ModelAdmin):
     list_display = ('title', 'module', 'order')
     list_filter = ('module__course',)
-    inlines = [TranslatedAudioInline]
-    actions = [generate_ai_audio]
 
 from .models import Enrollment
 @admin.register(Enrollment)

@@ -28,10 +28,12 @@ class VideoLesson(models.Model):
     module = models.ForeignKey(Module, related_name='lessons', on_delete=models.CASCADE)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
-    transcript = models.TextField(blank=True, help_text="Paste the English transcript here. AI will use this to generate dubbed audio tracks.")
-    video_file = models.FileField(upload_to='videos/lessons/', blank=True, null=True, help_text="Upload the original MP4 video file")
+    video_url = models.URLField(blank=True, help_text="S3 or hosted video URL for original English video")
     
-    # Audio tracks will be stored in TranslatedAudio model
+    # We will expand this model to handle multiple dubbed audio tracks
+    audio_hi_url = models.URLField(blank=True, null=True, help_text="Hindi dubbed audio URL")
+    audio_ta_url = models.URLField(blank=True, null=True, help_text="Tamil dubbed audio URL")
+    audio_ml_url = models.URLField(blank=True, null=True, help_text="Malayalam dubbed audio URL")
 
     order = models.PositiveIntegerField(default=0)
     
@@ -51,16 +53,3 @@ class Enrollment(models.Model):
 
     def __str__(self):
         return f"{self.user.username} enrolled in {self.course.title}"
-
-class TranslatedAudio(models.Model):
-    lesson = models.ForeignKey(VideoLesson, related_name='translated_audios', on_delete=models.CASCADE)
-    language_code = models.CharField(max_length=10, help_text="e.g. ml-IN, ta-IN, hi-IN, es-ES")
-    audio_file = models.FileField(upload_to='videos/audios/')
-    status = models.CharField(max_length=20, default='processing') # 'processing', 'completed', 'failed'
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ('lesson', 'language_code')
-
-    def __str__(self):
-        return f"{self.lesson.title} - {self.language_code}"

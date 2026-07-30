@@ -21,10 +21,12 @@ export default function CourseManager() {
   const [lessonData, setLessonData] = useState<{
     title: string;
     description: string;
+    transcript: string;
     video_file: File | null;
   }>({
     title: "",
     description: "",
+    transcript: "",
     video_file: null
   });
   const [lessonLoading, setLessonLoading] = useState(false);
@@ -114,6 +116,7 @@ export default function CourseManager() {
       const formData = new FormData();
       formData.append("title", lessonData.title);
       formData.append("description", lessonData.description);
+      formData.append("transcript", lessonData.transcript);
       formData.append("video_file", lessonData.video_file);
       formData.append("module", moduleId.toString());
       formData.append("order", (moduleObj?.lessons?.length || 0).toString());
@@ -132,6 +135,7 @@ export default function CourseManager() {
         setLessonData({
           title: "",
           description: "",
+          transcript: "",
           video_file: null
         });
         fetchCourse(); // refresh
@@ -347,11 +351,13 @@ export default function CourseManager() {
                           <div>
                             <h4 className="font-medium text-sm">{lIdx + 1}. {lesson.title}</h4>
                             <div className="text-xs text-zinc-500 mt-1 line-clamp-1">{lesson.video_file || "No video file"}</div>
-                            {(lesson.audio_hi_url || lesson.audio_ta_url || lesson.audio_ml_url) && (
+                            {lesson.translated_audios && lesson.translated_audios.length > 0 && (
                               <div className="flex gap-2 mt-2">
-                                {lesson.audio_hi_url && <span className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400">Hindi</span>}
-                                {lesson.audio_ta_url && <span className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400">Tamil</span>}
-                                {lesson.audio_ml_url && <span className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400">Malayalam</span>}
+                                {lesson.translated_audios.map((audio: any) => (
+                                  <span key={audio.id} className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase">
+                                    {audio.language_code.split('-')[0]} {audio.status === 'completed' ? '✓' : '...'}
+                                  </span>
+                                ))}
                               </div>
                             )}
                           </div>
@@ -394,6 +400,18 @@ export default function CourseManager() {
                                 value={lessonData.description}
                                 onChange={(e) => setLessonData({...lessonData, description: e.target.value})}
                                 className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15] resize-none"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-xs font-medium text-[#facc15] mb-1">English Transcript (For AI Translation)</label>
+                              <textarea 
+                                rows={4}
+                                required
+                                placeholder="Paste the spoken English text here. The AI will perfectly translate this to Hindi, Tamil, and Malayalam."
+                                value={lessonData.transcript}
+                                onChange={(e) => setLessonData({...lessonData, transcript: e.target.value})}
+                                className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15] resize-vertical"
                               />
                             </div>
 

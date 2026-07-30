@@ -1,17 +1,10 @@
 from rest_framework import serializers
-from .models import Course, Module, VideoLesson, TranslatedAudio
-
-class TranslatedAudioSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = TranslatedAudio
-        fields = ['id', 'language_code', 'audio_file', 'status', 'created_at']
+from .models import Course, Module, VideoLesson
 
 class VideoLessonSerializer(serializers.ModelSerializer):
-    translated_audios = TranslatedAudioSerializer(many=True, read_only=True)
-
     class Meta:
         model = VideoLesson
-        fields = ['id', 'title', 'description', 'transcript', 'video_file', 'order', 'module', 'translated_audios']
+        fields = ['id', 'title', 'description', 'video_url', 'audio_hi_url', 'audio_ta_url', 'audio_ml_url', 'order', 'module']
 
 class ModuleSerializer(serializers.ModelSerializer):
     lessons = VideoLessonSerializer(many=True, read_only=True)
