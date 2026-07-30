@@ -74,7 +74,8 @@ export default function Login() {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/verify-otp/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier: finalIdentifier, otp: formData.otp })
+        body: JSON.stringify({ identifier: finalIdentifier, otp: formData.otp }),
+        credentials: 'include'
       });
       
       const data = await res.json();
