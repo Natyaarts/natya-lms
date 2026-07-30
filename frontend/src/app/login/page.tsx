@@ -48,7 +48,8 @@ export default function Login() {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/send-otp/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier: finalIdentifier })
+        body: JSON.stringify({ identifier: finalIdentifier }),
+        credentials: 'include'
       });
       
       const data = await res.json();
