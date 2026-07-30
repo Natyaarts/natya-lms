@@ -90,8 +90,8 @@ SESSION_COOKIE_SAMESITE = 'None'
 SESSION_COOKIE_SECURE = True
 
 # Allow academy.natyaarts.com to read cookies set by api.natyaarts.com
-CSRF_COOKIE_DOMAIN = os.environ.get('COOKIE_DOMAIN', '.natyaarts.com' if not DEBUG else None)
-SESSION_COOKIE_DOMAIN = os.environ.get('COOKIE_DOMAIN', '.natyaarts.com' if not DEBUG else None)
+CSRF_COOKIE_DOMAIN = '.natyaarts.com'
+SESSION_COOKIE_DOMAIN = '.natyaarts.com'
 
 ACCOUNT_EMAIL_VERIFICATION = 'none'
 ACCOUNT_AUTHENTICATION_METHOD = 'username_email'
