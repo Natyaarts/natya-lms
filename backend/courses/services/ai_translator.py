@@ -63,20 +63,23 @@ def generate_dubbed_audio(lesson_id):
         print(f"No transcript found for lesson {lesson_id}")
         return
 
+    import re
+    # Remove timestamps like '00:02 - ' or '00:02' to help Google Translate
+    transcript = re.sub(r'\d{2}:\d{2}\s*-\s*', '', transcript)
+    transcript = re.sub(r'\d{2}:\d{2}', '', transcript)
+
     target_languages = ['hi', 'ta', 'ml']
 
     for lang in target_languages:
         print(f"Processing {lang} for lesson {lesson_id}...")
         
-        # 1. Check if it already exists to avoid duplicate API calls
+        # 1. Check if it already exists to overwrite it
         audio_obj, created = TranslatedAudio.objects.get_or_create(
             lesson=lesson,
             language_code=lang,
             defaults={'status': 'processing'}
         )
-        if not created and audio_obj.status == 'completed':
-            continue # Skip if already done
-            
+        # Force regeneration even if completed
         audio_obj.status = 'processing'
         audio_obj.save()
 
