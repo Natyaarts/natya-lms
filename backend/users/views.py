@@ -114,7 +114,7 @@ class VerifyOTPView(APIView):
         
         return response
 
-from rest_framework import viewsets
+from rest_framework import status, viewsets, permissions
 from rest_framework.decorators import action
 from .serializers import AdminUserSerializer
 from .permissions import IsSuperAdmin
@@ -254,5 +254,43 @@ class CurrentUserView(APIView):
             "phone_number": request.user.phone_number,
             "is_student": getattr(request.user, 'is_student', False),
             "is_teacher": getattr(request.user, 'is_teacher', False),
-            "is_superuser": request.user.is_superuser
+            "is_superuser": request.user.is_superuser,
+            "is_onboarded": getattr(request.user, 'is_onboarded', False)
         })
+
+class OnboardingFieldsView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from .models import OnboardingField
+        fields = OnboardingField.objects.all()
+        data = []
+        for f in fields:
+            data.append({
+                "name": f.name,
+                "label": f.label,
+                "type": f.field_type,
+                "required": f.is_required,
+                "options": f.options
+            })
+        return Response(data)
+
+class SaveProfileView(APIView):
+    def post(self, request):
+        if not request.user.is_authenticated:
+            return Response({"error": "Not authenticated"}, status=status.HTTP_401_UNAUTHORIZED)
+            
+        data = request.data
+        user = request.user
+        
+        # We could validate against OnboardingField here, but for flexibility we just save it
+        user.onboarding_data = data
+        user.is_onboarded = True
+        
+        # Map common fields directly to User model if they exist
+        if 'first_name' in data: user.first_name = data['first_name']
+        if 'last_name' in data: user.last_name = data['last_name']
+        if 'phone_number' in data: user.phone_number = data['phone_number']
+        
+        user.save()
+        return Response({"message": "Profile saved successfully"})

@@ -29,7 +29,14 @@ export default function Dashboard() {
         const userRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/me/`, {
           credentials: "include"
         });
-        if (userRes.ok) setUser(await userRes.json());
+        if (userRes.ok) {
+          const userData = await userRes.json();
+          setUser(userData);
+          if (userData.is_onboarded === false && !userData.is_superuser && !userData.is_teacher) {
+            window.location.href = '/onboarding';
+            return;
+          }
+        }
 
         const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/my_courses/`, {
           credentials: "include"
