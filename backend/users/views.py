@@ -103,13 +103,15 @@ class VerifyOTPView(APIView):
             access_cookie_key,
             str(refresh.access_token),
             httponly=True,
-            samesite='Lax'
+            samesite='Lax',
+            domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None)
         )
         response.set_cookie(
             refresh_cookie_key,
             str(refresh),
             httponly=True,
-            samesite='Lax'
+            samesite='Lax',
+            domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None)
         )
         
         return response
