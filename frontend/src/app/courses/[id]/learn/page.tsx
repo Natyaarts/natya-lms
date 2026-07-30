@@ -80,28 +80,6 @@ export default function CourseLearnPage() {
   const changeLanguage = (langCode: string) => {
     setActiveLanguage(langCode);
     setShowLanguageMenu(false);
-    
-    // Pause briefly to switch tracks
-    if (videoRef.current) {
-      const wasPlaying = !videoRef.current.paused;
-      
-      if (langCode === 'en') {
-        videoRef.current.muted = false;
-        if (audioRef.current) audioRef.current.pause();
-      } else {
-        videoRef.current.muted = true;
-        // Wait for the new audio source to load, then sync and play
-        setTimeout(() => {
-            if (audioRef.current && videoRef.current) {
-                audioRef.current.currentTime = videoRef.current.currentTime;
-                if (wasPlaying) {
-                    audioRef.current.play().catch(e => console.log("Audio play blocked", e));
-                    videoRef.current.play();
-                }
-            }
-        }, 100);
-      }
-    }
   };
 
   // Get active audio URL based on language
@@ -117,9 +95,36 @@ export default function CourseLearnPage() {
   // Make sure video is muted if we are playing a dubbed track
   useEffect(() => {
     if (videoRef.current) {
-      videoRef.current.muted = activeLanguage !== 'en';
+      if (activeLanguage === 'en') {
+        videoRef.current.muted = false;
+        if (audioRef.current) audioRef.current.pause();
+      } else {
+        videoRef.current.muted = true;
+      }
     }
   }, [activeLanguage]);
+
+  // Sync Audio when the URL changes (wait for it to load)
+  useEffect(() => {
+    const audio = audioRef.current;
+    const video = videoRef.current;
+    
+    if (audio && video && activeLanguage !== 'en') {
+      const syncAndPlay = () => {
+        audio.currentTime = video.currentTime;
+        if (!video.paused) {
+          audio.play().catch(e => console.error("Audio play blocked", e));
+        }
+      };
+      
+      if (audio.readyState >= 1) {
+        syncAndPlay();
+      } else {
+        audio.addEventListener('loadedmetadata', syncAndPlay);
+        return () => audio.removeEventListener('loadedmetadata', syncAndPlay);
+      }
+    }
+  }, [currentAudioUrl, activeLanguage]);
 
   // Reset language to English when changing lessons
   useEffect(() => {
