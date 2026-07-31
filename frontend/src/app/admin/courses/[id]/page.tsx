@@ -489,6 +489,7 @@ export default function CourseManager() {
                                   />
                                 </div>
 
+                                {/* Transcript hidden since using ElevenLabs Dubbing API
                                 <div>
                                   <label className="block text-xs font-medium text-[#facc15] mb-1">English Transcript (For AI Translation)</label>
                                   <textarea 
@@ -499,6 +500,7 @@ export default function CourseManager() {
                                     className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15] resize-vertical"
                                   />
                                 </div>
+                                */}
 
                                 <div className="flex justify-end gap-3 pt-4 border-t border-white/10 mt-4">
                                   <button 
@@ -561,17 +563,18 @@ export default function CourseManager() {
                               />
                             </div>
 
+                            {/* Transcript hidden since using ElevenLabs Dubbing API
                             <div>
                               <label className="block text-xs font-medium text-[#facc15] mb-1">English Transcript (For AI Translation)</label>
                               <textarea 
                                 rows={4}
-                                required
                                 placeholder="Paste the spoken English text here. The AI will perfectly translate this to Hindi, Tamil, and Malayalam."
                                 value={lessonData.transcript}
                                 onChange={(e) => setLessonData({...lessonData, transcript: e.target.value})}
                                 className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15] resize-vertical"
                               />
                             </div>
+                            */}
 
                             <div>
                               <label className="block text-xs font-medium text-zinc-400 mb-1">Upload Original Video (MP4) *</label>

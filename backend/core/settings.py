@@ -28,6 +28,9 @@ load_dotenv(os.path.join(BASE_DIR, '.env'), override=True)
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-z+-r&vtsk(wij@)-86pfj@3g&j0&48lov2mdd7qxk9kyz$86%m')
 
+# ElevenLabs API Key for Professional Dubbing
+ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY', '')
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 
