@@ -48,62 +48,140 @@ def text_to_speech(text, lang_code, voice_name):
         print(f"TTS Error: {response.text}")
         return None
 
+def parse_srt(srt_text):
+    import re
+    # Match standard SRT blocks: index, start --> end, text
+    pattern = re.compile(r'(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n((?:.*(?:\n|$))+?)(?=\n\d+\n|\Z)', re.MULTILINE)
+    blocks = []
+    for match in pattern.finditer(srt_text):
+        try:
+            start_time_str = match.group(2)
+            end_time_str = match.group(3)
+            text = match.group(4).strip()
+            
+            def time_to_ms(time_str):
+                h, m, s_ms = time_str.split(':')
+                s, ms = s_ms.split(',')
+                return int(h)*3600000 + int(m)*60000 + int(s)*1000 + int(ms)
+                
+            blocks.append({
+                'start': time_to_ms(start_time_str),
+                'end': time_to_ms(end_time_str),
+                'text': text
+            })
+        except Exception as e:
+            print(f"Error parsing block: {e}")
+            continue
+    return blocks
+
 def generate_dubbed_audio(lesson_id):
     """
-    Main function to translate transcript and generate audio files.
-    Usually run in a background task.
+    Main function to auto-transcribe, translate, and generate timed audio.
     """
     try:
         lesson = VideoLesson.objects.get(id=lesson_id)
     except VideoLesson.DoesNotExist:
         return
 
-    transcript = lesson.transcript
-    if not transcript:
-        print(f"No transcript found for lesson {lesson_id}")
+    openai_key = getattr(settings, 'OPENAI_API_KEY', '')
+    if not openai_key:
+        print("OPENAI_API_KEY is not configured.")
         return
 
-    import re
-    # Remove all possible timestamp formats to help Google Translate
-    transcript = re.sub(r'\[?\d{1,2}:\d{2}(:\d{2})?\]?\s*[-:]?\s*', '', transcript)
+    if not lesson.video_file:
+        print(f"No video file found for lesson {lesson_id}")
+        return
+
+    source_url = lesson.video_file.url
+    if source_url.startswith('/'):
+        source_url = "http://localhost:8000" + source_url
+
+    import subprocess
+    import tempfile
+    import os
+    from pydub import AudioSegment
+    import io
+    from openai import OpenAI
 
     target_languages = ['hi', 'ta', 'ml']
-
-    for lang in target_languages:
-        print(f"Processing {lang} for lesson {lesson_id}...")
+    
+    # Extract audio using ffmpeg
+    print(f"Extracting audio from {source_url}...")
+    temp_audio_fd, temp_audio_path = tempfile.mkstemp(suffix=".mp3")
+    os.close(temp_audio_fd)
+    
+    try:
+        subprocess.run(["ffmpeg", "-i", source_url, "-vn", "-acodec", "libmp3lame", "-q:a", "2", "-y", temp_audio_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        # 1. Check if it already exists to overwrite it
-        audio_obj, created = TranslatedAudio.objects.get_or_create(
-            lesson=lesson,
-            language_code=lang,
-            defaults={'status': 'processing'}
-        )
-        # Force regeneration even if completed
-        audio_obj.status = 'processing'
-        audio_obj.save()
-
-        # 2. Translate Text
-        config = LANGUAGE_MAP.get(lang)
-        if not config:
-            continue
+        # Transcribe with Whisper
+        print("Transcribing with Whisper...")
+        client = OpenAI(api_key=openai_key)
+        with open(temp_audio_path, "rb") as audio_file:
+            srt_text = client.audio.transcriptions.create(
+                model="whisper-1", 
+                file=audio_file, 
+                response_format="srt"
+            )
             
-        translated_text = translate_text(transcript, config['translate'])
-        if not translated_text:
-            audio_obj.status = 'failed'
-            audio_obj.save()
-            continue
-
-        # 3. Generate Audio
-        audio_bytes = text_to_speech(translated_text, config['tts'], config['voice'])
-        if not audio_bytes:
-            audio_obj.status = 'failed'
-            audio_obj.save()
-            continue
-
-        # 4. Save Audio File to Model
-        filename = f"lesson_{lesson_id}_{lang}.mp3"
-        audio_obj.audio_file.save(filename, ContentFile(audio_bytes), save=False)
-        audio_obj.status = 'completed'
-        audio_obj.save()
+        blocks = parse_srt(srt_text)
+        print(f"Whisper found {len(blocks)} speech blocks.")
         
-        print(f"Successfully generated {lang} audio for lesson {lesson_id}!")
+        # Save transcript for reference
+        if not lesson.transcript and blocks:
+            lesson.transcript = "\n".join([b['text'] for b in blocks])
+            lesson.save()
+
+        # Load original audio to get total duration
+        original_audio = AudioSegment.from_file(temp_audio_path)
+        duration_ms = len(original_audio)
+
+        for lang in target_languages:
+            print(f"Processing {lang} auto-dubbing...")
+            audio_obj, _ = TranslatedAudio.objects.get_or_create(
+                lesson=lesson,
+                language_code=lang,
+                defaults={'status': 'processing'}
+            )
+            audio_obj.status = 'processing'
+            audio_obj.save()
+
+            config = LANGUAGE_MAP.get(lang)
+            if not config:
+                continue
+
+            try:
+                # Create a silent canvas
+                canvas = AudioSegment.silent(duration=duration_ms)
+                
+                for block in blocks:
+                    if not block['text']: continue
+                    
+                    translated_text = translate_text(block['text'], config['translate'])
+                    if not translated_text: continue
+                    
+                    audio_bytes = text_to_speech(translated_text, config['tts'], config['voice'])
+                    if not audio_bytes: continue
+                    
+                    # Overlay chunk at exact timestamp
+                    chunk = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+                    canvas = canvas.overlay(chunk, position=block['start'])
+                
+                # Export final stitched audio
+                output_io = io.BytesIO()
+                canvas.export(output_io, format="mp3", bitrate="128k")
+                output_bytes = output_io.getvalue()
+                
+                filename = f"lesson_{lesson_id}_{lang}_timed.mp3"
+                audio_obj.audio_file.save(filename, ContentFile(output_bytes), save=False)
+                audio_obj.status = 'completed'
+                audio_obj.save()
+                print(f"Successfully generated TIMED {lang} audio for lesson {lesson_id}!")
+                
+            except Exception as e:
+                print(f"Error dubbing {lang}: {e}")
+                audio_obj.status = 'failed'
+                audio_obj.save()
+
+    finally:
+        if os.path.exists(temp_audio_path):
+            os.remove(temp_audio_path)
