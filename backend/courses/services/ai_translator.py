@@ -153,7 +153,9 @@ def generate_dubbed_audio(lesson_id):
                 # Create a silent canvas
                 canvas = AudioSegment.silent(duration=duration_ms)
                 
-                for block in blocks:
+                from pydub.effects import speedup
+                
+                for i, block in enumerate(blocks):
                     if not block['text']: continue
                     
                     translated_text = translate_text(block['text'], config['translate'])
@@ -162,8 +164,32 @@ def generate_dubbed_audio(lesson_id):
                     audio_bytes = text_to_speech(translated_text, config['tts'], config['voice'])
                     if not audio_bytes: continue
                     
-                    # Overlay chunk at exact timestamp
+                    # Convert to AudioSegment
                     chunk = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+                    
+                    # Calculate available time window
+                    # If this is the last block, window is until end of video
+                    # Otherwise, window is until the start of the next block
+                    if i + 1 < len(blocks):
+                        available_window = blocks[i+1]['start'] - block['start']
+                    else:
+                        available_window = duration_ms - block['start']
+                        
+                    # If the TTS is longer than the available window, it will overlap with the next person!
+                    # So we speed it up so it fits exactly in the window.
+                    if len(chunk) > available_window and available_window > 200:
+                        speed_ratio = len(chunk) / available_window
+                        # Cap speed up at 1.5x so it doesn't sound entirely like a chipmunk
+                        if speed_ratio > 1.5:
+                            speed_ratio = 1.5
+                        
+                        # Speed it up without altering pitch too drastically
+                        try:
+                            chunk = speedup(chunk, playback_speed=speed_ratio, chunk_size=50, crossfade=25)
+                        except:
+                            pass # If speedup fails, just use original
+                    
+                    # Overlay chunk at exact timestamp
                     canvas = canvas.overlay(chunk, position=block['start'])
                 
                 # Export final stitched audio
