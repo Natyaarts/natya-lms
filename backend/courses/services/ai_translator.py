@@ -58,30 +58,19 @@ def generate_dubbed_audio(lesson_id):
     except VideoLesson.DoesNotExist:
         return
 
-    # ElevenLabs API Key from Settings
-    api_key = getattr(settings, 'ELEVENLABS_API_KEY', '')
-    if not api_key:
-        print("ELEVENLABS_API_KEY is not configured.")
+    transcript = lesson.transcript
+    if not transcript:
+        print(f"No transcript found for lesson {lesson_id}")
         return
 
-    if not lesson.video_file:
-        print(f"No video file found for lesson {lesson_id}")
-        return
-
-    # Build the full URL to the video file
-    # S3 urls are absolute. Local urls might be relative.
-    source_url = lesson.video_file.url
-    if source_url.startswith('/'):
-        # For local development
-        source_url = "http://localhost:8000" + source_url
+    import re
+    # Remove all possible timestamp formats to help Google Translate
+    transcript = re.sub(r'\[?\d{1,2}:\d{2}(:\d{2})?\]?\s*[-:]?\s*', '', transcript)
 
     target_languages = ['hi', 'ta', 'ml']
-    headers = {"xi-api-key": api_key}
-
-    import time
 
     for lang in target_languages:
-        print(f"Processing {lang} for lesson {lesson_id} with ElevenLabs...")
+        print(f"Processing {lang} for lesson {lesson_id}...")
         
         # 1. Check if it already exists to overwrite it
         audio_obj, created = TranslatedAudio.objects.get_or_create(
@@ -89,71 +78,32 @@ def generate_dubbed_audio(lesson_id):
             language_code=lang,
             defaults={'status': 'processing'}
         )
+        # Force regeneration even if completed
         audio_obj.status = 'processing'
         audio_obj.save()
 
-        try:
-            # 2. Trigger Dubbing Job
-            dub_data = {
-                "source_url": (None, source_url),
-                "target_lang": (None, lang),
-                "source_lang": (None, "en"),
-                "num_speakers": (None, "0"),
-                "watermark": (None, "false")
-            }
-            dub_res = requests.post("https://api.elevenlabs.io/v1/dubbing", headers=headers, files=dub_data)
+        # 2. Translate Text
+        config = LANGUAGE_MAP.get(lang)
+        if not config:
+            continue
             
-            if dub_res.status_code != 200:
-                print(f"ElevenLabs Dubbing Error for {lang}: {dub_res.text}")
-                audio_obj.status = 'failed'
-                audio_obj.save()
-                continue
-                
-            dubbing_id = dub_res.json().get("dubbing_id")
-            
-            # 3. Poll for Completion
-            completed = False
-            while not completed:
-                time.sleep(10) # Poll every 10 seconds
-                status_res = requests.get(f"https://api.elevenlabs.io/v1/dubbing/{dubbing_id}", headers=headers)
-                if status_res.status_code != 200:
-                    print(f"Error fetching status: {status_res.text}")
-                    break
-                    
-                status_data = status_res.json()
-                current_status = status_data.get("status")
-                
-                if current_status == "dubbed":
-                    completed = True
-                elif current_status == "failed":
-                    print(f"Dubbing failed for {lang}")
-                    break
-            
-            if not completed:
-                audio_obj.status = 'failed'
-                audio_obj.save()
-                continue
-                
-            # 4. Download Audio
-            audio_res = requests.get(f"https://api.elevenlabs.io/v1/dubbing/{dubbing_id}/audio/{lang}", headers=headers)
-            if audio_res.status_code != 200:
-                print(f"Error downloading audio for {lang}: {audio_res.text}")
-                audio_obj.status = 'failed'
-                audio_obj.save()
-                continue
-                
-            # Determine extension
-            content_type = audio_res.headers.get('Content-Type', '')
-            ext = 'mp4' if 'video' in content_type else 'mp3'
-                
-            filename = f"lesson_{lesson_id}_{lang}.{ext}"
-            audio_obj.audio_file.save(filename, ContentFile(audio_res.content), save=False)
-            audio_obj.status = 'completed'
-            audio_obj.save()
-            
-            print(f"Successfully generated {lang} audio for lesson {lesson_id}!")
-            
-        except Exception as e:
-            print(f"Exception during ElevenLabs dubbing for {lang}: {str(e)}")
+        translated_text = translate_text(transcript, config['translate'])
+        if not translated_text:
             audio_obj.status = 'failed'
             audio_obj.save()
+            continue
+
+        # 3. Generate Audio
+        audio_bytes = text_to_speech(translated_text, config['tts'], config['voice'])
+        if not audio_bytes:
+            audio_obj.status = 'failed'
+            audio_obj.save()
+            continue
+
+        # 4. Save Audio File to Model
+        filename = f"lesson_{lesson_id}_{lang}.mp3"
+        audio_obj.audio_file.save(filename, ContentFile(audio_bytes), save=False)
+        audio_obj.status = 'completed'
+        audio_obj.save()
+        
+        print(f"Successfully generated {lang} audio for lesson {lesson_id}!")
