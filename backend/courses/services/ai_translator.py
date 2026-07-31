@@ -64,9 +64,8 @@ def generate_dubbed_audio(lesson_id):
         return
 
     import re
-    # Remove timestamps like '00:02 - ' or '00:02' to help Google Translate
-    transcript = re.sub(r'\d{2}:\d{2}\s*-\s*', '', transcript)
-    transcript = re.sub(r'\d{2}:\d{2}', '', transcript)
+    # Remove all possible timestamp formats to help Google Translate
+    transcript = re.sub(r'\[?\d{1,2}:\d{2}(:\d{2})?\]?\s*[-:]?\s*', '', transcript)
 
     target_languages = ['hi', 'ta', 'ml']
 
