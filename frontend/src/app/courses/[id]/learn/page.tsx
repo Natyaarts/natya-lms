@@ -184,6 +184,7 @@ export default function CourseLearnPage() {
                 onSeeked={handleSeek}
                 onWaiting={handleWaiting}
                 onPlaying={handlePlaying}
+                muted={activeLanguage !== 'en'}
                 autoPlay
               />
 
