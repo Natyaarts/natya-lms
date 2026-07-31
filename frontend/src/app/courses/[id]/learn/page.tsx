@@ -49,7 +49,11 @@ export default function CourseLearnPage() {
 
   // Sync Audio to Video
   const handlePlay = () => {
-    if (activeLanguage !== 'en' && audioRef.current) {
+    if (activeLanguage !== 'en' && audioRef.current && videoRef.current) {
+      // Ensure sync before playing
+      if (Math.abs(audioRef.current.currentTime - videoRef.current.currentTime) > 0.3) {
+        audioRef.current.currentTime = videoRef.current.currentTime;
+      }
       audioRef.current.play();
     }
   };
@@ -61,7 +65,9 @@ export default function CourseLearnPage() {
   };
 
   const handleSeek = () => {
-    // Cannot reliably seek audio because TTS duration differs from video duration
+    if (activeLanguage !== 'en' && audioRef.current && videoRef.current) {
+      audioRef.current.currentTime = videoRef.current.currentTime;
+    }
   };
 
   const handleWaiting = () => {
@@ -69,7 +75,10 @@ export default function CourseLearnPage() {
   };
 
   const handlePlaying = () => {
-    if (activeLanguage !== 'en' && audioRef.current) {
+    if (activeLanguage !== 'en' && audioRef.current && videoRef.current) {
+      if (Math.abs(audioRef.current.currentTime - videoRef.current.currentTime) > 0.3) {
+        audioRef.current.currentTime = videoRef.current.currentTime;
+      }
       audioRef.current.play();
     }
   };
@@ -95,6 +104,9 @@ export default function CourseLearnPage() {
       if (audioRef.current && newAudioUrl) {
         audioRef.current.src = newAudioUrl;
         audioRef.current.load();
+        if (videoRef.current) {
+          audioRef.current.currentTime = videoRef.current.currentTime;
+        }
         if (videoRef.current && !videoRef.current.paused) {
           audioRef.current.play().catch(e => console.error("Audio play blocked", e));
         }
