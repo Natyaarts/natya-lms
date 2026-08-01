@@ -98,7 +98,12 @@ class VerifyOTPView(APIView):
         response = Response({
             "message": "Login successful",
             "user_id": user.id,
-            "created": created
+            "created": created,
+            "is_onboarded": user.is_onboarded,
+            "tokens": {
+                "access": str(refresh.access_token),
+                "refresh": str(refresh)
+            }
         })
         
         # Set JWT Cookies for dj-rest-auth
