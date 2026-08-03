@@ -94,7 +94,7 @@ export default function Home() {
     description: "Premium pre-recorded masterclasses, multi-lingual AI dubbing, and structured learning for all.",
     button_text: "Browse Masterclasses",
     button_link: "/courses",
-    bg_image_url: "https://natyaarts.com/img/hero.png"
+    bg_image_url: "/img/banner.jpg"
   };
 
   const features = content?.features?.length > 0 ? content.features : [

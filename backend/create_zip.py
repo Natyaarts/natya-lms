@@ -2,7 +2,7 @@ import zipfile
 import os
 
 def create_zip():
-    with zipfile.ZipFile('backend-release-v16.zip', 'w', zipfile.ZIP_DEFLATED) as zipf:
+    with zipfile.ZipFile('backend-release-v19.zip', 'w', zipfile.ZIP_DEFLATED) as zipf:
         for root, dirs, files in os.walk('.'):
             # Skip virtual environments, git, pycache, and old zip files
             if '.venv' in root or '.git' in root or '__pycache__' in root or 'test_zip_extract' in root:
@@ -19,4 +19,4 @@ def create_zip():
 
 if __name__ == '__main__':
     create_zip()
-    print("Created backend-release-v16.zip successfully!")
+    print("Created backend-release-v19.zip successfully!")

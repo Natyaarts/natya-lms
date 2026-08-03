@@ -188,6 +188,10 @@ def generate_dubbed_audio(lesson_id):
                             chunk = speedup(chunk, playback_speed=speed_ratio, chunk_size=50, crossfade=25)
                         except:
                             pass # If speedup fails, just use original
+                            
+                    # Hard truncate to prevent any overlap at all
+                    if len(chunk) > available_window:
+                        chunk = chunk[:available_window]
                     
                     # Overlay chunk at exact timestamp
                     canvas = canvas.overlay(chunk, position=block['start'])

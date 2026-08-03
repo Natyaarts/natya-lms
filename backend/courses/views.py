@@ -11,9 +11,16 @@ class CourseViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperAdminOrTeacherOrReadOnly] 
 
     def get_queryset(self):
+        from django.db.models import Q
         user = self.request.user
         if user.is_authenticated and (user.is_staff or user.groups.filter(name='Teachers').exists()):
             return Course.objects.all()
+        if user.is_authenticated:
+            return Course.objects.filter(
+                Q(is_published=True) | 
+                Q(purchases__user=user, purchases__status='SUCCESS') | 
+                Q(enrollments__user=user)
+            ).distinct()
         return Course.objects.filter(is_published=True)
 
     @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])

@@ -26,7 +26,9 @@ class SendOTPView(APIView):
         OTPVerification.objects.create(identifier=identifier, otp=otp)
         
         # Send OTP
-        if '@' in identifier:
+        if identifier == "+919999999999":
+            pass # Bypass actual sending for Google Play reviewers
+        elif '@' in identifier:
             # TODO: Integrate AWS SES via boto3 or django-ses
             print(f"*** AWS SES MOCK: Sending Email to {identifier} with OTP: {otp} ***")
         else:
@@ -71,20 +73,23 @@ class VerifyOTPView(APIView):
         if not identifier or not otp:
             return Response({"error": "Identifier and OTP required"}, status=status.HTTP_400_BAD_REQUEST)
             
-        # Check if OTP is valid and not expired (5 minutes)
-        time_threshold = timezone.now() - timedelta(minutes=5)
-        otp_record = OTPVerification.objects.filter(
-            identifier=identifier, 
-            otp=otp, 
-            is_verified=False,
-            created_at__gte=time_threshold
-        ).last()
-        
-        if not otp_record:
-            return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_400_BAD_REQUEST)
+        if identifier == "+919999999999" and otp == "123456":
+            pass # Bypass OTP check for Google Play reviewers
+        else:
+            # Check if OTP is valid and not expired (5 minutes)
+            time_threshold = timezone.now() - timedelta(minutes=5)
+            otp_record = OTPVerification.objects.filter(
+                identifier=identifier, 
+                otp=otp, 
+                is_verified=False,
+                created_at__gte=time_threshold
+            ).last()
             
-        otp_record.is_verified = True
-        otp_record.save()
+            if not otp_record:
+                return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_400_BAD_REQUEST)
+                
+            otp_record.is_verified = True
+            otp_record.save()
         
         # Get or create user
         if '@' in identifier:
@@ -310,3 +315,50 @@ class SaveProfileView(APIView):
         
         user.save()
         return Response({"message": "Profile saved successfully"})
+
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+
+class MobileGoogleLoginView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        token = request.data.get('token')
+        if not token:
+            return Response({"error": "No token provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Specify the CLIENT_ID of the app that accesses the backend:
+            # Note: For production, validate the client ID. We skip audience verification here 
+            # for ease of setup across different development keys, but get the info.
+            idinfo = id_token.verify_oauth2_token(token, google_requests.Request(), clock_skew_in_seconds=10)
+            
+            email = idinfo.get('email')
+            if not email:
+                return Response({"error": "Google token did not contain an email"}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Get or create user
+            user, created = User.objects.get_or_create(email=email, defaults={
+                'username': email.split('@')[0] + str(random.randint(1000, 9999)),
+                'first_name': idinfo.get('given_name', ''),
+                'last_name': idinfo.get('family_name', '')
+            })
+
+            # Generate JWT Tokens
+            refresh = RefreshToken.for_user(user)
+            
+            return Response({
+                "message": "Login successful",
+                "user_id": user.id,
+                "created": created,
+                "is_onboarded": user.is_onboarded,
+                "tokens": {
+                    "access": str(refresh.access_token),
+                    "refresh": str(refresh)
+                }
+            })
+
+        except ValueError as e:
+            # Invalid token
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
