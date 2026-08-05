@@ -63,8 +63,8 @@ class VideoLessonViewSet(viewsets.ModelViewSet):
         
         lesson = self.get_object()
         
-        if not lesson.transcript:
-            return Response({"error": "No English transcript provided for this lesson."}, status=400)
+        if not lesson.transcript and not lesson.timed_transcript:
+            return Response({"error": "Please fill in the 'Timing for Speaking' section (or a transcript) before generating AI Audio."}, status=400)
             
         threading.Thread(target=generate_dubbed_audio, args=(lesson.id,)).start()
         
