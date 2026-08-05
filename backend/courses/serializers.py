@@ -11,7 +11,7 @@ class VideoLessonSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = VideoLesson
-        fields = ['id', 'title', 'description', 'transcript', 'video_file', 'order', 'module', 'translated_audios']
+        fields = ['id', 'title', 'description', 'transcript', 'timed_transcript', 'video_file', 'order', 'module', 'translated_audios']
 
 class ModuleSerializer(serializers.ModelSerializer):
     lessons = VideoLessonSerializer(many=True, read_only=True)

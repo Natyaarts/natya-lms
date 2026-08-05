@@ -29,6 +29,10 @@ class VideoLesson(models.Model):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     transcript = models.TextField(blank=True, help_text="Paste the English transcript here. AI will use this to generate dubbed audio tracks.")
+    timed_transcript = models.TextField(
+        blank=True,
+        help_text="Manually timed transcript for perfect dubbing sync. Each line: HH:MM:SS --> Text spoken at that time. Example: 00:00:05 --> Hello and welcome to this class"
+    )
     video_file = models.FileField(upload_to='videos/lessons/', blank=True, null=True, help_text="Upload the original MP4 video file")
     
     # Audio tracks will be stored in TranslatedAudio model

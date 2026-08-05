@@ -22,11 +22,13 @@ export default function CourseManager() {
     title: string;
     description: string;
     transcript: string;
+    timed_transcript: string;
     video_file: File | null;
   }>({
     title: "",
     description: "",
     transcript: "",
+    timed_transcript: "",
     video_file: null
   });
   const [lessonLoading, setLessonLoading] = useState(false);
@@ -37,10 +39,12 @@ export default function CourseManager() {
     title: string;
     description: string;
     transcript: string;
+    timed_transcript: string;
   }>({
     title: "",
     description: "",
-    transcript: ""
+    transcript: "",
+    timed_transcript: ""
   });
   const [editLessonLoading, setEditLessonLoading] = useState(false);
 
@@ -130,6 +134,7 @@ export default function CourseManager() {
       formData.append("title", lessonData.title);
       formData.append("description", lessonData.description);
       formData.append("transcript", lessonData.transcript);
+      formData.append("timed_transcript", lessonData.timed_transcript);
       formData.append("video_file", lessonData.video_file);
       formData.append("module", moduleId.toString());
       formData.append("order", (moduleObj?.lessons?.length || 0).toString());
@@ -149,6 +154,7 @@ export default function CourseManager() {
           title: "",
           description: "",
           transcript: "",
+          timed_transcript: "",
           video_file: null
         });
         fetchCourse(); // refresh
@@ -439,7 +445,8 @@ export default function CourseManager() {
                                   setEditLessonData({
                                     title: lesson.title,
                                     description: lesson.description || "",
-                                    transcript: lesson.transcript || ""
+                                    transcript: lesson.transcript || "",
+                                    timed_transcript: lesson.timed_transcript || ""
                                   });
                                 }}
                                 className="text-xs font-medium px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-md transition-colors"
@@ -489,18 +496,27 @@ export default function CourseManager() {
                                   />
                                 </div>
 
-                                {/* Transcript hidden since using Whisper Auto-Dubbing
-                                <div>
-                                  <label className="block text-xs font-medium text-[#facc15] mb-1">English Transcript (For AI Translation)</label>
+                                {/* ⏱ Timing for Speaking */}
+                                <div className="bg-[#facc15]/5 border border-[#facc15]/20 rounded-xl p-4">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <span className="text-sm">⏱</span>
+                                    <label className="block text-xs font-semibold text-[#facc15]">Timing for Speaking (for Perfect AI Dubbing)</label>
+                                  </div>
+                                  <p className="text-[10px] text-zinc-500 mb-3 leading-relaxed">
+                                    One line per spoken sentence. Format: <code className="bg-zinc-800 px-1 rounded text-zinc-300">MM:SS --&gt; Text spoken at that time</code><br/>
+                                    Example:<br/>
+                                    <code className="bg-zinc-800 px-1 rounded text-zinc-300">00:05 --&gt; Hello and welcome to this class</code><br/>
+                                    <code className="bg-zinc-800 px-1 rounded text-zinc-300">00:12 --&gt; Today we will learn Carnatic music</code>
+                                  </p>
                                   <textarea 
-                                    rows={4}
-                                    placeholder="Paste the spoken English text here. The AI will perfectly translate this to Hindi, Tamil, and Malayalam."
-                                    value={editLessonData.transcript}
-                                    onChange={(e) => setEditLessonData({...editLessonData, transcript: e.target.value})}
-                                    className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15] resize-vertical"
+                                    rows={6}
+                                    placeholder={"00:05 --> Hello and welcome\n00:12 --> Today we learn music\n00:20 --> Let us start with the notes"}
+                                    value={editLessonData.timed_transcript}
+                                    onChange={(e) => setEditLessonData({...editLessonData, timed_transcript: e.target.value})}
+                                    className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-lg text-white text-xs font-mono focus:outline-none focus:border-[#facc15] resize-vertical"
                                   />
+                                  <p className="text-[10px] text-zinc-600 mt-2">💡 Leave blank to let Whisper AI auto-detect timings (less accurate). Fill this in for perfect sync.</p>
                                 </div>
-                                */}
 
                                 <div className="flex justify-end gap-3 pt-4 border-t border-white/10 mt-4">
                                   <button 
@@ -563,18 +579,27 @@ export default function CourseManager() {
                               />
                             </div>
 
-                            {/* Transcript hidden since using Whisper Auto-Dubbing
-                            <div>
-                              <label className="block text-xs font-medium text-[#facc15] mb-1">English Transcript (For AI Translation)</label>
+                            {/* ⏱ Timing for Speaking */}
+                            <div className="bg-[#facc15]/5 border border-[#facc15]/20 rounded-xl p-4">
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="text-sm">⏱</span>
+                                <label className="block text-xs font-semibold text-[#facc15]">Timing for Speaking (for Perfect AI Dubbing)</label>
+                              </div>
+                              <p className="text-[10px] text-zinc-500 mb-3 leading-relaxed">
+                                One line per spoken sentence. Format: <code className="bg-zinc-800 px-1 rounded text-zinc-300">MM:SS --&gt; Text spoken at that time</code><br/>
+                                Example:<br/>
+                                <code className="bg-zinc-800 px-1 rounded text-zinc-300">00:05 --&gt; Hello and welcome to this class</code><br/>
+                                <code className="bg-zinc-800 px-1 rounded text-zinc-300">00:12 --&gt; Today we will learn Carnatic music</code>
+                              </p>
                               <textarea 
-                                rows={4}
-                                placeholder="Paste the spoken English text here. The AI will perfectly translate this to Hindi, Tamil, and Malayalam."
-                                value={lessonData.transcript}
-                                onChange={(e) => setLessonData({...lessonData, transcript: e.target.value})}
-                                className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15] resize-vertical"
+                                rows={6}
+                                placeholder={"00:05 --> Hello and welcome\n00:12 --> Today we learn music\n00:20 --> Let us start with the notes"}
+                                value={lessonData.timed_transcript}
+                                onChange={(e) => setLessonData({...lessonData, timed_transcript: e.target.value})}
+                                className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-lg text-white text-xs font-mono focus:outline-none focus:border-[#facc15] resize-vertical"
                               />
+                              <p className="text-[10px] text-zinc-600 mt-2">💡 Leave blank to let Whisper AI auto-detect timings (less accurate). Fill this in for perfect sync.</p>
                             </div>
-                            */}
 
                             <div>
                               <label className="block text-xs font-medium text-zinc-400 mb-1">Upload Original Video (MP4) *</label>
@@ -586,6 +611,7 @@ export default function CourseManager() {
                                 className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15] file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[#facc15] file:text-black hover:file:bg-[#eab308]"
                               />
                             </div>
+
 
                             <div className="flex justify-end gap-3 pt-4 border-t border-white/10 mt-4">
                               <button 

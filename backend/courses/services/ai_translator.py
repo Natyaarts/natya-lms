@@ -74,18 +74,61 @@ def parse_srt(srt_text):
             continue
     return blocks
 
+def parse_timed_transcript(timed_transcript_text):
+    """
+    Parses the simple admin-entered timed transcript format:
+    Each line is: HH:MM:SS --> Text spoken at that time
+    Returns blocks in the same format as parse_srt().
+    """
+    blocks = []
+    lines = timed_transcript_text.strip().splitlines()
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line or '-->' not in line:
+            continue
+        try:
+            time_part, text_part = line.split('-->', 1)
+            time_part = time_part.strip()
+            text_part = text_part.strip()
+            if not text_part:
+                continue
+
+            # Parse HH:MM:SS or MM:SS
+            parts = time_part.split(':')
+            if len(parts) == 3:
+                h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+            elif len(parts) == 2:
+                h, m, s = 0, int(parts[0]), int(parts[1])
+            else:
+                continue
+            start_ms = h * 3600000 + m * 60000 + s * 1000
+
+            # End time = next block's start, filled in later
+            blocks.append({'start': start_ms, 'end': None, 'text': text_part})
+        except Exception as e:
+            print(f"Error parsing timed_transcript line '{line}': {e}")
+            continue
+
+    # Fill in end times: each block ends when the next one starts
+    for i, block in enumerate(blocks):
+        if i + 1 < len(blocks):
+            block['end'] = blocks[i + 1]['start']
+        else:
+            # Last block: give it 5 seconds
+            block['end'] = block['start'] + 5000
+
+    return blocks
+
+
 def generate_dubbed_audio(lesson_id):
     """
     Main function to auto-transcribe, translate, and generate timed audio.
+    If lesson.timed_transcript is set, it uses that directly for perfect sync.
+    Otherwise, it falls back to Whisper auto-transcription.
     """
     try:
         lesson = VideoLesson.objects.get(id=lesson_id)
     except VideoLesson.DoesNotExist:
-        return
-
-    openai_key = getattr(settings, 'OPENAI_API_KEY', '')
-    if not openai_key:
-        print("OPENAI_API_KEY is not configured.")
         return
 
     if not lesson.video_file:
@@ -101,11 +144,10 @@ def generate_dubbed_audio(lesson_id):
     import os
     from pydub import AudioSegment
     import io
-    from openai import OpenAI
 
     target_languages = ['hi', 'ta', 'ml']
     
-    # Extract audio using ffmpeg
+    # Extract audio using ffmpeg to get duration
     print(f"Extracting audio from {source_url}...")
     temp_audio_fd, temp_audio_path = tempfile.mkstemp(suffix=".mp3")
     os.close(temp_audio_fd)
@@ -113,28 +155,48 @@ def generate_dubbed_audio(lesson_id):
     try:
         subprocess.run(["ffmpeg", "-i", source_url, "-vn", "-acodec", "libmp3lame", "-q:a", "2", "-y", temp_audio_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        # Transcribe with Whisper
-        print("Transcribing with Whisper...")
-        client = OpenAI(api_key=openai_key)
-        with open(temp_audio_path, "rb") as audio_file:
-            srt_text = client.audio.transcriptions.create(
-                model="whisper-1", 
-                file=audio_file, 
-                response_format="srt"
-            )
+        # ─────────────────────────────────────────────────────────────
+        # STEP 1: Get speech blocks (Manual timed transcript OR Whisper)
+        # ─────────────────────────────────────────────────────────────
+        if lesson.timed_transcript and lesson.timed_transcript.strip():
+            # 🎯 Admin provided exact timings — use them directly. No API cost, perfect sync.
+            print("Using manual timed_transcript for perfect sync (skipping Whisper)...")
+            blocks = parse_timed_transcript(lesson.timed_transcript)
+            print(f"Parsed {len(blocks)} timing blocks from timed_transcript.")
+        else:
+            # 🤖 No manual timings — use Whisper to auto-detect
+            openai_key = getattr(settings, 'OPENAI_API_KEY', '')
+            if not openai_key:
+                print("OPENAI_API_KEY is not configured and no timed_transcript provided. Cannot generate audio.")
+                return
+            from openai import OpenAI
+            print("No timed_transcript found. Transcribing with Whisper (auto-detect)...")
+            client = OpenAI(api_key=openai_key)
+            with open(temp_audio_path, "rb") as audio_file:
+                srt_text = client.audio.transcriptions.create(
+                    model="whisper-1", 
+                    file=audio_file, 
+                    response_format="srt"
+                )
+            blocks = parse_srt(srt_text)
+            print(f"Whisper found {len(blocks)} speech blocks.")
             
-        blocks = parse_srt(srt_text)
-        print(f"Whisper found {len(blocks)} speech blocks.")
-        
-        # Save transcript for reference
-        if not lesson.transcript and blocks:
-            lesson.transcript = "\n".join([b['text'] for b in blocks])
-            lesson.save()
+            # Save Whisper transcript for reference
+            if not lesson.transcript and blocks:
+                lesson.transcript = "\n".join([b['text'] for b in blocks])
+                lesson.save()
+
+        if not blocks:
+            print("No speech blocks found. Cannot generate audio.")
+            return
 
         # Load original audio to get total duration
         original_audio = AudioSegment.from_file(temp_audio_path)
         duration_ms = len(original_audio)
 
+        # ─────────────────────────────────────────────────────────────
+        # STEP 2: Generate dubbed audio for each language
+        # ─────────────────────────────────────────────────────────────
         for lang in target_languages:
             print(f"Processing {lang} auto-dubbing...")
             audio_obj, _ = TranslatedAudio.objects.get_or_create(
@@ -150,7 +212,7 @@ def generate_dubbed_audio(lesson_id):
                 continue
 
             try:
-                # Create a silent canvas
+                # Create a silent canvas the same length as the video
                 canvas = AudioSegment.silent(duration=duration_ms)
                 
                 from pydub.effects import speedup
@@ -167,29 +229,26 @@ def generate_dubbed_audio(lesson_id):
                     # Convert to AudioSegment
                     chunk = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
                     
-                    # Calculate available time window
-                    # If this is the last block, window is until end of video
-                    # Otherwise, window is until the start of the next block
+                    # Calculate available time window for this block
                     if i + 1 < len(blocks):
-                        available_window = blocks[i+1]['start'] - block['start']
+                        available_window = blocks[i + 1]['start'] - block['start']
                     else:
                         available_window = duration_ms - block['start']
+                    
+                    if available_window <= 0:
+                        available_window = 3000  # Safety fallback: 3 seconds
                         
-                    # If the TTS is longer than the available window, it will overlap with the next person!
-                    # So we speed it up so it fits exactly in the window.
+                    # If the TTS is longer than the available window, speed it up to fit
                     if len(chunk) > available_window and available_window > 200:
                         speed_ratio = len(chunk) / available_window
-                        # Cap speed up at 1.5x so it doesn't sound entirely like a chipmunk
-                        if speed_ratio > 1.5:
-                            speed_ratio = 1.5
-                        
-                        # Speed it up without altering pitch too drastically
+                        # Cap speed at 1.5x to avoid chipmunk effect
+                        speed_ratio = min(speed_ratio, 1.5)
                         try:
                             chunk = speedup(chunk, playback_speed=speed_ratio, chunk_size=50, crossfade=25)
-                        except:
-                            pass # If speedup fails, just use original
+                        except Exception:
+                            pass  # If speedup fails, use original length
                             
-                    # Hard truncate to prevent any overlap at all
+                    # Hard truncate to prevent overlap
                     if len(chunk) > available_window:
                         chunk = chunk[:available_window]
                     
@@ -215,3 +274,4 @@ def generate_dubbed_audio(lesson_id):
     finally:
         if os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)
+
