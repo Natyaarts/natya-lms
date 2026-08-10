@@ -1,20 +1,34 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 
 export default function CourseManager() {
   const { id } = useParams();
+  const router = useRouter();
+  
   const [course, setCourse] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   
+  // State for Course Metadata Editing
+  const [isEditingCourse, setIsEditingCourse] = useState(false);
+  const [editCourseData, setEditCourseData] = useState({
+    title: "",
+    description: "",
+    price: ""
+  });
+
   // State for adding module
   const [showAddModule, setShowAddModule] = useState(false);
   const [moduleTitle, setModuleTitle] = useState("");
   const [moduleLoading, setModuleLoading] = useState(false);
+
+  // State for renaming module
+  const [editingModuleId, setEditingModuleId] = useState<number | null>(null);
+  const [editModuleTitle, setEditModuleTitle] = useState("");
 
   // State for adding lesson
   const [addingLessonToModule, setAddingLessonToModule] = useState<number | null>(null);
@@ -85,6 +99,35 @@ export default function CourseManager() {
     if (id) fetchCourse();
   }, [id]);
 
+  const handleEditCourse = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/${id}/`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCsrfToken()
+        },
+        body: JSON.stringify({
+          title: editCourseData.title,
+          description: editCourseData.description,
+          price: parseFloat(editCourseData.price) || 0
+        }),
+        credentials: "include"
+      });
+
+      if (res.ok) {
+        setIsEditingCourse(false);
+        fetchCourse();
+      } else {
+        alert("Failed to update course details");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error updating course");
+    }
+  };
+
   const handleAddModule = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!moduleTitle.trim()) return;
@@ -108,10 +151,9 @@ export default function CourseManager() {
       if (res.ok) {
         setModuleTitle("");
         setShowAddModule(false);
-        fetchCourse(); // refresh
+        fetchCourse();
       } else {
         const errData = await res.text();
-        console.error("Module creation failed:", errData);
         alert("Failed to create module: " + errData);
       }
     } catch (err) {
@@ -119,6 +161,85 @@ export default function CourseManager() {
       alert("Network error creating module");
     } finally {
       setModuleLoading(false);
+    }
+  };
+
+  const handleRenameModule = async (moduleId: number) => {
+    if (!editModuleTitle.trim()) return;
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/modules/${moduleId}/`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCsrfToken()
+        },
+        body: JSON.stringify({ title: editModuleTitle }),
+        credentials: "include"
+      });
+      if (res.ok) {
+        setEditingModuleId(null);
+        fetchCourse();
+      } else {
+        alert("Failed to rename module");
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleDeleteModule = async (moduleId: number, title: string) => {
+    if (!confirm(`Are you sure you want to delete module "${title}"? This will also delete all lessons inside it.`)) return;
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/modules/${moduleId}/`, {
+        method: "DELETE",
+        headers: {
+          "X-CSRFToken": getCsrfToken()
+        },
+        credentials: "include"
+      });
+      if (res.ok) {
+        fetchCourse();
+      } else {
+        alert("Failed to delete module");
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleMoveModule = async (index: number, direction: 'up' | 'down') => {
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= course.modules.length) return;
+    
+    const currentModule = course.modules[index];
+    const swapModule = course.modules[targetIndex];
+    
+    try {
+      // Swap order tags
+      const p1 = fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/modules/${currentModule.id}/`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCsrfToken()
+        },
+        body: JSON.stringify({ order: swapModule.order }),
+        credentials: "include"
+      });
+      
+      const p2 = fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/modules/${swapModule.id}/`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCsrfToken()
+        },
+        body: JSON.stringify({ order: currentModule.order }),
+        credentials: "include"
+      });
+      
+      await Promise.all([p1, p2]);
+      fetchCourse();
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -157,10 +278,9 @@ export default function CourseManager() {
           timed_transcript: "",
           video_file: null
         });
-        fetchCourse(); // refresh
+        fetchCourse();
       } else {
         const errData = await res.text();
-        console.error("Lesson creation failed:", errData);
         alert("Failed to create lesson: " + errData);
       }
     } catch (err) {
@@ -189,10 +309,9 @@ export default function CourseManager() {
 
       if (res.ok) {
         setEditingLessonId(null);
-        fetchCourse(); // refresh
+        fetchCourse();
       } else {
         const errData = await res.text();
-        console.error("Lesson edit failed:", errData);
         alert("Failed to edit lesson: " + errData);
       }
     } catch (err) {
@@ -200,6 +319,62 @@ export default function CourseManager() {
       alert("Network error editing lesson");
     } finally {
       setEditLessonLoading(false);
+    }
+  };
+
+  const handleDeleteLesson = async (lessonId: number, title: string) => {
+    if (!confirm(`Are you sure you want to delete lesson "${title}"?`)) return;
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lessonId}/`, {
+        method: "DELETE",
+        headers: {
+          "X-CSRFToken": getCsrfToken()
+        },
+        credentials: "include"
+      });
+      if (res.ok) {
+        fetchCourse();
+      } else {
+        alert("Failed to delete lesson");
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleMoveLesson = async (moduleIndex: number, lessonIndex: number, direction: 'up' | 'down') => {
+    const moduleObj = course.modules[moduleIndex];
+    const targetIndex = direction === 'up' ? lessonIndex - 1 : lessonIndex + 1;
+    if (targetIndex < 0 || targetIndex >= moduleObj.lessons.length) return;
+    
+    const currentLesson = moduleObj.lessons[lessonIndex];
+    const swapLesson = moduleObj.lessons[targetIndex];
+    
+    try {
+      const p1 = fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${currentLesson.id}/`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCsrfToken()
+        },
+        body: JSON.stringify({ order: swapLesson.order }),
+        credentials: "include"
+      });
+      
+      const p2 = fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${swapLesson.id}/`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCsrfToken()
+        },
+        body: JSON.stringify({ order: currentLesson.order }),
+        credentials: "include"
+      });
+      
+      await Promise.all([p1, p2]);
+      fetchCourse();
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -218,7 +393,7 @@ export default function CourseManager() {
       const data = await res.json();
       if (res.ok) {
         alert("Success: " + data.message);
-        fetchCourse(); // refresh to show processing status
+        fetchCourse();
       } else {
         alert("Error: " + data.error);
       }
@@ -246,7 +421,7 @@ export default function CourseManager() {
       });
 
       if (res.ok) {
-        fetchCourse(); // refresh
+        fetchCourse();
       }
     } catch (err) {
       console.error(err);
@@ -266,7 +441,7 @@ export default function CourseManager() {
       });
 
       if (res.ok) {
-        fetchCourse(); // refresh
+        fetchCourse();
       } else {
         alert("Failed to update course status.");
       }
@@ -316,26 +491,94 @@ export default function CourseManager() {
                 </div>
               </label>
             </div>
-            <h2 className="text-xl font-bold mb-2">{course.title}</h2>
-            <p className="text-zinc-400 text-sm mb-4 line-clamp-3">{course.description}</p>
-            <div className="flex items-center justify-between py-3 border-t border-white/10">
-              <span className="text-zinc-500 text-sm">Price</span>
-              <span className="font-semibold text-white">₹{parseFloat(course.price).toLocaleString()}</span>
-            </div>
-            <div className="flex items-center justify-between py-3 border-t border-white/10">
-              <span className="text-zinc-500 text-sm">Status</span>
-              <div className="flex items-center gap-3">
-                <span className={`px-2 py-1 rounded-md text-xs font-medium ${course.is_published ? 'bg-green-500/20 text-green-400' : 'bg-zinc-800 text-zinc-400'}`}>
-                  {course.is_published ? 'Published' : 'Draft'}
-                </span>
-                <button 
-                  onClick={handleTogglePublish}
-                  className="text-xs font-medium hover:text-white text-zinc-400 underline underline-offset-2"
+
+            {isEditingCourse ? (
+              <form onSubmit={handleEditCourse} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wider">Title *</label>
+                  <input
+                    type="text"
+                    required
+                    value={editCourseData.title}
+                    onChange={e => setEditCourseData({ ...editCourseData, title: e.target.value })}
+                    className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wider">Description *</label>
+                  <textarea
+                    rows={4}
+                    required
+                    value={editCourseData.description}
+                    onChange={e => setEditCourseData({ ...editCourseData, description: e.target.value })}
+                    className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] resize-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wider">Price (₹) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    required
+                    value={editCourseData.price}
+                    onChange={e => setEditCourseData({ ...editCourseData, price: e.target.value })}
+                    className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                  />
+                </div>
+                <div className="flex gap-2 justify-end pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingCourse(false)}
+                    className="px-3 py-1.5 text-xs text-zinc-400 hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-1.5 bg-[#facc15] text-black font-bold text-xs rounded-xl hover:bg-yellow-500"
+                  >
+                    Save
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <>
+                <h2 className="text-xl font-bold mb-2">{course.title}</h2>
+                <p className="text-zinc-400 text-sm mb-4 line-clamp-3 leading-relaxed">{course.description}</p>
+                <div className="flex items-center justify-between py-3 border-t border-white/10">
+                  <span className="text-zinc-500 text-sm">Price</span>
+                  <span className="font-semibold text-white">₹{parseFloat(course.price).toLocaleString()}</span>
+                </div>
+                <div className="flex items-center justify-between py-3 border-t border-white/10">
+                  <span className="text-zinc-500 text-sm">Status</span>
+                  <div className="flex items-center gap-3">
+                    <span className={`px-2 py-1 rounded-md text-xs font-medium ${course.is_published ? 'bg-green-500/20 text-green-400' : 'bg-zinc-800 text-zinc-400'}`}>
+                      {course.is_published ? 'Published' : 'Draft'}
+                    </span>
+                    <button 
+                      onClick={handleTogglePublish}
+                      className="text-xs font-medium hover:text-white text-zinc-400 underline underline-offset-2"
+                    >
+                      {course.is_published ? 'Unpublish' : 'Publish'}
+                    </button>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setEditCourseData({
+                      title: course.title,
+                      description: course.description,
+                      price: course.price
+                    });
+                    setIsEditingCourse(true);
+                  }}
+                  className="w-full mt-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-white rounded-xl text-xs font-semibold transition-colors"
                 >
-                  {course.is_published ? 'Unpublish' : 'Publish'}
+                  Edit Course Details
                 </button>
-              </div>
-            </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -346,7 +589,7 @@ export default function CourseManager() {
               <h2 className="text-xl font-bold">Curriculum Builder</h2>
               <button 
                 onClick={() => setShowAddModule(true)}
-                className="px-4 py-2 bg-[#facc15]/10 text-[#facc15] font-medium rounded-lg hover:bg-[#facc15]/20 transition-colors text-sm"
+                className="px-4 py-2 bg-[#facc15]/10 text-[#facc15] hover:bg-[#facc15]/20 font-bold rounded-xl transition-colors text-sm"
               >
                 + Add Module
               </button>
@@ -371,7 +614,7 @@ export default function CourseManager() {
                       placeholder="e.g. Week 1: Introduction to Next.js"
                       value={moduleTitle}
                       onChange={(e) => setModuleTitle(e.target.value)}
-                      className="flex-1 px-4 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white focus:outline-none focus:border-[#facc15] transition-colors"
+                      className="flex-1 px-4 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] transition-colors"
                     />
                     <button 
                       type="button" 
@@ -383,7 +626,7 @@ export default function CourseManager() {
                     <button 
                       type="submit"
                       disabled={moduleLoading}
-                      className="px-6 py-2 bg-[#facc15] text-black font-semibold rounded-lg hover:bg-[#eab308] transition-colors disabled:opacity-50"
+                      className="px-6 py-2 bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-colors disabled:opacity-50"
                     >
                       Save
                     </button>
@@ -401,32 +644,119 @@ export default function CourseManager() {
               ) : (
                 course.modules?.map((module: any, idx: number) => (
                   <div key={module.id} className="border border-white/10 rounded-xl overflow-hidden">
-                    <div className="bg-black/50 px-5 py-4 border-b border-white/10 flex items-center justify-between">
-                      <h3 className="font-semibold flex items-center gap-3">
-                        <span className="w-6 h-6 bg-white/10 text-xs flex items-center justify-center rounded-full text-zinc-400">
-                          {idx + 1}
-                        </span>
-                        {module.title}
-                      </h3>
-                      <button 
-                        onClick={() => setAddingLessonToModule(addingLessonToModule === module.id ? null : module.id)}
-                        className="text-sm font-medium text-zinc-400 hover:text-white transition-colors"
-                      >
-                        + Add Video
-                      </button>
+                    <div className="bg-black/50 px-5 py-4 border-b border-white/10 flex items-center justify-between flex-wrap gap-4">
+                      {editingModuleId === module.id ? (
+                        <div className="flex gap-2 items-center flex-1">
+                          <input
+                            type="text"
+                            value={editModuleTitle}
+                            onChange={e => setEditModuleTitle(e.target.value)}
+                            className="flex-1 px-3 py-1.5 bg-zinc-900 border border-[#facc15]/30 rounded-xl text-sm text-white focus:outline-none focus:border-[#facc15]"
+                          />
+                          <button
+                            onClick={() => handleRenameModule(module.id)}
+                            className="px-3 py-1.5 bg-[#facc15] text-black text-xs font-bold rounded-xl hover:bg-yellow-500"
+                          >
+                            Save
+                          </button>
+                          <button
+                            onClick={() => setEditingModuleId(null)}
+                            className="px-2 py-1.5 text-xs text-zinc-400 hover:text-white"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <h3 className="font-semibold flex items-center gap-3">
+                          <span className="w-6 h-6 bg-white/10 text-xs flex items-center justify-center rounded-full text-zinc-400">
+                            {idx + 1}
+                          </span>
+                          <span className="text-sm font-bold text-white">{module.title}</span>
+                          
+                          {/* Rename / Delete Module Triggers */}
+                          <div className="flex gap-1 items-center">
+                            <button
+                              onClick={() => {
+                                setEditingModuleId(module.id);
+                                setEditModuleTitle(module.title);
+                              }}
+                              className="text-zinc-500 hover:text-[#facc15] p-1 transition-colors"
+                              title="Rename module"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                            </button>
+                            <button
+                              onClick={() => handleDeleteModule(module.id, module.title)}
+                              className="text-zinc-500 hover:text-red-500 p-1 transition-colors"
+                              title="Delete module"
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                            </button>
+                          </div>
+                        </h3>
+                      )}
+                      
+                      <div className="flex items-center gap-4">
+                        {/* Module Order Arrows */}
+                        <div className="flex gap-1 items-center">
+                          <button
+                            disabled={idx === 0}
+                            onClick={() => handleMoveModule(idx, 'up')}
+                            className="text-zinc-500 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-500 p-1"
+                            title="Move Up"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+                          </button>
+                          <button
+                            disabled={idx === (course.modules?.length || 1) - 1}
+                            onClick={() => handleMoveModule(idx, 'down')}
+                            className="text-zinc-500 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-500 p-1"
+                            title="Move Down"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                          </button>
+                        </div>
+
+                        <button 
+                          onClick={() => setAddingLessonToModule(addingLessonToModule === module.id ? null : module.id)}
+                          className="text-xs font-bold text-zinc-400 hover:text-white transition-colors"
+                        >
+                          + Add Video
+                        </button>
+                      </div>
                     </div>
 
                     <div className="p-4 space-y-3">
                       {module.lessons?.map((lesson: any, lIdx: number) => (
-                        <div key={lesson.id} className="bg-zinc-900/50 border border-white/5 p-4 rounded-lg hover:border-white/10 transition-colors">
+                        <div key={lesson.id} className="bg-zinc-900/50 border border-white/5 p-4 rounded-xl hover:border-white/10 transition-colors">
                           <div className="flex items-start gap-4">
-                            <div className="mt-1">
+                            <div className="mt-1 flex flex-col items-center gap-2">
                               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[#facc15]">
                                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
                               </svg>
+                              
+                              {/* Lesson Reordering Arrows */}
+                              <div className="flex flex-col gap-0.5">
+                                <button
+                                  disabled={lIdx === 0}
+                                  onClick={() => handleMoveLesson(idx, lIdx, 'up')}
+                                  className="text-zinc-600 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-600"
+                                  title="Move Up"
+                                >
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+                                </button>
+                                <button
+                                  disabled={lIdx === (module.lessons?.length || 1) - 1}
+                                  onClick={() => handleMoveLesson(idx, lIdx, 'down')}
+                                  className="text-zinc-600 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-600"
+                                  title="Move Down"
+                                >
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                                </button>
+                              </div>
                             </div>
                             <div className="flex-1 min-w-0">
-                              <h4 className="font-medium text-sm truncate">{lIdx + 1}. {lesson.title}</h4>
+                              <h4 className="font-semibold text-sm truncate text-white">{lIdx + 1}. {lesson.title}</h4>
                               <div className="text-xs text-zinc-500 mt-1 truncate">{lesson.video_file || "No video file"}</div>
                               {lesson.translated_audios && lesson.translated_audios.length > 0 && (
                                 <div className="flex gap-2 mt-2">
@@ -439,23 +769,31 @@ export default function CourseManager() {
                               )}
                             </div>
                             <div className="flex flex-col gap-2 items-end">
-                              <button 
-                                onClick={() => {
-                                  setEditingLessonId(lesson.id);
-                                  setEditLessonData({
-                                    title: lesson.title,
-                                    description: lesson.description || "",
-                                    transcript: lesson.transcript || "",
-                                    timed_transcript: lesson.timed_transcript || ""
-                                  });
-                                }}
-                                className="text-xs font-medium px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-md transition-colors"
-                              >
-                                Edit
-                              </button>
+                              <div className="flex gap-2">
+                                <button 
+                                  onClick={() => {
+                                    setEditingLessonId(lesson.id);
+                                    setEditLessonData({
+                                      title: lesson.title,
+                                      description: lesson.description || "",
+                                      transcript: lesson.transcript || "",
+                                      timed_transcript: lesson.timed_transcript || ""
+                                    });
+                                  }}
+                                  className="text-xs font-bold px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl transition-colors"
+                                >
+                                  Edit
+                                </button>
+                                <button 
+                                  onClick={() => handleDeleteLesson(lesson.id, lesson.title)}
+                                  className="text-xs font-bold px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl transition-colors"
+                                >
+                                  Delete
+                                </button>
+                              </div>
                               <button 
                                 onClick={() => handleGenerateAudio(lesson.id)}
-                                className="text-xs font-medium px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded-md transition-colors flex items-center gap-1"
+                                className="text-xs font-medium px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded-xl transition-colors flex items-center gap-1"
                                 title="Generates Hindi, Tamil, and Malayalam audio tracks from transcript"
                               >
                                 🪄 Generate AI Audio
@@ -473,34 +811,34 @@ export default function CourseManager() {
                                 onSubmit={(e) => handleEditLessonSubmit(e, lesson.id)}
                                 className="bg-black border border-white/10 rounded-xl p-5 mt-4 space-y-4 overflow-hidden"
                               >
-                                <h4 className="text-sm font-semibold text-[#facc15]">Edit Video Lesson</h4>
+                                <h4 className="text-sm font-bold text-[#facc15]">Edit Video Lesson</h4>
                                 
                                 <div>
-                                  <label className="block text-xs font-medium text-zinc-400 mb-1">Lesson Title *</label>
+                                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Lesson Title *</label>
                                   <input 
                                     type="text"
                                     required
                                     value={editLessonData.title}
                                     onChange={(e) => setEditLessonData({...editLessonData, title: e.target.value})}
-                                    className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15]"
+                                    className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
                                   />
                                 </div>
                                 
                                 <div>
-                                  <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
+                                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Description</label>
                                   <textarea 
                                     rows={2}
                                     value={editLessonData.description}
                                     onChange={(e) => setEditLessonData({...editLessonData, description: e.target.value})}
-                                    className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15] resize-none"
+                                    className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] resize-none"
                                   />
                                 </div>
 
-                                {/* ⏱ Timing for Speaking */}
+                                {/* Timing for Speaking */}
                                 <div className="bg-[#facc15]/5 border border-[#facc15]/20 rounded-xl p-4">
                                   <div className="flex items-center gap-2 mb-2">
                                     <span className="text-sm">⏱</span>
-                                    <label className="block text-xs font-semibold text-[#facc15]">Timing for Speaking (for Perfect AI Dubbing)</label>
+                                    <label className="block text-xs font-semibold text-[#facc15] uppercase tracking-wide">Timing for Speaking (for Perfect AI Dubbing)</label>
                                   </div>
                                   <p className="text-[10px] text-zinc-500 mb-3 leading-relaxed">
                                     One line per spoken sentence. Format: <code className="bg-zinc-800 px-1 rounded text-zinc-300">MM:SS --&gt; Text spoken at that time</code><br/>
@@ -513,7 +851,7 @@ export default function CourseManager() {
                                     placeholder={"00:05 --> Hello and welcome\n00:12 --> Today we learn music\n00:20 --> Let us start with the notes"}
                                     value={editLessonData.timed_transcript}
                                     onChange={(e) => setEditLessonData({...editLessonData, timed_transcript: e.target.value})}
-                                    className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-lg text-white text-xs font-mono focus:outline-none focus:border-[#facc15] resize-vertical"
+                                    className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-xl text-white text-xs font-mono focus:outline-none focus:border-[#facc15] resize-vertical"
                                   />
                                   <p className="text-[10px] text-zinc-600 mt-2">💡 Leave blank to let Whisper AI auto-detect timings (less accurate). Fill this in for perfect sync.</p>
                                 </div>
@@ -529,7 +867,7 @@ export default function CourseManager() {
                                   <button 
                                     type="submit"
                                     disabled={editLessonLoading}
-                                    className="px-5 py-2 text-sm bg-[#facc15] text-black font-semibold rounded-lg hover:bg-[#eab308] transition-colors disabled:opacity-50"
+                                    className="px-5 py-2 text-sm bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-colors disabled:opacity-50"
                                   >
                                     Save Changes
                                   </button>
@@ -556,34 +894,34 @@ export default function CourseManager() {
                             onSubmit={(e) => handleAddLesson(e, module.id)}
                             className="bg-black border border-white/10 rounded-xl p-5 mt-4 space-y-4 overflow-hidden"
                           >
-                            <h4 className="text-sm font-semibold text-[#facc15]">New Video Lesson</h4>
+                            <h4 className="text-sm font-bold text-[#facc15]">New Video Lesson</h4>
                             
                             <div>
-                              <label className="block text-xs font-medium text-zinc-400 mb-1">Lesson Title *</label>
+                              <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Lesson Title *</label>
                               <input 
                                 type="text"
                                 required
                                 value={lessonData.title}
                                 onChange={(e) => setLessonData({...lessonData, title: e.target.value})}
-                                className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15]"
+                                className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
                               />
                             </div>
                             
                             <div>
-                              <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
+                              <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Description</label>
                               <textarea 
                                 rows={2}
                                 value={lessonData.description}
                                 onChange={(e) => setLessonData({...lessonData, description: e.target.value})}
-                                className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15] resize-none"
+                                className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] resize-none"
                               />
                             </div>
 
-                            {/* ⏱ Timing for Speaking */}
+                            {/* Timing for Speaking */}
                             <div className="bg-[#facc15]/5 border border-[#facc15]/20 rounded-xl p-4">
                               <div className="flex items-center gap-2 mb-2">
                                 <span className="text-sm">⏱</span>
-                                <label className="block text-xs font-semibold text-[#facc15]">Timing for Speaking (for Perfect AI Dubbing)</label>
+                                <label className="block text-xs font-semibold text-[#facc15] uppercase tracking-wide">Timing for Speaking (for Perfect AI Dubbing)</label>
                               </div>
                               <p className="text-[10px] text-zinc-500 mb-3 leading-relaxed">
                                 One line per spoken sentence. Format: <code className="bg-zinc-800 px-1 rounded text-zinc-300">MM:SS --&gt; Text spoken at that time</code><br/>
@@ -596,22 +934,21 @@ export default function CourseManager() {
                                 placeholder={"00:05 --> Hello and welcome\n00:12 --> Today we learn music\n00:20 --> Let us start with the notes"}
                                 value={lessonData.timed_transcript}
                                 onChange={(e) => setLessonData({...lessonData, timed_transcript: e.target.value})}
-                                className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-lg text-white text-xs font-mono focus:outline-none focus:border-[#facc15] resize-vertical"
+                                className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-xl text-white text-xs font-mono focus:outline-none focus:border-[#facc15] resize-vertical"
                               />
                               <p className="text-[10px] text-zinc-600 mt-2">💡 Leave blank to let Whisper AI auto-detect timings (less accurate). Fill this in for perfect sync.</p>
                             </div>
 
                             <div>
-                              <label className="block text-xs font-medium text-zinc-400 mb-1">Upload Original Video (MP4) *</label>
+                              <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Upload Original Video (MP4) *</label>
                               <input 
                                 type="file"
                                 accept="video/mp4,video/x-m4v,video/*"
                                 required
                                 onChange={(e) => setLessonData({...lessonData, video_file: e.target.files?.[0] || null})}
-                                className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#facc15] file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[#facc15] file:text-black hover:file:bg-[#eab308]"
+                                className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-sm text-zinc-400 focus:outline-none focus:border-[#facc15] file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-[#facc15] file:text-black hover:file:bg-yellow-500 cursor-pointer"
                               />
                             </div>
-
 
                             <div className="flex justify-end gap-3 pt-4 border-t border-white/10 mt-4">
                               <button 
@@ -624,7 +961,7 @@ export default function CourseManager() {
                               <button 
                                 type="submit"
                                 disabled={lessonLoading}
-                                className="px-5 py-2 text-sm bg-[#facc15] text-black font-semibold rounded-lg hover:bg-[#eab308] transition-colors disabled:opacity-50"
+                                className="px-5 py-2 text-sm bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-colors disabled:opacity-50"
                               >
                                 Save Lesson
                               </button>

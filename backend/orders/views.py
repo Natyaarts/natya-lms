@@ -115,3 +115,52 @@ class VerifyPaymentView(APIView):
             return Response({"error": "Order not found"}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
+from users.permissions import IsSuperAdmin
+from .serializers import AdminPurchaseSerializer
+
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+class AdminPurchaseViewSet(viewsets.ModelViewSet):
+    queryset = Purchase.objects.all().select_related('user', 'course').order_by('-created_at')
+    serializer_class = AdminPurchaseSerializer
+    permission_classes = [IsSuperAdmin]
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        queryset = Purchase.objects.all().select_related('user', 'course').order_by('-created_at')
+        status_param = self.request.query_params.get('status')
+        search_param = self.request.query_params.get('search')
+        
+        if status_param:
+            queryset = queryset.filter(status=status_param)
+        if search_param:
+            from django.db.models import Q
+            queryset = queryset.filter(
+                Q(user__username__icontains=search_param) |
+                Q(user__first_name__icontains=search_param) |
+                Q(user__last_name__icontains=search_param) |
+                Q(user__email__icontains=search_param) |
+                Q(course__title__icontains=search_param) |
+                Q(razorpay_order_id__icontains=search_param) |
+                Q(razorpay_payment_id__icontains=search_param)
+            )
+        return queryset
+
+    @action(detail=True, methods=['post'])
+    def mark_paid(self, request, pk=None):
+        purchase = self.get_object()
+        purchase.status = 'SUCCESS'
+        purchase.save()
+        
+        # Triggers standard enrollment behavior:
+        from courses.models import Enrollment
+        Enrollment.objects.get_or_create(user=purchase.user, course=purchase.course)
+        
+        return Response({"message": "Successfully marked as paid and course enrolled!"})

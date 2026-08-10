@@ -1,9 +1,10 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import SendOTPView, VerifyOTPView, AdminUserViewSet, AdminStatsView, CurrentUserView, OnboardingFieldsView, SaveProfileView, MobileGoogleLoginView
+from .views import SendOTPView, VerifyOTPView, AdminUserViewSet, AdminStatsView, CurrentUserView, OnboardingFieldsView, SaveProfileView, MobileGoogleLoginView, OnboardingFieldViewSet
 
 router = DefaultRouter()
 router.register(r'admin-users', AdminUserViewSet, basename='admin-user')
+router.register(r'onboarding-fields-admin', OnboardingFieldViewSet, basename='onboarding-fields-admin')
 
 urlpatterns = [
     path('send-otp/', SendOTPView.as_view(), name='send-otp'),

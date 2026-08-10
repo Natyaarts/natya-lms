@@ -12,11 +12,33 @@ class CustomUserDetailsSerializer(UserDetailsSerializer):
 
 class AdminUserSerializer(serializers.ModelSerializer):
     courses_count = serializers.SerializerMethodField()
+    password = serializers.CharField(write_only=True, required=False)
     
     class Meta:
         model = User
-        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'is_superuser', 'is_teacher', 'is_student', 'is_active', 'date_joined', 'parent_name', 'parent_phone', 'courses_count')
+        fields = ('id', 'username', 'email', 'phone_number', 'first_name', 'last_name', 'is_superuser', 'is_teacher', 'is_student', 'is_active', 'date_joined', 'parent_name', 'parent_phone', 'courses_count', 'password')
         read_only_fields = ('id', 'date_joined', 'courses_count')
+        
+    def validate_phone_number(self, value):
+        if value and not value.startswith('+'):
+            raise serializers.ValidationError("Phone number must include country code prefix (e.g., +91).")
+        return value
+        
+    def create(self, validated_data):
+        password = validated_data.pop('password', None)
+        user = super().create(validated_data)
+        if password:
+            user.set_password(password)
+            user.save()
+        return user
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop('password', None)
+        user = super().update(instance, validated_data)
+        if password:
+            user.set_password(password)
+            user.save()
+        return user
         
     def get_courses_count(self, obj):
         from courses.models import Course
@@ -25,3 +47,10 @@ class AdminUserSerializer(serializers.ModelSerializer):
             Q(purchases__user=obj, purchases__status='SUCCESS') | 
             Q(enrollments__user=obj)
         ).distinct().count()
+
+from .models import OnboardingField
+
+class OnboardingFieldSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OnboardingField
+        fields = '__all__'

@@ -149,18 +149,29 @@ class AdminUserViewSet(viewsets.ModelViewSet):
     def courses(self, request, pk=None):
         user = self.get_object()
         from orders.models import Purchase
-        # A user's assigned courses can be fetched from their purchases
-        purchases = Purchase.objects.filter(user=user).select_related('course')
+        from courses.models import Enrollment
+        
+        purchases = Purchase.objects.filter(user=user, status='SUCCESS').select_related('course')
+        enrollments = Enrollment.objects.filter(user=user).select_related('course')
+        
         data = []
         for p in purchases:
             data.append({
-                "id": p.id,
+                "id": f"p_{p.id}",
                 "course_id": p.course.id,
                 "title": p.course.title,
                 "thumbnail": request.build_absolute_uri(p.course.thumbnail.url) if p.course.thumbnail else None,
                 "assigned_at": p.created_at
             })
-        # Deduplicate courses if they bought it multiple times
+        for e in enrollments:
+            data.append({
+                "id": f"e_{e.id}",
+                "course_id": e.course.id,
+                "title": e.course.title,
+                "thumbnail": request.build_absolute_uri(e.course.thumbnail.url) if e.course.thumbnail else None,
+                "assigned_at": e.enrolled_at
+            })
+            
         unique_courses = { c['course_id']: c for c in data }.values()
         return Response(list(unique_courses))
 
@@ -236,15 +247,55 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         if not course_id:
             return Response({"error": "course_id is required"}, status=status.HTTP_400_BAD_REQUEST)
             
-        from orders.models import Purchase
+        from courses.models import Enrollment
         
-        # Delete all purchase records for this course for this user
-        deleted, _ = Purchase.objects.filter(user=user, course_id=course_id).delete()
+        # Delete only enrollment records (keep purchase log intact)
+        deleted_enrollments, _ = Enrollment.objects.filter(user=user, course_id=course_id).delete()
         
-        if deleted:
+        if deleted_enrollments:
             return Response({"message": "Successfully unassigned the course."})
         else:
             return Response({"error": "The user is not assigned to this course."}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=['post'])
+    def enroll_course(self, request, pk=None):
+        user = self.get_object()
+        course_id = request.data.get('course_id')
+        
+        if not course_id:
+            return Response({"error": "course_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+            
+        from courses.models import Course, Enrollment
+        course = get_object_or_404(Course, id=course_id)
+        
+        Enrollment.objects.get_or_create(user=user, course=course)
+        return Response({"message": f"Successfully enrolled {user.username} in {course.title}."})
+
+    @action(detail=True, methods=['get'])
+    def teacher_students(self, request, pk=None):
+        teacher = self.get_object()
+        if not teacher.is_teacher:
+            return Response({"error": "User is not a teacher"}, status=status.HTTP_400_BAD_REQUEST)
+            
+        from courses.models import Course
+        from django.db.models import Q
+        
+        # Get courses assigned to this teacher
+        teacher_courses = Course.objects.filter(
+            Q(enrollments__user=teacher)
+        ).distinct()
+        
+        # Get students enrolled in these courses
+        students = User.objects.filter(
+            is_student=True,
+            is_teacher=False,
+            is_superuser=False
+        ).filter(
+            Q(enrollments__course__in=teacher_courses)
+        ).distinct().order_by('-date_joined')
+        
+        serializer = self.get_serializer(students, many=True)
+        return Response(serializer.data)
 
 from django.db.models import Sum
 from courses.models import Course
@@ -254,14 +305,138 @@ class AdminStatsView(APIView):
     permission_classes = [IsSuperAdmin]
 
     def get(self, request):
+        from django.utils import timezone
+        import datetime
+        from django.db.models import Sum, Count, OuterRef, Exists
+        from django.db.models.functions import TruncMonth
+        from courses.models import Course, Enrollment
+        from orders.models import Purchase
+
+        now = timezone.now()
+        start_of_week = now - datetime.timedelta(days=7)
+        start_of_month = now - datetime.timedelta(days=30)
+
+        # Users
         total_students = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False).count()
+        new_students_week = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False, date_joined__gte=start_of_week).count()
+        new_students_month = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False, date_joined__gte=start_of_month).count()
+        active_students = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False, is_active=True).count()
+        inactive_students = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False, is_active=False).count()
+        total_teachers = User.objects.filter(is_teacher=True, is_superuser=False).count()
+
+        # Courses
+        total_courses = Course.objects.count()
         active_courses = Course.objects.filter(is_published=True).count()
-        revenue = Purchase.objects.filter(status='SUCCESS').aggregate(total=Sum('amount'))['total'] or 0.00
+        draft_courses = Course.objects.filter(is_published=False).count()
         
+        top_courses_qs = Course.objects.annotate(enrollment_count=Count('enrollments')).order_by('-enrollment_count')[:5]
+        top_courses = []
+        for c in top_courses_qs:
+            top_courses.append({
+                "id": c.id,
+                "title": c.title,
+                "enrollments": c.enrollment_count
+            })
+
+        # Payments & Revenue
+        revenue = Purchase.objects.filter(status='SUCCESS').aggregate(total=Sum('amount'))['total'] or 0.00
+        current_month_revenue = Purchase.objects.filter(status='SUCCESS', created_at__gte=start_of_month).aggregate(total=Sum('amount'))['total'] or 0.00
+        
+        success_payments = Purchase.objects.filter(status='SUCCESS').count()
+        pending_payments = Purchase.objects.filter(status='PENDING').count()
+        failed_payments = Purchase.objects.filter(status='FAILED').count()
+
+        # Monthly breakdown
+        monthly_rev = Purchase.objects.filter(status='SUCCESS') \
+            .annotate(month=TruncMonth('created_at')) \
+            .values('month') \
+            .annotate(total=Sum('amount')) \
+            .order_by('month')
+        revenue_breakdown = []
+        for item in monthly_rev:
+            month_date = item['month']
+            month_str = month_date.strftime("%B %Y") if month_date else "Unknown"
+            revenue_breakdown.append({
+                "month": month_str,
+                "total": float(item['total'] or 0.00)
+            })
+
+        # Enrollments
+        total_enrollments = Enrollment.objects.count()
+        new_enrollments_month = Enrollment.objects.filter(enrolled_at__gte=start_of_month).count()
+        
+        purchases = Purchase.objects.filter(
+            user_id=OuterRef('user_id'),
+            course_id=OuterRef('course_id'),
+            status='SUCCESS'
+        )
+        paid_enrollments_count = Enrollment.objects.filter(Exists(purchases)).count()
+        manual_enrollments_count = Enrollment.objects.filter(~Exists(purchases)).count()
+
+        # Recent Activity
+        recent_reg_qs = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False).order_by('-date_joined')[:5]
+        recent_registrations = []
+        for u in recent_reg_qs:
+            name = f"{u.first_name} {u.last_name}".strip() or u.username
+            recent_registrations.append({
+                "username": u.username,
+                "name": name,
+                "email": u.email,
+                "date_joined": u.date_joined
+            })
+
+        recent_pay_qs = Purchase.objects.select_related('user', 'course').order_by('-created_at')[:5]
+        recent_payments = []
+        for p in recent_pay_qs:
+            name = f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username
+            recent_payments.append({
+                "id": p.id,
+                "student_name": name,
+                "course_title": p.course.title,
+                "amount": float(p.amount),
+                "status": p.status,
+                "created_at": p.created_at
+            })
+
+        recent_enroll_qs = Enrollment.objects.select_related('user', 'course').order_by('-enrolled_at')[:5]
+        recent_enrollments = []
+        for e in recent_enroll_qs:
+            name = f"{e.user.first_name} {e.user.last_name}".strip() or e.user.username
+            recent_enrollments.append({
+                "id": e.id,
+                "student_name": name,
+                "course_title": e.course.title,
+                "enrolled_at": e.enrolled_at
+            })
+
         return Response({
             "total_students": total_students,
-            "active_courses": active_courses,
-            "total_revenue": float(revenue)
+            "new_students_week": new_students_week,
+            "new_students_month": new_students_month,
+            "active_students": active_students,
+            "inactive_students": inactive_students,
+            "total_teachers": total_teachers,
+            
+            "total_courses": total_courses,
+            "active_courses": active_courses,  # Published courses
+            "draft_courses": draft_courses,
+            "top_courses": top_courses,
+            
+            "total_revenue": float(revenue),
+            "current_month_revenue": float(current_month_revenue),
+            "success_payments": success_payments,
+            "pending_payments": pending_payments,
+            "failed_payments": failed_payments,
+            "revenue_breakdown": revenue_breakdown,
+            
+            "total_enrollments": total_enrollments,
+            "new_enrollments_month": new_enrollments_month,
+            "paid_enrollments_count": paid_enrollments_count,
+            "manual_enrollments_count": manual_enrollments_count,
+            
+            "recent_registrations": recent_registrations,
+            "recent_payments": recent_payments,
+            "recent_enrollments": recent_enrollments
         })
 
 class CurrentUserView(APIView):
@@ -362,3 +537,11 @@ class MobileGoogleLoginView(APIView):
         except ValueError as e:
             # Invalid token
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+from .models import OnboardingField
+from .serializers import OnboardingFieldSerializer
+
+class OnboardingFieldViewSet(viewsets.ModelViewSet):
+    queryset = OnboardingField.objects.all().order_by('order')
+    serializer_class = OnboardingFieldSerializer
+    permission_classes = [IsSuperAdmin]
