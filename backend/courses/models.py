@@ -68,3 +68,31 @@ class TranslatedAudio(models.Model):
 
     def __str__(self):
         return f"{self.lesson.title} - {self.language_code}"
+
+
+class LessonProgress(models.Model):
+    user = models.ForeignKey(User, related_name='lesson_progress', on_delete=models.CASCADE)
+    lesson = models.ForeignKey(VideoLesson, related_name='progress_records', on_delete=models.CASCADE)
+
+    last_watched_position = models.FloatField(default=0.0, help_text="Latest playback position in seconds")
+    video_duration = models.FloatField(default=0.0, help_text="Total lesson video duration in seconds")
+    completed = models.BooleanField(default=False)
+
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'lesson'], name='unique_user_lesson_progress')
+        ]
+        verbose_name_plural = "Lesson Progress Records"
+        ordering = ['-updated_at']
+
+    @property
+    def progress_percentage(self):
+        if self.video_duration > 0:
+            return min(100.0, (self.last_watched_position / self.video_duration) * 100.0)
+        return 0.0
+
+    def __str__(self):
+        return f"{self.user.username} - {self.lesson.title} ({self.progress_percentage:.1f}%)"

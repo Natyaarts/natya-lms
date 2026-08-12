@@ -46,9 +46,15 @@ class VideoLessonAdmin(admin.ModelAdmin):
     inlines = [TranslatedAudioInline]
     actions = [generate_ai_audio]
 
-from .models import Enrollment
+from .models import Enrollment, LessonProgress
 @admin.register(Enrollment)
 class EnrollmentAdmin(admin.ModelAdmin):
     list_display = ('user', 'course', 'enrolled_at')
     list_filter = ('course',)
     search_fields = ('user__username', 'course__title')
+
+@admin.register(LessonProgress)
+class LessonProgressAdmin(admin.ModelAdmin):
+    list_display = ('user', 'lesson', 'last_watched_position', 'video_duration', 'completed', 'updated_at')
+    list_filter = ('completed', 'lesson__module__course')
+    search_fields = ('user__username', 'user__first_name', 'user__last_name', 'lesson__title')
