@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     'courses',
     'orders',
     'cms',
+    'notifications',
     
     # Auth
     'rest_framework.authtoken',
