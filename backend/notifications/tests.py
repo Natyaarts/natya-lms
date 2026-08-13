@@ -7,7 +7,9 @@ from rest_framework import status
 from datetime import timedelta
 from courses.models import Course, Enrollment, Module, VideoLesson, LessonProgress
 from orders.models import Purchase
-from .models import Notification, Announcement
+from django.db import IntegrityError
+from .models import Notification, Announcement, NotificationType
+from .services import NotificationService
 
 User = get_user_model()
 
@@ -411,3 +413,151 @@ class NotificationAPITests(APITestCase):
         self.assertEqual(progress.lesson, lesson)
         self.assertEqual(purchase.status, "SUCCESS")
         self.assertEqual(self.enrollment.course, self.enrolled_course)
+
+
+class NotificationServiceTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="student_service", password="password123")
+        self.user2 = User.objects.create_user(username="other_student_service", password="password123")
+
+    def test_notification_created_via_service(self):
+        # 1. Notification can be created through the service.
+        notification, created = NotificationService.create_notification(
+            recipient=self.user,
+            title="Service Notification",
+            body="Created via NotificationService",
+            notification_type=NotificationType.ANNOUNCEMENT
+        )
+        self.assertTrue(created)
+        self.assertEqual(notification.title, "Service Notification")
+        self.assertEqual(notification.body, "Created via NotificationService")
+        self.assertEqual(notification.recipient, self.user)
+
+    def test_notification_with_idempotency_key(self):
+        # 2. Notification with an idempotency key is created successfully.
+        key = "idemp_key_1"
+        notification, created = NotificationService.create_notification(
+            recipient=self.user,
+            title="Idemp Notification",
+            body="Body text",
+            notification_type=NotificationType.PAYMENT,
+            idempotency_key=key
+        )
+        self.assertTrue(created)
+        self.assertEqual(notification.idempotency_key, key)
+
+    def test_duplicate_idempotency_key_does_not_create_duplicate(self):
+        # 3. Calling the service twice with the SAME idempotency key does not create a duplicate.
+        key = "duplicate_key"
+        notif1, created1 = NotificationService.create_notification(
+            recipient=self.user,
+            title="Title 1",
+            body="Body 1",
+            notification_type=NotificationType.ANNOUNCEMENT,
+            idempotency_key=key
+        )
+        notif2, created2 = NotificationService.create_notification(
+            recipient=self.user,
+            title="Title 2",
+            body="Body 2",
+            notification_type=NotificationType.PAYMENT,
+            idempotency_key=key
+        )
+        self.assertTrue(created1)
+        self.assertFalse(created2)
+        self.assertEqual(notif1, notif2)
+        self.assertEqual(notif2.title, "Title 1")
+        self.assertEqual(Notification.objects.filter(idempotency_key=key).count(), 1)
+
+    def test_same_recipient_different_idempotency_keys(self):
+        # 4. The same recipient can receive different notifications with different idempotency keys.
+        notif1, created1 = NotificationService.create_notification(
+            recipient=self.user,
+            title="Title A",
+            body="Body A",
+            notification_type=NotificationType.ENROLLMENT,
+            idempotency_key="key_a"
+        )
+        notif2, created2 = NotificationService.create_notification(
+            recipient=self.user,
+            title="Title B",
+            body="Body B",
+            notification_type=NotificationType.COURSE_UPDATE,
+            idempotency_key="key_b"
+        )
+        self.assertTrue(created1)
+        self.assertTrue(created2)
+        self.assertNotEqual(notif1, notif2)
+
+    def test_different_recipients_different_idempotency_keys(self):
+        # 5. Different recipients can use different idempotency keys safely.
+        notif1, created1 = NotificationService.create_notification(
+            recipient=self.user,
+            title="Title",
+            body="Body",
+            notification_type=NotificationType.ENROLLMENT,
+            idempotency_key="key_a"
+        )
+        notif2, created2 = NotificationService.create_notification(
+            recipient=self.user2,
+            title="Title",
+            body="Body",
+            notification_type=NotificationType.ENROLLMENT,
+            idempotency_key="key_b"
+        )
+        self.assertTrue(created1)
+        self.assertTrue(created2)
+        self.assertNotEqual(notif1, notif2)
+
+    def test_existing_notifications_with_null_idempotency_key_valid(self):
+        # 6. Existing notifications with NULL idempotency_key remain valid.
+        notif1 = Notification.objects.create(
+            recipient=self.user,
+            title="Null Key 1",
+            body="Body",
+            notification_type=NotificationType.ANNOUNCEMENT,
+            idempotency_key=None
+        )
+        notif2 = Notification.objects.create(
+            recipient=self.user,
+            title="Null Key 2",
+            body="Body",
+            notification_type=NotificationType.ANNOUNCEMENT,
+            idempotency_key=None
+        )
+        self.assertIsNone(notif1.idempotency_key)
+        self.assertIsNone(notif2.idempotency_key)
+
+    def test_simulated_concurrent_integrity_error(self):
+        # 8. Concurrent duplicate creation is handled safely.
+        key = "concurrency_key"
+        existing_notif = Notification.objects.create(
+            recipient=self.user,
+            title="Existing",
+            body="Body",
+            notification_type=NotificationType.ANNOUNCEMENT,
+            idempotency_key=key
+        )
+
+        from unittest.mock import patch
+        with patch('django.db.models.query.QuerySet.create', side_effect=IntegrityError("Mocked constraint violation")):
+            notif, created = NotificationService.create_notification(
+                recipient=self.user,
+                title="Concurrent Attempt",
+                body="Body",
+                notification_type=NotificationType.ANNOUNCEMENT,
+                idempotency_key=key
+            )
+
+            self.assertFalse(created)
+            self.assertEqual(notif, existing_notif)
+
+    def test_unexpected_database_errors_not_swallowed(self):
+        # 9. The service does not swallow unexpected database errors.
+        with self.assertRaises(IntegrityError):
+            NotificationService.create_notification(
+                recipient=None,
+                title="Invalid",
+                body="Invalid body",
+                notification_type=NotificationType.ANNOUNCEMENT
+            )
