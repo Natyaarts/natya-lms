@@ -35,6 +35,129 @@ export default function CourseLearnPage() {
   
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Lesson Progress State and Refs
+  const [savedProgressPosition, setSavedProgressPosition] = useState<number>(0);
+  const lastSavedTime = useRef<number>(0);
+  const activeLessonIdRef = useRef<number | null>(null);
+
+  const getCsrfToken = () => {
+    let csrfToken = "";
+    if (typeof document !== 'undefined' && document.cookie) {
+      const cookies = document.cookie.split(';');
+      for (let i = 0; i < cookies.length; i++) {
+        const cookie = cookies[i].trim();
+        if (cookie.startsWith('csrftoken=')) {
+          csrfToken = decodeURIComponent(cookie.substring('csrftoken='.length));
+          break;
+        }
+      }
+    }
+    return csrfToken;
+  };
+
+  const saveProgress = async (lessonId: number, position: number, duration: number, completed: boolean) => {
+    if (!lessonId) return;
+
+    let finalPosition = position;
+    if (duration > 0 && finalPosition > duration) {
+      finalPosition = duration;
+    }
+    if (finalPosition < 0) {
+      finalPosition = 0;
+    }
+
+    try {
+      const csrfToken = getCsrfToken();
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (csrfToken) {
+        headers["X-CSRFToken"] = csrfToken;
+      }
+
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lessonId}/progress/`, {
+        method: "POST",
+        headers: headers,
+        body: JSON.stringify({
+          last_watched_position: finalPosition,
+          video_duration: duration,
+          completed: completed
+        }),
+        credentials: "include"
+      });
+
+      if (res.ok) {
+        // Update lastSavedTime only after a successful save
+        lastSavedTime.current = finalPosition;
+      }
+    } catch (err) {
+      console.error("Failed to save progress:", err);
+    }
+  };
+
+  // Fetch progress for active lesson
+  useEffect(() => {
+    if (!activeLesson?.id) return;
+
+    const lessonId = activeLesson.id;
+    activeLessonIdRef.current = lessonId;
+
+    // Reset temporary states
+    setSavedProgressPosition(0);
+    lastSavedTime.current = 0;
+
+    const fetchProgress = async () => {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lessonId}/progress/`, {
+          credentials: "include"
+        });
+        if (res.ok) {
+          const data = await res.json();
+          // Protect against race conditions
+          if (activeLessonIdRef.current === lessonId) {
+            const position = data.last_watched_position || 0;
+            setSavedProgressPosition(position);
+            lastSavedTime.current = position;
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load progress:", err);
+      }
+    };
+
+    fetchProgress();
+  }, [activeLesson?.id]);
+
+  // Cleanup: save progress of previous lesson when switching or unmounting
+  useEffect(() => {
+    const lessonId = activeLesson?.id;
+
+    return () => {
+      if (lessonId && videoRef.current) {
+        const current = videoRef.current.currentTime;
+        const duration = videoRef.current.duration;
+        if (duration > 0 && current > 0) {
+          saveProgress(lessonId, current, duration, false);
+        }
+      }
+    };
+  }, [activeLesson?.id]);
+
+  // Double protection: seek if progress arrives after metadata has loaded
+  useEffect(() => {
+    if (savedProgressPosition > 0 && videoRef.current) {
+      const duration = videoRef.current.duration;
+      if (duration && duration > 0 && savedProgressPosition < duration) {
+        if (Math.abs(videoRef.current.currentTime - savedProgressPosition) > 1) {
+          videoRef.current.currentTime = savedProgressPosition;
+          if (activeLanguage !== 'en' && audioRef.current) {
+            audioRef.current.currentTime = savedProgressPosition;
+          }
+        }
+      }
+    }
+  }, [savedProgressPosition, activeLanguage]);
+
   useEffect(() => {
     const fetchCourse = async () => {
       try {
@@ -88,6 +211,15 @@ export default function CourseLearnPage() {
     if (audioRef.current) {
       audioRef.current.pause();
     }
+
+    // Save progress immediately on pause
+    if (activeLesson?.id && videoRef.current) {
+      const current = videoRef.current.currentTime;
+      const duration = videoRef.current.duration;
+      if (duration > 0) {
+        saveProgress(activeLesson.id, current, duration, false);
+      }
+    }
   };
 
   const handleSeek = () => {
@@ -104,14 +236,42 @@ export default function CourseLearnPage() {
         setProgress((current / duration) * 100);
       }
       setCurrentTimeStr(formatTime(current));
+
+      // Periodic save: Save progress approximately every 10 seconds.
+      const lessonId = activeLesson?.id;
+      if (lessonId && duration > 0) {
+        const timeDiff = Math.abs(current - lastSavedTime.current);
+        if (timeDiff >= 10) {
+          saveProgress(lessonId, current, duration, false);
+        }
+      }
     }
   };
 
   const handleLoadedMetadata = () => {
     if (videoRef.current) {
-      setDurationStr(formatTime(videoRef.current.duration));
+      const duration = videoRef.current.duration;
+      setDurationStr(formatTime(duration));
+
+      // Seek to saved position on loaded metadata
+      if (savedProgressPosition > 0 && savedProgressPosition < duration) {
+        videoRef.current.currentTime = savedProgressPosition;
+        if (activeLanguage !== 'en' && audioRef.current) {
+          audioRef.current.currentTime = savedProgressPosition;
+        }
+      }
     }
   };
+
+  const handleEnded = () => {
+    if (activeLesson?.id && videoRef.current) {
+      const duration = videoRef.current.duration;
+      if (duration > 0) {
+        saveProgress(activeLesson.id, duration, duration, true);
+      }
+    }
+  };
+
 
   const formatTime = (timeInSeconds: number) => {
     const m = Math.floor(timeInSeconds / 60);
@@ -289,6 +449,7 @@ export default function CourseLearnPage() {
                 onSeeked={handleSeek}
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
+                onEnded={handleEnded}
                 onClick={togglePlay}
                 autoPlay
               />

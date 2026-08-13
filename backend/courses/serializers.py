@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Course, Module, VideoLesson, TranslatedAudio
+from .models import Course, Module, VideoLesson, TranslatedAudio, LessonProgress
 
 class TranslatedAudioSerializer(serializers.ModelSerializer):
     class Meta:
@@ -59,3 +59,21 @@ class AdminEnrollmentSerializer(serializers.ModelSerializer):
         if Purchase.objects.filter(user=obj.user, course=obj.course, status='SUCCESS').exists():
             return 'Paid'
         return 'Manual / Free'
+
+
+class LessonProgressSerializer(serializers.ModelSerializer):
+    progress_percentage = serializers.ReadOnlyField()
+
+    class Meta:
+        model = LessonProgress
+        fields = [
+            'id',
+            'lesson',
+            'last_watched_position',
+            'video_duration',
+            'progress_percentage',
+            'completed',
+            'updated_at',
+            'completed_at'
+        ]
+        read_only_fields = ['id', 'lesson', 'progress_percentage', 'updated_at', 'completed_at']
