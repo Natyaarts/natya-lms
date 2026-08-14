@@ -86,6 +86,7 @@ class VerifyPaymentView(APIView):
             
         try:
             purchase = Purchase.objects.get(razorpay_order_id=razorpay_order_id, user=request.user)
+            previous_status = purchase.status
             
             # Verify Signature
             params_dict = {
@@ -100,7 +101,10 @@ class VerifyPaymentView(APIView):
             purchase.razorpay_signature = razorpay_signature
             purchase.status = 'SUCCESS'
             purchase.save()
-            
+
+            from notifications.services import NotificationService
+            NotificationService.trigger_payment_success(purchase, previous_status)
+
             # Create Enrollment
             Enrollment.objects.get_or_create(user=request.user, course=purchase.course)
             
@@ -156,9 +160,13 @@ class AdminPurchaseViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def mark_paid(self, request, pk=None):
         purchase = self.get_object()
+        previous_status = purchase.status
         purchase.status = 'SUCCESS'
         purchase.save()
         
+        from notifications.services import NotificationService
+        NotificationService.trigger_payment_success(purchase, previous_status)
+
         # Triggers standard enrollment behavior:
         from courses.models import Enrollment
         Enrollment.objects.get_or_create(user=purchase.user, course=purchase.course)

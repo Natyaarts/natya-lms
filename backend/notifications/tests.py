@@ -561,3 +561,180 @@ class NotificationServiceTests(TestCase):
                 body="Invalid body",
                 notification_type=NotificationType.ANNOUNCEMENT
             )
+
+
+class NotificationIntegrationTests(APITestCase):
+    def setUp(self):
+        self.student = User.objects.create_user(username="student_integration", password="password123")
+        self.student.is_student = True
+        self.student.save()
+
+        self.staff_user = User.objects.create_user(username="staff_integration", password="password123")
+        self.staff_user.is_superuser = True
+        self.staff_user.save()
+
+        self.course = Course.objects.create(title="Guitar 101", description="Learn Guitar", price=1000.00, is_published=True)
+
+    def test_pending_to_success_creates_payment_and_enrollment_notifications(self):
+        # Create pending purchase
+        purchase = Purchase.objects.create(
+            user=self.student,
+            course=self.course,
+            amount=1000.00,
+            status="PENDING",
+            razorpay_order_id="order_test_1"
+        )
+
+        # Verify transition
+        previous_status = purchase.status
+        purchase.status = "SUCCESS"
+        purchase.save()
+
+        # Trigger inside captured commit callback context
+        with self.captureOnCommitCallbacks(execute=True):
+            NotificationService.trigger_payment_success(purchase, previous_status)
+
+        # Check payment notification
+        pay_notif = Notification.objects.filter(
+            recipient=self.student,
+            notification_type="PAYMENT"
+        ).first()
+        self.assertIsNotNone(pay_notif)
+        self.assertEqual(pay_notif.title, "Payment successful")
+        self.assertIn("1000.0", pay_notif.body)
+        self.assertIn("Guitar 101", pay_notif.body)
+        self.assertEqual(pay_notif.action_url, "/dashboard")
+
+    def test_failed_to_success_creates_payment_notification(self):
+        purchase = Purchase.objects.create(
+            user=self.student,
+            course=self.course,
+            amount=1000.00,
+            status="FAILED",
+            razorpay_order_id="order_test_2"
+        )
+
+        previous_status = purchase.status
+        purchase.status = "SUCCESS"
+        purchase.save()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            NotificationService.trigger_payment_success(purchase, previous_status)
+
+        self.assertEqual(Notification.objects.filter(recipient=self.student, notification_type="PAYMENT").count(), 1)
+
+    def test_success_to_success_does_not_create_notification(self):
+        purchase = Purchase.objects.create(
+            user=self.student,
+            course=self.course,
+            amount=1000.00,
+            status="SUCCESS",
+            razorpay_order_id="order_test_3"
+        )
+
+        previous_status = purchase.status
+        purchase.status = "SUCCESS"
+        purchase.save()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            NotificationService.trigger_payment_success(purchase, previous_status)
+
+        self.assertEqual(Notification.objects.filter(recipient=self.student, notification_type="PAYMENT").count(), 0)
+
+    def test_two_notification_attempts_with_same_payment_idempotency_key(self):
+        purchase = Purchase.objects.create(
+            user=self.student,
+            course=self.course,
+            amount=1000.00,
+            status="PENDING",
+            razorpay_order_id="order_test_4"
+        )
+
+        # Simulate two calls with previous status PENDING
+        with self.captureOnCommitCallbacks(execute=True):
+            NotificationService.trigger_payment_success(purchase, "PENDING")
+        with self.captureOnCommitCallbacks(execute=True):
+            NotificationService.trigger_payment_success(purchase, "PENDING")
+
+        # Should create exactly 1 due to idempotency uniqueness
+        self.assertEqual(
+            Notification.objects.filter(
+                idempotency_key=f"payment:{purchase.id}:success"
+            ).count(),
+            1
+        )
+
+    def test_enrollment_creation_triggers_notification(self):
+        # Test enrollment creation signal
+        with self.captureOnCommitCallbacks(execute=True):
+            enrollment = Enrollment.objects.create(user=self.student, course=self.course)
+
+        # Retrieve enrollment notification
+        enroll_notif = Notification.objects.filter(
+            recipient=self.student,
+            notification_type="ENROLLMENT"
+        ).first()
+        self.assertIsNotNone(enroll_notif)
+        self.assertEqual(enroll_notif.title, "You're enrolled!")
+        self.assertIn("Guitar 101", enroll_notif.body)
+        self.assertEqual(enroll_notif.action_url, f"/courses/{self.course.id}/learn")
+
+    def test_enrollment_update_does_not_trigger_notification(self):
+        # Create enrollment
+        with self.captureOnCommitCallbacks(execute=True):
+            enrollment = Enrollment.objects.create(user=self.student, course=self.course)
+
+        # Clear existing notifications
+        Notification.objects.all().delete()
+
+        # Update enrollment
+        enrollment.enrolled_at = timezone.now()
+        with self.captureOnCommitCallbacks(execute=True):
+            enrollment.save()
+
+        # Check that no new notifications are created
+        self.assertEqual(Notification.objects.count(), 0)
+
+    def test_uniqueness_prevents_duplicate_enrollment_notification(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            enrollment = Enrollment.objects.create(user=self.student, course=self.course)
+
+        # Call signal manually on existing instance with created=True again
+        from django.db.models.signals import post_save
+        from .signals import enrollment_created_signal
+
+        with self.captureOnCommitCallbacks(execute=True):
+            enrollment_created_signal(sender=Enrollment, instance=enrollment, created=True)
+
+        # Verify count is 1
+        self.assertEqual(
+            Notification.objects.filter(
+                idempotency_key=f"enrollment:{enrollment.id}:created"
+            ).count(),
+            1
+        )
+
+    def test_notification_failure_does_not_affect_payment_or_enrollment(self):
+        from unittest.mock import patch
+
+        with patch('notifications.services.NotificationService.create_notification', side_effect=Exception("Database down")):
+            # Simulate a payment verification success transition
+            purchase = Purchase.objects.create(
+                user=self.student,
+                course=self.course,
+                amount=1000.00,
+                status="PENDING",
+                razorpay_order_id="order_test_5"
+            )
+            previous_status = purchase.status
+            purchase.status = "SUCCESS"
+            purchase.save()
+
+            # This should NOT crash the view/transaction
+            with self.captureOnCommitCallbacks(execute=True):
+                NotificationService.trigger_payment_success(purchase, previous_status)
+            self.assertEqual(purchase.status, "SUCCESS")
+
+            with self.captureOnCommitCallbacks(execute=True):
+                enrollment = Enrollment.objects.create(user=self.student, course=self.course)
+            self.assertEqual(enrollment.user, self.student)

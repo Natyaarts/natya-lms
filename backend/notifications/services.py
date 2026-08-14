@@ -41,3 +41,31 @@ class NotificationService:
                 action_url=action_url
             )
             return notification, True
+
+    @staticmethod
+    def trigger_payment_success(purchase, previous_status):
+        """
+        Triggers payment success notification if the purchase status transitions to SUCCESS.
+        """
+        if previous_status != 'SUCCESS':
+            import logging
+            logger = logging.getLogger(__name__)
+
+            def send_notification():
+                try:
+                    NotificationService.create_notification(
+                        recipient=purchase.user,
+                        title="Payment successful",
+                        body=f"Your payment of ₹{purchase.amount} for {purchase.course.title} was completed successfully.",
+                        notification_type="PAYMENT",
+                        action_url="/dashboard",
+                        idempotency_key=f"payment:{purchase.id}:success"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to create payment success notification for purchase {purchase.id}: {str(e)}", exc_info=True)
+
+            connection = transaction.get_connection()
+            if connection.in_atomic_block:
+                transaction.on_commit(send_notification)
+            else:
+                send_notification()

@@ -233,8 +233,13 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         from orders.models import Purchase
         try:
             purchase = Purchase.objects.get(id=purchase_id, user=user)
+            previous_status = purchase.status
             purchase.status = 'SUCCESS'
             purchase.save()
+
+            from notifications.services import NotificationService
+            NotificationService.trigger_payment_success(purchase, previous_status)
+
             return Response({"message": "Successfully marked as paid!"})
         except Purchase.DoesNotExist:
             return Response({"error": "Purchase record not found"}, status=status.HTTP_404_NOT_FOUND)
