@@ -1,7 +1,13 @@
 from django.db import models
+from django.conf import settings
+from django.core.exceptions import ValidationError
 from users.models import User
 
 class Course(models.Model):
+    class CourseType(models.TextChoices):
+        LIVE = "LIVE", "Live"
+        RECORDED = "RECORDED", "Recorded"
+
     title = models.CharField(max_length=255)
     description = models.TextField()
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
@@ -9,6 +15,12 @@ class Course(models.Model):
     is_published = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    course_type = models.CharField(
+        max_length=20,
+        choices=CourseType.choices,
+        default=CourseType.RECORDED,
+        db_index=True
+    )
 
     def __str__(self):
         return self.title
@@ -96,3 +108,159 @@ class LessonProgress(models.Model):
 
     def __str__(self):
         return f"{self.user.username} - {self.lesson.title} ({self.progress_percentage:.1f}%)"
+
+
+class LiveClass(models.Model):
+    class MeetingProvider(models.TextChoices):
+        ZOOM = "ZOOM", "Zoom"
+        GOOGLE_MEET = "GOOGLE_MEET", "Google Meet"
+        TEAMS = "TEAMS", "Teams"
+        OTHER = "OTHER", "Other"
+
+    class ClassStatus(models.TextChoices):
+        SCHEDULED = "SCHEDULED", "Scheduled"
+        LIVE = "LIVE", "Live"
+        COMPLETED = "COMPLETED", "Completed"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    course = models.ForeignKey(
+        Course,
+        on_delete=models.CASCADE,
+        related_name="live_classes",
+        db_index=True
+    )
+    instructor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="conducted_live_classes",
+        db_index=True
+    )
+    batch = models.ForeignKey(
+        'LiveBatch',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="live_classes",
+        db_index=True
+    )
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    scheduled_start = models.DateTimeField(db_index=True)
+    duration_minutes = models.PositiveIntegerField()
+    meeting_provider = models.CharField(
+        max_length=20,
+        choices=MeetingProvider.choices,
+        default=MeetingProvider.OTHER
+    )
+    meeting_url = models.URLField(max_length=1000)
+    status = models.CharField(
+        max_length=20,
+        choices=ClassStatus.choices,
+        default=ClassStatus.SCHEDULED,
+        db_index=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["scheduled_start"]
+        verbose_name_plural = "Live Classes"
+
+    def clean(self):
+        super().clean()
+        if self.duration_minutes is not None and self.duration_minutes <= 0:
+            raise ValidationError({"duration_minutes": "Duration must be greater than 0."})
+        if self.batch:
+            if self.course and self.course != self.batch.course:
+                raise ValidationError({"course": "LiveClass course must match batch course."})
+            if self.instructor and self.instructor != self.batch.instructor:
+                raise ValidationError({"instructor": "LiveClass instructor must match batch instructor."})
+
+    def save(self, *args, **kwargs):
+        if self.batch:
+            self.course = self.batch.course
+            self.instructor = self.batch.instructor
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.title} - {self.course.title} ({self.scheduled_start})"
+
+
+class LiveBatch(models.Model):
+    class BatchType(models.TextChoices):
+        ONE_TO_ONE = "ONE_TO_ONE", "One-to-One"
+        GROUP = "GROUP", "Group"
+
+    course = models.ForeignKey(Course, related_name='live_batches', on_delete=models.CASCADE, db_index=True)
+    instructor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="conducted_live_batches",
+        db_index=True
+    )
+    batch_type = models.CharField(
+        max_length=20,
+        choices=BatchType.choices,
+        db_index=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name_plural = "Live Batches"
+
+    def clean(self):
+        super().clean()
+        if self.course and self.course.course_type != Course.CourseType.LIVE:
+            raise ValidationError("A LiveBatch can only be created for a Course with type LIVE.")
+        if self.instructor and not (self.instructor.is_superuser or self.instructor.is_staff or getattr(self.instructor, 'is_teacher', False)):
+            raise ValidationError("The instructor must be a teacher or administrator.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.get_batch_type_display()} Batch for {self.course.title} (Instructor: {self.instructor.username if self.instructor else 'None'})"
+
+
+class LiveBatchStudent(models.Model):
+    batch = models.ForeignKey(LiveBatch, related_name='students', on_delete=models.CASCADE, db_index=True)
+    student = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='live_batch_assignments', on_delete=models.CASCADE, db_index=True)
+    purchase = models.ForeignKey(
+        'orders.Purchase',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='live_batch_assignments',
+        db_index=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('batch', 'student')
+        ordering = ["-created_at"]
+        verbose_name_plural = "Live Batch Students"
+
+    def clean(self):
+        super().clean()
+        if self.batch and self.batch.batch_type == LiveBatch.BatchType.ONE_TO_ONE:
+            existing_assignments = LiveBatchStudent.objects.filter(batch=self.batch)
+            if self.pk:
+                existing_assignments = existing_assignments.exclude(pk=self.pk)
+            if existing_assignments.exists():
+                raise ValidationError("A ONE_TO_ONE batch can have at most one student.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.student.username} assigned to batch {self.batch.id}"

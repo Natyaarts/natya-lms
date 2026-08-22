@@ -268,3 +268,15 @@ INTERAKT_TEMPLATE_NAME = os.getenv('INTERAKT_TEMPLATE_NAME', 'login_otp_v1')
 # Razorpay Settings
 RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID', '')
 RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET', '')
+
+# Celery Configuration
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+
+# AI Translation Credentials
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
+GOOGLE_API_KEY = os.environ.get('GOOGLE_API_KEY', '')
