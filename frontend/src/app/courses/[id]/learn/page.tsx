@@ -564,7 +564,7 @@ export default function CourseLearnPage() {
                               </button>
 
                               {activeLesson.translated_audios?.filter((a:any) => a.status === 'completed').map((audio: any) => {
-                                const langMap:any = {'hi-IN': 'Hindi', 'ta-IN': 'Tamil', 'ml-IN': 'Malayalam', 'hi': 'Hindi', 'ta': 'Tamil', 'ml': 'Malayalam'};
+                                const langMap:any = {'hi-IN': 'Hindi', 'ta-IN': 'Tamil', 'ml-IN': 'Malayalam', 'hi': 'Hindi', 'ta': 'Tamil', 'ml': 'Malayalam', 'fr': 'French', 'de': 'German'};
                                 const langName = langMap[audio.language_code] || audio.language_code;
                                 const isActive = activeLanguage === audio.language_code.split('-')[0];
                                 

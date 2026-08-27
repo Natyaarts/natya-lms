@@ -9,6 +9,7 @@ class NotificationType(models.TextChoices):
     ANNOUNCEMENT = 'ANNOUNCEMENT', 'Announcement'
     COURSE_COMPLETION = 'COURSE_COMPLETION', 'Course Completion'
     CERTIFICATE = 'CERTIFICATE', 'Certificate'
+    LIVE_CLASS = 'LIVE_CLASS', 'Live Class'
 
 class Notification(models.Model):
     recipient = models.ForeignKey(

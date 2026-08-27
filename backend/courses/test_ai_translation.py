@@ -128,3 +128,72 @@ class AITranslationTests(TestCase):
         self.assertEqual(blocks[1]['text'], "Line 2")
         self.assertEqual(blocks[1]['start'], 5000)
         self.assertEqual(blocks[1]['end'], 10000)
+
+    def test_french_configuration_exists(self):
+        from courses.services.ai_translator import LANGUAGE_MAP
+        self.assertIn('fr', LANGUAGE_MAP)
+        self.assertEqual(LANGUAGE_MAP['fr']['translate'], 'fr')
+        self.assertEqual(LANGUAGE_MAP['fr']['tts'], 'fr-FR')
+
+    def test_german_configuration_exists(self):
+        from courses.services.ai_translator import LANGUAGE_MAP
+        self.assertIn('de', LANGUAGE_MAP)
+        self.assertEqual(LANGUAGE_MAP['de']['translate'], 'de')
+        self.assertEqual(LANGUAGE_MAP['de']['tts'], 'de-DE')
+
+    @patch('courses.tasks.generate_dubbed_audio_task.delay')
+    def test_french_request_accepted(self, mock_delay):
+        response = self.client.post(self.generate_url, {"target_languages": ["fr"]}, format='json')
+        self.assertEqual(response.status_code, 200)
+        mock_delay.assert_called_once_with(self.lesson.id, target_languages=["fr"])
+
+    @patch('courses.tasks.generate_dubbed_audio_task.delay')
+    def test_german_request_accepted(self, mock_delay):
+        response = self.client.post(self.generate_url, {"target_languages": ["de"]}, format='json')
+        self.assertEqual(response.status_code, 200)
+        mock_delay.assert_called_once_with(self.lesson.id, target_languages=["de"])
+
+    @patch('courses.tasks.generate_dubbed_audio_task.delay')
+    def test_both_languages_accepted(self, mock_delay):
+        response = self.client.post(self.generate_url, {"target_languages": ["fr", "de"]}, format='json')
+        self.assertEqual(response.status_code, 200)
+        mock_delay.assert_called_once_with(self.lesson.id, target_languages=["fr", "de"])
+
+    @patch('courses.tasks.generate_dubbed_audio_task.delay')
+    def test_default_behavior_when_no_body(self, mock_delay):
+        response = self.client.post(self.generate_url)
+        self.assertEqual(response.status_code, 200)
+        mock_delay.assert_called_once_with(self.lesson.id, target_languages=["hi", "ta", "ml"])
+
+    @patch('courses.tasks.generate_dubbed_audio_task.delay')
+    def test_unsupported_language_returns_400(self, mock_delay):
+        response = self.client.post(self.generate_url, {"target_languages": ["xx"]}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Unsupported language code", response.data['error'])
+        mock_delay.assert_not_called()
+
+    @patch('courses.tasks.generate_dubbed_audio_task.delay')
+    def test_mixed_valid_invalid_languages_returns_400(self, mock_delay):
+        response = self.client.post(self.generate_url, {"target_languages": ["fr", "xx"]}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Unsupported language code", response.data['error'])
+        mock_delay.assert_not_called()
+
+    @patch('courses.tasks.generate_dubbed_audio_task.delay')
+    def test_existing_languages_regression(self, mock_delay):
+        response = self.client.post(self.generate_url, {"target_languages": ["hi", "ta", "ml"]}, format='json')
+        self.assertEqual(response.status_code, 200)
+        mock_delay.assert_called_once_with(self.lesson.id, target_languages=["hi", "ta", "ml"])
+
+    @patch('courses.tasks.generate_dubbed_audio_task.delay')
+    def test_duplicate_processing_for_french_german(self, mock_delay):
+        TranslatedAudio.objects.create(lesson=self.lesson, language_code='fr', status='processing')
+        response = self.client.post(self.generate_url, {"target_languages": ["fr", "de"]}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("already in progress", response.data['error'])
+        mock_delay.assert_not_called()
+
+    @patch('courses.tasks.generate_dubbed_audio')
+    def test_celery_task_multiple_languages(self, mock_generate):
+        generate_dubbed_audio_task(self.lesson.id, target_languages=['fr', 'de'])
+        mock_generate.assert_called_once_with(self.lesson.id, target_languages=['fr', 'de'])

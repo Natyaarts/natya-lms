@@ -17,6 +17,8 @@ LANGUAGE_MAP = {
     'ta': {'translate': 'ta', 'tts': 'ta-IN', 'voice': 'ta-IN-Wavenet-A'},
     'ml': {'translate': 'ml', 'tts': 'ml-IN', 'voice': 'ml-IN-Wavenet-A'},
     'te': {'translate': 'te', 'tts': 'te-IN', 'voice': 'te-IN-Wavenet-A'},
+    'fr': {'translate': 'fr', 'tts': 'fr-FR', 'voice': 'fr-FR-Wavenet-A'},
+    'de': {'translate': 'de', 'tts': 'de-DE', 'voice': 'de-DE-Wavenet-A'},
 }
 
 def translate_text(text, target_lang):

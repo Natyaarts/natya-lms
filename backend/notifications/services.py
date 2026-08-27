@@ -69,3 +69,78 @@ class NotificationService:
                 transaction.on_commit(send_notification)
             else:
                 send_notification()
+
+class LiveClassNotificationService:
+    @staticmethod
+    def _get_assigned_students(live_class):
+        from courses.models import LiveBatchStudent
+        return [
+            lbs.student for lbs in LiveBatchStudent.objects.filter(
+                batch=live_class.batch,
+                student__is_active=True
+            ).select_related('student')
+        ]
+
+    @staticmethod
+    def notify_scheduled(live_class):
+        from .models import NotificationType
+        import logging
+        logger = logging.getLogger(__name__)
+
+        students = LiveClassNotificationService._get_assigned_students(live_class)
+        for student in students:
+            try:
+                NotificationService.create_notification(
+                    recipient=student,
+                    title=f"Live Class Scheduled: {live_class.title}",
+                    body=f"A new live class has been scheduled for {live_class.course.title} on {live_class.scheduled_start.strftime('%b %d, %Y %H:%M')}.",
+                    notification_type=NotificationType.LIVE_CLASS,
+                    action_url=f"/courses/{live_class.course.id}/live",
+                    idempotency_key=f"liveclass:{live_class.id}:scheduled:{student.id}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to create scheduled notification for student {student.id}, class {live_class.id}: {str(e)}", exc_info=True)
+
+    @staticmethod
+    def notify_rescheduled(live_class, old_scheduled_start):
+        from .models import NotificationType
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if live_class.scheduled_start == old_scheduled_start:
+            return
+
+        students = LiveClassNotificationService._get_assigned_students(live_class)
+        new_timestamp = int(live_class.scheduled_start.timestamp())
+        for student in students:
+            try:
+                NotificationService.create_notification(
+                    recipient=student,
+                    title=f"Live Class Rescheduled: {live_class.title}",
+                    body=f"The live class for {live_class.course.title} has been rescheduled from {old_scheduled_start.strftime('%b %d, %Y %H:%M')} to {live_class.scheduled_start.strftime('%b %d, %Y %H:%M')}.",
+                    notification_type=NotificationType.LIVE_CLASS,
+                    action_url=f"/courses/{live_class.course.id}/live",
+                    idempotency_key=f"liveclass:{live_class.id}:rescheduled:{new_timestamp}:{student.id}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to create rescheduled notification for student {student.id}, class {live_class.id}: {str(e)}", exc_info=True)
+
+    @staticmethod
+    def notify_cancelled(live_class):
+        from .models import NotificationType
+        import logging
+        logger = logging.getLogger(__name__)
+
+        students = LiveClassNotificationService._get_assigned_students(live_class)
+        for student in students:
+            try:
+                NotificationService.create_notification(
+                    recipient=student,
+                    title=f"Live Class Cancelled: {live_class.title}",
+                    body=f"The live class for {live_class.course.title} scheduled on {live_class.scheduled_start.strftime('%b %d, %Y %H:%M')} has been cancelled.",
+                    notification_type=NotificationType.LIVE_CLASS,
+                    action_url=f"/courses/{live_class.course.id}/live",
+                    idempotency_key=f"liveclass:{live_class.id}:cancelled:{student.id}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to create cancelled notification for student {student.id}, class {live_class.id}: {str(e)}", exc_info=True)
