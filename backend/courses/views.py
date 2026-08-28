@@ -59,9 +59,6 @@ class VideoLessonViewSet(viewsets.ModelViewSet):
 
         lesson = self.get_object()
 
-        if not lesson.transcript and not lesson.timed_transcript:
-            return Response({"error": "Please fill in the 'Timing for Speaking' section (or a transcript) before generating AI Audio."}, status=400)
-
         target_languages_input = request.data.get('target_languages')
         if target_languages_input is not None:
             if not isinstance(target_languages_input, list):
