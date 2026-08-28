@@ -199,7 +199,7 @@ class AITranslationTests(TestCase):
         mock_generate.assert_called_once_with(self.lesson.id, target_languages=['fr', 'de'])
 
     @patch('courses.tasks.generate_dubbed_audio_task.delay')
-    def test_empty_transcript_allowed_for_whisper(self, mock_delay):
+    def test_empty_transcript_returns_400_original_workflow(self, mock_delay):
         # Create a lesson with no transcript and no timed_transcript
         lesson_no_transcript = VideoLesson.objects.create(
             module=self.module,
@@ -212,6 +212,6 @@ class AITranslationTests(TestCase):
 
         response = self.client.post(url, format='json')
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("started in background", response.data['message'])
-        mock_delay.assert_called_once_with(lesson_no_transcript.id, target_languages=["hi", "ta", "ml"])
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Please fill in the 'Timing for Speaking' section (or a transcript)", response.data['error'])
+        mock_delay.assert_not_called()
