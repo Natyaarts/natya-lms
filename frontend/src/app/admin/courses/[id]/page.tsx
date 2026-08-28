@@ -379,14 +379,20 @@ export default function CourseManager() {
   };
 
   const handleGenerateAudio = async (lessonId: number) => {
-    if (!confirm("Start AI Audio Generation? This will take a minute.")) return;
+    const userLangs = window.prompt("Enter target languages (comma separated). Supported: hi, ta, ml, fr, de", "hi, ta, ml");
+    if (userLangs === null) return;
     
+    const target_languages = userLangs.split(",").map(s => s.trim()).filter(Boolean);
+    if (target_languages.length === 0) return;
+
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lessonId}/generate_ai_audio/`, {
         method: "POST",
         headers: { 
+          "Content-Type": "application/json",
           "X-CSRFToken": getCsrfToken()
         },
+        body: JSON.stringify({ target_languages }),
         credentials: "include"
       });
 
@@ -834,6 +840,18 @@ export default function CourseManager() {
                                   />
                                 </div>
 
+                                {/* English Transcript */}
+                                <div>
+                                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">English Transcript (For AI Translation)</label>
+                                  <textarea 
+                                    rows={4}
+                                    placeholder="Paste the spoken English text here. The AI will translate this."
+                                    value={editLessonData.transcript}
+                                    onChange={(e) => setEditLessonData({...editLessonData, transcript: e.target.value})}
+                                    className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] resize-vertical"
+                                  />
+                                </div>
+
                                 {/* Timing for Speaking */}
                                 <div className="bg-[#facc15]/5 border border-[#facc15]/20 rounded-xl p-4">
                                   <div className="flex items-center gap-2 mb-2">
@@ -914,6 +932,18 @@ export default function CourseManager() {
                                 value={lessonData.description}
                                 onChange={(e) => setLessonData({...lessonData, description: e.target.value})}
                                 className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] resize-none"
+                              />
+                            </div>
+
+                            {/* English Transcript */}
+                            <div>
+                              <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">English Transcript (For AI Translation)</label>
+                              <textarea 
+                                rows={4}
+                                placeholder="Paste the spoken English text here. The AI will translate this."
+                                value={lessonData.transcript}
+                                onChange={(e) => setLessonData({...lessonData, transcript: e.target.value})}
+                                className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] resize-vertical"
                               />
                             </div>
 
