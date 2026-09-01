@@ -7,6 +7,7 @@ from datetime import timedelta
 import random
 from .models import OTPVerification, User
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.shortcuts import render, get_object_or_404
 
 import requests
 
