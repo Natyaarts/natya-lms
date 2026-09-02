@@ -5,6 +5,36 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 
+// Canonical language list for manual audio-track uploads. Kept in sync with
+// backend/courses/languages.py (SUPPORTED_LANGUAGES). Base codes only -- the
+// backend normalizes legacy regional codes (e.g. 'hi-IN') for display.
+const SUPPORTED_LANGUAGES: { code: string; name: string }[] = [
+  { code: "ml", name: "Malayalam" },
+  { code: "hi", name: "Hindi" },
+  { code: "ta", name: "Tamil" },
+  { code: "te", name: "Telugu" },
+  { code: "kn", name: "Kannada" },
+  { code: "bn", name: "Bengali" },
+  { code: "mr", name: "Marathi" },
+  { code: "gu", name: "Gujarati" },
+  { code: "pa", name: "Punjabi" },
+  { code: "ar", name: "Arabic" },
+  { code: "fr", name: "French" },
+  { code: "de", name: "German" },
+  { code: "es", name: "Spanish" },
+  { code: "pt", name: "Portuguese" },
+  { code: "it", name: "Italian" },
+  { code: "ja", name: "Japanese" },
+  { code: "ko", name: "Korean" },
+  { code: "zh", name: "Chinese" },
+  { code: "ru", name: "Russian" },
+];
+
+const languageDisplayName = (code: string) => {
+  const base = code.split("-")[0].toLowerCase();
+  return SUPPORTED_LANGUAGES.find(l => l.code === base)?.name || code;
+};
+
 export default function CourseManager() {
   const { id } = useParams();
   const router = useRouter();
@@ -61,6 +91,16 @@ export default function CourseManager() {
     timed_transcript: ""
   });
   const [editLessonLoading, setEditLessonLoading] = useState(false);
+
+  // State for Audio Track management (manual multilingual audio upload)
+  const [audioManagerLessonId, setAudioManagerLessonId] = useState<number | null>(null);
+  const [showAddAudioForm, setShowAddAudioForm] = useState(false);
+  const [newAudioLangCode, setNewAudioLangCode] = useState("");
+  const [newAudioFile, setNewAudioFile] = useState<File | null>(null);
+  const [audioUploadLoading, setAudioUploadLoading] = useState(false);
+  const [audioUploadError, setAudioUploadError] = useState("");
+  const [replacingAudioId, setReplacingAudioId] = useState<number | null>(null);
+  const [deletingAudioId, setDeletingAudioId] = useState<number | null>(null);
 
   const getCsrfToken = () => {
     let csrfToken = "";
@@ -378,34 +418,86 @@ export default function CourseManager() {
     }
   };
 
-  const handleGenerateAudio = async (lessonId: number) => {
-    const userLangs = window.prompt("Enter target languages (comma separated). Supported: hi, ta, ml, fr, de", "hi, ta, ml");
-    if (userLangs === null) return;
-    
-    const target_languages = userLangs.split(",").map(s => s.trim()).filter(Boolean);
-    if (target_languages.length === 0) return;
+  // --- Manual Audio Track management ---
+  // The admin uploads audio dubbed/translated externally (AI service, human
+  // voice artist, studio, etc). The LMS just stores and serves the file --
+  // it never generates audio itself. See backend VideoLessonViewSet.upload_audio.
 
+  const openAudioManager = (lessonId: number) => {
+    setAudioManagerLessonId(lessonId);
+    setShowAddAudioForm(false);
+    setNewAudioLangCode("");
+    setNewAudioFile(null);
+    setAudioUploadError("");
+  };
+
+  const closeAudioManager = () => {
+    setAudioManagerLessonId(null);
+    setShowAddAudioForm(false);
+    setReplacingAudioId(null);
+  };
+
+  const submitAudioUpload = async (e: React.FormEvent, lessonId: number, replaceId: number | null) => {
+    e.preventDefault();
+    if (!newAudioLangCode || !newAudioFile || audioUploadLoading) return;
+
+    setAudioUploadLoading(true);
+    setAudioUploadError("");
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lessonId}/generate_ai_audio/`, {
+      const langMeta = SUPPORTED_LANGUAGES.find(l => l.code === newAudioLangCode);
+      const formData = new FormData();
+      formData.append("language_code", newAudioLangCode);
+      formData.append("language_name", langMeta?.name || newAudioLangCode);
+      formData.append("audio_file", newAudioFile);
+
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lessonId}/audio/`, {
         method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "X-CSRFToken": getCsrfToken()
-        },
-        body: JSON.stringify({ target_languages }),
+        headers: { "X-CSRFToken": getCsrfToken() },
+        body: formData,
         credentials: "include"
       });
 
       const data = await res.json();
       if (res.ok) {
-        alert("Success: " + data.message);
+        if (data.duration_warning) {
+          alert("Audio uploaded, but: " + data.duration_warning);
+        }
+        setShowAddAudioForm(false);
+        setNewAudioLangCode("");
+        setNewAudioFile(null);
+        setReplacingAudioId(null);
         fetchCourse();
       } else {
-        alert("Error: " + data.error);
+        const message = data.error || data.audio_file?.[0] || data.language_code?.[0] || "Failed to upload audio.";
+        setAudioUploadError(message);
       }
     } catch (err) {
       console.error(err);
-      alert("Network error generating audio");
+      setAudioUploadError("Network error uploading audio");
+    } finally {
+      setAudioUploadLoading(false);
+    }
+  };
+
+  const handleDeleteAudio = async (lessonId: number, audioId: number, langLabel: string) => {
+    if (!confirm(`Remove the "${langLabel}" audio track? This cannot be undone.`)) return;
+    setDeletingAudioId(audioId);
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lessonId}/audio/${audioId}/`, {
+        method: "DELETE",
+        headers: { "X-CSRFToken": getCsrfToken() },
+        credentials: "include"
+      });
+      if (res.ok) {
+        fetchCourse();
+      } else {
+        alert("Failed to delete audio track");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Network error deleting audio track");
+    } finally {
+      setDeletingAudioId(null);
     }
   };
 
@@ -764,19 +856,20 @@ export default function CourseManager() {
                             <div className="flex-1 min-w-0">
                               <h4 className="font-semibold text-sm truncate text-white">{lIdx + 1}. {lesson.title}</h4>
                               <div className="text-xs text-zinc-500 mt-1 truncate">{lesson.video_file || "No video file"}</div>
-                              {lesson.translated_audios && lesson.translated_audios.length > 0 && (
-                                <div className="flex gap-2 mt-2">
-                                  {lesson.translated_audios.map((audio: any) => (
-                                    <span key={audio.id} className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase">
-                                      {audio.language_code.split('-')[0]} {audio.status === 'completed' ? '✓' : '...'}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
+                              <div className="flex gap-2 mt-2 flex-wrap">
+                                <span className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase">
+                                  English · Original
+                                </span>
+                                {lesson.translated_audios?.filter((a: any) => a.status === 'completed').map((audio: any) => (
+                                  <span key={audio.id} className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase">
+                                    {audio.language_name || languageDisplayName(audio.language_code)} · Uploaded
+                                  </span>
+                                ))}
+                              </div>
                             </div>
                             <div className="flex flex-col gap-2 items-end">
                               <div className="flex gap-2">
-                                <button 
+                                <button
                                   onClick={() => {
                                     setEditingLessonId(lesson.id);
                                     setEditLessonData({
@@ -790,23 +883,148 @@ export default function CourseManager() {
                                 >
                                   Edit
                                 </button>
-                                <button 
+                                <button
                                   onClick={() => handleDeleteLesson(lesson.id, lesson.title)}
                                   className="text-xs font-bold px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl transition-colors"
                                 >
                                   Delete
                                 </button>
                               </div>
-                              <button 
-                                onClick={() => handleGenerateAudio(lesson.id)}
-                                className="text-xs font-medium px-3 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded-xl transition-colors flex items-center gap-1"
-                                title="Generates Hindi, Tamil, and Malayalam audio tracks from transcript"
+                              <button
+                                onClick={() => audioManagerLessonId === lesson.id ? closeAudioManager() : openAudioManager(lesson.id)}
+                                className="text-xs font-medium px-3 py-1.5 bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] rounded-xl transition-colors flex items-center gap-1"
+                                title="Manage multilingual audio tracks for this lesson"
                               >
-                                🪄 Generate AI Audio
+                                🎧 Audio Tracks
                               </button>
                             </div>
                           </div>
-                          
+
+                          {/* Audio Track Manager Panel */}
+                          <AnimatePresence>
+                            {audioManagerLessonId === lesson.id && (
+                              <motion.div
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                exit={{ opacity: 0, height: 0 }}
+                                className="bg-black border border-white/10 rounded-xl p-5 mt-4 space-y-3 overflow-hidden"
+                              >
+                                <h4 className="text-sm font-bold text-[#facc15]">Audio Tracks</h4>
+                                <p className="text-[11px] text-zinc-500 -mt-2">
+                                  Upload alternate-language audio dubbed/translated externally. Students switch between
+                                  tracks while the same video keeps playing.
+                                </p>
+
+                                {/* English (always present, original video audio) */}
+                                <div className="flex items-center justify-between bg-zinc-900/50 border border-white/5 rounded-xl px-4 py-3">
+                                  <div>
+                                    <div className="text-sm font-medium text-white">English</div>
+                                    <div className="text-[11px] text-zinc-500">Original video audio</div>
+                                  </div>
+                                </div>
+
+                                {lesson.translated_audios?.map((audio: any) => (
+                                  <div key={audio.id} className="flex items-center justify-between bg-zinc-900/50 border border-white/5 rounded-xl px-4 py-3">
+                                    <div>
+                                      <div className="text-sm font-medium text-white">
+                                        {audio.language_name || languageDisplayName(audio.language_code)}
+                                      </div>
+                                      <div className="text-[11px] text-zinc-500">
+                                        {audio.status === 'completed' ? 'Uploaded' : audio.status === 'processing' ? 'Processing…' : 'Failed'}
+                                      </div>
+                                    </div>
+                                    <div className="flex gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setReplacingAudioId(audio.id);
+                                          setShowAddAudioForm(true);
+                                          setNewAudioLangCode(audio.language_code.split('-')[0]);
+                                          setNewAudioFile(null);
+                                          setAudioUploadError("");
+                                        }}
+                                        className="text-xs font-semibold px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg transition-colors"
+                                      >
+                                        Replace
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={deletingAudioId === audio.id}
+                                        onClick={() => handleDeleteAudio(lesson.id, audio.id, audio.language_name || languageDisplayName(audio.language_code))}
+                                        className="text-xs font-semibold px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg transition-colors disabled:opacity-50"
+                                      >
+                                        {deletingAudioId === audio.id ? "Removing…" : "Delete"}
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+
+                                {!showAddAudioForm ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => { setShowAddAudioForm(true); setReplacingAudioId(null); setNewAudioLangCode(""); setNewAudioFile(null); setAudioUploadError(""); }}
+                                    className="w-full py-2 border border-dashed border-white/20 hover:border-[#facc15]/50 text-zinc-400 hover:text-[#facc15] rounded-xl text-xs font-semibold transition-colors"
+                                  >
+                                    + Add Audio
+                                  </button>
+                                ) : (
+                                  <form
+                                    onSubmit={(e) => submitAudioUpload(e, lesson.id, replacingAudioId)}
+                                    className="bg-zinc-900/50 border border-[#facc15]/20 rounded-xl p-4 space-y-3"
+                                  >
+                                    <h5 className="text-xs font-bold text-white">
+                                      {replacingAudioId ? "Replace Audio Track" : "Add Audio Track"}
+                                    </h5>
+                                    <div>
+                                      <label className="block text-[10px] font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Language</label>
+                                      <select
+                                        required
+                                        disabled={!!replacingAudioId}
+                                        value={newAudioLangCode}
+                                        onChange={(e) => setNewAudioLangCode(e.target.value)}
+                                        className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] disabled:opacity-60"
+                                      >
+                                        <option value="" disabled>Select Language</option>
+                                        {SUPPORTED_LANGUAGES.map(l => (
+                                          <option key={l.code} value={l.code}>{l.name}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className="block text-[10px] font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Audio File</label>
+                                      <input
+                                        type="file"
+                                        required
+                                        accept="audio/mpeg,audio/mp3,audio/wav,audio/x-m4a,audio/aac,audio/ogg,audio/flac,.mp3,.wav,.m4a,.aac,.ogg,.flac"
+                                        onChange={(e) => setNewAudioFile(e.target.files?.[0] || null)}
+                                        className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-sm text-zinc-400 focus:outline-none focus:border-[#facc15] file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-[#facc15] file:text-black hover:file:bg-yellow-500 cursor-pointer"
+                                      />
+                                    </div>
+                                    {audioUploadError && (
+                                      <p className="text-xs text-red-400">{audioUploadError}</p>
+                                    )}
+                                    <div className="flex justify-end gap-2 pt-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => { setShowAddAudioForm(false); setReplacingAudioId(null); setAudioUploadError(""); }}
+                                        className="px-3 py-1.5 text-xs text-zinc-400 hover:text-white"
+                                      >
+                                        Cancel
+                                      </button>
+                                      <button
+                                        type="submit"
+                                        disabled={audioUploadLoading || !newAudioLangCode || !newAudioFile}
+                                        className="px-4 py-1.5 text-xs bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-colors disabled:opacity-50"
+                                      >
+                                        {audioUploadLoading ? "Uploading…" : replacingAudioId ? "Replace Audio" : "Upload Audio"}
+                                      </button>
+                                    </div>
+                                  </form>
+                                )}
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+
                           {/* Edit Lesson Inline Form */}
                           <AnimatePresence>
                             {editingLessonId === lesson.id && (
@@ -818,10 +1036,12 @@ export default function CourseManager() {
                                 className="bg-black border border-white/10 rounded-xl p-5 mt-4 space-y-4 overflow-hidden"
                               >
                                 <h4 className="text-sm font-bold text-[#facc15]">Edit Video Lesson</h4>
-                                
+
+                                <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Lesson Content</div>
+
                                 <div>
                                   <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Lesson Title *</label>
-                                  <input 
+                                  <input
                                     type="text"
                                     required
                                     value={editLessonData.title}
@@ -829,10 +1049,10 @@ export default function CourseManager() {
                                     className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
                                   />
                                 </div>
-                                
+
                                 <div>
                                   <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Description</label>
-                                  <textarea 
+                                  <textarea
                                     rows={2}
                                     value={editLessonData.description}
                                     onChange={(e) => setEditLessonData({...editLessonData, description: e.target.value})}
@@ -840,49 +1060,64 @@ export default function CourseManager() {
                                   />
                                 </div>
 
-                                {/* English Transcript */}
-                                <div>
-                                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">English Transcript (For AI Translation)</label>
-                                  <textarea 
-                                    rows={4}
-                                    placeholder="Paste the spoken English text here. The AI will translate this."
-                                    value={editLessonData.transcript}
-                                    onChange={(e) => setEditLessonData({...editLessonData, transcript: e.target.value})}
-                                    className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] resize-vertical"
-                                  />
-                                </div>
+                                {/* Legacy AI-dubbing fields: not part of the V1 manual audio-upload
+                                    workflow (see "🎧 Audio Tracks" above). Kept collapsed so they
+                                    don't confuse admins, but preserved for the old AI pipeline (V2). */}
+                                <details className="group bg-zinc-900/40 border border-white/10 rounded-xl overflow-hidden">
+                                  <summary className="cursor-pointer select-none list-none px-4 py-3 flex items-center justify-between text-xs font-semibold text-zinc-400 hover:text-zinc-200 transition-colors">
+                                    <span>Advanced / Legacy AI Dubbing (V2)</span>
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="transition-transform group-open:rotate-180"><polyline points="6 9 12 15 18 9"/></svg>
+                                  </summary>
+                                  <div className="px-4 pb-4 pt-1 space-y-4 border-t border-white/10">
+                                    <p className="text-[10px] text-zinc-600 leading-relaxed">
+                                      Not needed for V1 — audio for students is managed entirely via
+                                      "🎧 Audio Tracks" above. These fields only feed the legacy AI
+                                      auto-dubbing pipeline, kept here for future use.
+                                    </p>
 
-                                {/* Timing for Speaking */}
-                                <div className="bg-[#facc15]/5 border border-[#facc15]/20 rounded-xl p-4">
-                                  <div className="flex items-center gap-2 mb-2">
-                                    <span className="text-sm">⏱</span>
-                                    <label className="block text-xs font-semibold text-[#facc15] uppercase tracking-wide">Timing for Speaking (for Perfect AI Dubbing)</label>
+                                    <div>
+                                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">English Transcript (For AI Translation)</label>
+                                      <textarea
+                                        rows={4}
+                                        placeholder="Paste the spoken English text here. The AI will translate this."
+                                        value={editLessonData.transcript}
+                                        onChange={(e) => setEditLessonData({...editLessonData, transcript: e.target.value})}
+                                        className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] resize-vertical"
+                                      />
+                                    </div>
+
+                                    <div className="bg-[#facc15]/5 border border-[#facc15]/20 rounded-xl p-4">
+                                      <div className="flex items-center gap-2 mb-2">
+                                        <span className="text-sm">⏱</span>
+                                        <label className="block text-xs font-semibold text-[#facc15] uppercase tracking-wide">Timing for Speaking (for Perfect AI Dubbing)</label>
+                                      </div>
+                                      <p className="text-[10px] text-zinc-500 mb-3 leading-relaxed">
+                                        One line per spoken sentence. Format: <code className="bg-zinc-800 px-1 rounded text-zinc-300">MM:SS --&gt; Text spoken at that time</code><br/>
+                                        Example:<br/>
+                                        <code className="bg-zinc-800 px-1 rounded text-zinc-300">00:05 --&gt; Hello and welcome to this class</code><br/>
+                                        <code className="bg-zinc-800 px-1 rounded text-zinc-300">00:12 --&gt; Today we will learn Carnatic music</code>
+                                      </p>
+                                      <textarea
+                                        rows={6}
+                                        placeholder={"00:05 --> Hello and welcome\n00:12 --> Today we learn music\n00:20 --> Let us start with the notes"}
+                                        value={editLessonData.timed_transcript}
+                                        onChange={(e) => setEditLessonData({...editLessonData, timed_transcript: e.target.value})}
+                                        className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-xl text-white text-xs font-mono focus:outline-none focus:border-[#facc15] resize-vertical"
+                                      />
+                                      <p className="text-[10px] text-zinc-600 mt-2">💡 Leave blank to let Whisper AI auto-detect timings (less accurate). Fill this in for perfect sync.</p>
+                                    </div>
                                   </div>
-                                  <p className="text-[10px] text-zinc-500 mb-3 leading-relaxed">
-                                    One line per spoken sentence. Format: <code className="bg-zinc-800 px-1 rounded text-zinc-300">MM:SS --&gt; Text spoken at that time</code><br/>
-                                    Example:<br/>
-                                    <code className="bg-zinc-800 px-1 rounded text-zinc-300">00:05 --&gt; Hello and welcome to this class</code><br/>
-                                    <code className="bg-zinc-800 px-1 rounded text-zinc-300">00:12 --&gt; Today we will learn Carnatic music</code>
-                                  </p>
-                                  <textarea 
-                                    rows={6}
-                                    placeholder={"00:05 --> Hello and welcome\n00:12 --> Today we learn music\n00:20 --> Let us start with the notes"}
-                                    value={editLessonData.timed_transcript}
-                                    onChange={(e) => setEditLessonData({...editLessonData, timed_transcript: e.target.value})}
-                                    className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-xl text-white text-xs font-mono focus:outline-none focus:border-[#facc15] resize-vertical"
-                                  />
-                                  <p className="text-[10px] text-zinc-600 mt-2">💡 Leave blank to let Whisper AI auto-detect timings (less accurate). Fill this in for perfect sync.</p>
-                                </div>
+                                </details>
 
                                 <div className="flex justify-end gap-3 pt-4 border-t border-white/10 mt-4">
-                                  <button 
-                                    type="button" 
+                                  <button
+                                    type="button"
                                     onClick={() => setEditingLessonId(null)}
                                     className="px-4 py-2 text-sm text-zinc-400 hover:text-white"
                                   >
                                     Cancel
                                   </button>
-                                  <button 
+                                  <button
                                     type="submit"
                                     disabled={editLessonLoading}
                                     className="px-5 py-2 text-sm bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-colors disabled:opacity-50"
@@ -913,10 +1148,12 @@ export default function CourseManager() {
                             className="bg-black border border-white/10 rounded-xl p-5 mt-4 space-y-4 overflow-hidden"
                           >
                             <h4 className="text-sm font-bold text-[#facc15]">New Video Lesson</h4>
-                            
+
+                            <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Lesson Content</div>
+
                             <div>
                               <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Lesson Title *</label>
-                              <input 
+                              <input
                                 type="text"
                                 required
                                 value={lessonData.title}
@@ -924,10 +1161,10 @@ export default function CourseManager() {
                                 className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
                               />
                             </div>
-                            
+
                             <div>
                               <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Description</label>
-                              <textarea 
+                              <textarea
                                 rows={2}
                                 value={lessonData.description}
                                 onChange={(e) => setLessonData({...lessonData, description: e.target.value})}
@@ -935,50 +1172,66 @@ export default function CourseManager() {
                               />
                             </div>
 
-                            {/* English Transcript */}
-                            <div>
-                              <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">English Transcript (For AI Translation)</label>
-                              <textarea 
-                                rows={4}
-                                placeholder="Paste the spoken English text here. The AI will translate this."
-                                value={lessonData.transcript}
-                                onChange={(e) => setLessonData({...lessonData, transcript: e.target.value})}
-                                className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] resize-vertical"
-                              />
-                            </div>
-
-                            {/* Timing for Speaking */}
-                            <div className="bg-[#facc15]/5 border border-[#facc15]/20 rounded-xl p-4">
-                              <div className="flex items-center gap-2 mb-2">
-                                <span className="text-sm">⏱</span>
-                                <label className="block text-xs font-semibold text-[#facc15] uppercase tracking-wide">Timing for Speaking (for Perfect AI Dubbing)</label>
-                              </div>
-                              <p className="text-[10px] text-zinc-500 mb-3 leading-relaxed">
-                                One line per spoken sentence. Format: <code className="bg-zinc-800 px-1 rounded text-zinc-300">MM:SS --&gt; Text spoken at that time</code><br/>
-                                Example:<br/>
-                                <code className="bg-zinc-800 px-1 rounded text-zinc-300">00:05 --&gt; Hello and welcome to this class</code><br/>
-                                <code className="bg-zinc-800 px-1 rounded text-zinc-300">00:12 --&gt; Today we will learn Carnatic music</code>
-                              </p>
-                              <textarea 
-                                rows={6}
-                                placeholder={"00:05 --> Hello and welcome\n00:12 --> Today we learn music\n00:20 --> Let us start with the notes"}
-                                value={lessonData.timed_transcript}
-                                onChange={(e) => setLessonData({...lessonData, timed_transcript: e.target.value})}
-                                className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-xl text-white text-xs font-mono focus:outline-none focus:border-[#facc15] resize-vertical"
-                              />
-                              <p className="text-[10px] text-zinc-600 mt-2">💡 Leave blank to let Whisper AI auto-detect timings (less accurate). Fill this in for perfect sync.</p>
-                            </div>
-
                             <div>
                               <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Upload Original Video (MP4) *</label>
-                              <input 
+                              <input
                                 type="file"
                                 accept="video/mp4,video/x-m4v,video/*"
                                 required
                                 onChange={(e) => setLessonData({...lessonData, video_file: e.target.files?.[0] || null})}
                                 className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-sm text-zinc-400 focus:outline-none focus:border-[#facc15] file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-[#facc15] file:text-black hover:file:bg-yellow-500 cursor-pointer"
                               />
+                              <p className="text-[10px] text-zinc-600 mt-2">After saving, use "🎧 Audio Tracks" on the lesson to add translated/dubbed audio.</p>
                             </div>
+
+                            {/* Legacy AI-dubbing fields: not part of the V1 manual audio-upload
+                                workflow (see "🎧 Audio Tracks"). Kept collapsed so they don't
+                                confuse admins, but preserved for the old AI pipeline (V2). */}
+                            <details className="group bg-zinc-900/40 border border-white/10 rounded-xl overflow-hidden">
+                              <summary className="cursor-pointer select-none list-none px-4 py-3 flex items-center justify-between text-xs font-semibold text-zinc-400 hover:text-zinc-200 transition-colors">
+                                <span>Advanced / Legacy AI Dubbing (V2)</span>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="transition-transform group-open:rotate-180"><polyline points="6 9 12 15 18 9"/></svg>
+                              </summary>
+                              <div className="px-4 pb-4 pt-1 space-y-4 border-t border-white/10">
+                                <p className="text-[10px] text-zinc-600 leading-relaxed">
+                                  Not needed for V1 — audio for students is managed entirely via
+                                  "🎧 Audio Tracks" after this lesson is created. These fields only
+                                  feed the legacy AI auto-dubbing pipeline, kept here for future use.
+                                </p>
+
+                                <div>
+                                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">English Transcript (For AI Translation)</label>
+                                  <textarea
+                                    rows={4}
+                                    placeholder="Paste the spoken English text here. The AI will translate this."
+                                    value={lessonData.transcript}
+                                    onChange={(e) => setLessonData({...lessonData, transcript: e.target.value})}
+                                    className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] resize-vertical"
+                                  />
+                                </div>
+
+                                <div className="bg-[#facc15]/5 border border-[#facc15]/20 rounded-xl p-4">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <span className="text-sm">⏱</span>
+                                    <label className="block text-xs font-semibold text-[#facc15] uppercase tracking-wide">Timing for Speaking (for Perfect AI Dubbing)</label>
+                                  </div>
+                                  <p className="text-[10px] text-zinc-500 mb-3 leading-relaxed">
+                                    One line per spoken sentence. Format: <code className="bg-zinc-800 px-1 rounded text-zinc-300">MM:SS --&gt; Text spoken at that time</code><br/>
+                                    Example:<br/>
+                                    <code className="bg-zinc-800 px-1 rounded text-zinc-300">00:05 --&gt; Hello and welcome to this class</code><br/>
+                                    <code className="bg-zinc-800 px-1 rounded text-zinc-300">00:12 --&gt; Today we will learn Carnatic music</code>
+                                  </p>
+                                  <textarea
+                                    rows={6}
+                                    placeholder={"00:05 --> Hello and welcome\n00:12 --> Today we learn music\n00:20 --> Let us start with the notes"}
+                                    value={lessonData.timed_transcript}
+                                    onChange={(e) => setLessonData({...lessonData, timed_transcript: e.target.value})}
+                                    className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-xl text-white text-xs font-mono focus:outline-none focus:border-[#facc15] resize-vertical"
+                                  />
+                                  <p className="text-[10px] text-zinc-600 mt-2">💡 Leave blank to let Whisper AI auto-detect timings (less accurate). Fill this in for perfect sync.</p>
+                                </div>
+                              </div>
+                            </details>
 
                             <div className="flex justify-end gap-3 pt-4 border-t border-white/10 mt-4">
                               <button 
