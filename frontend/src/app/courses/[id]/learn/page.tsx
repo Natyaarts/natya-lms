@@ -4,10 +4,26 @@ import { useEffect, useState, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
-  Play, Pause, Volume2, VolumeX, Maximize, Minimize, 
-  Settings, Check, ChevronLeft 
+import {
+  Play, Pause, Volume2, VolumeX, Maximize, Minimize,
+  Settings, Check, ChevronLeft
 } from "lucide-react";
+
+// Canonical language list, kept in sync with backend/courses/languages.py.
+// Used to display a friendly name when a track's language_name isn't set
+// (e.g. legacy AI-generated rows created before that field existed).
+const LANGUAGE_NAME_MAP: Record<string, string> = {
+  ml: "Malayalam", hi: "Hindi", ta: "Tamil", te: "Telugu", kn: "Kannada",
+  bn: "Bengali", mr: "Marathi", gu: "Gujarati", pa: "Punjabi", ar: "Arabic",
+  fr: "French", de: "German", es: "Spanish", pt: "Portuguese", it: "Italian",
+  ja: "Japanese", ko: "Korean", zh: "Chinese", ru: "Russian",
+};
+
+const languageDisplayName = (audio: { language_code: string; language_name?: string }) => {
+  if (audio.language_name) return audio.language_name;
+  const base = audio.language_code.split('-')[0].toLowerCase();
+  return LANGUAGE_NAME_MAP[base] || audio.language_code;
+};
 
 export default function CourseLearnPage() {
   const { id } = useParams();
@@ -248,19 +264,41 @@ export default function CourseLearnPage() {
     }
   };
 
+  // Duration display must always come from the VIDEO element -- never the
+  // alternate translated-audio element, which can legitimately have a
+  // different length than the video (see CustomVideoPlayer.tsx equivalent
+  // note on mobile). Only accept finite, positive readings: some MP4s
+  // (moov atom not at the start of the file, or a server that doesn't
+  // fully support byte-range requests) report an inaccurate, too-short
+  // duration on `loadedmetadata`, then correct it later via `durationchange`
+  // once more of the file has been parsed. Skipping non-finite/zero values
+  // here avoids ever displaying "Infinity:NaN" mid-buffer.
+  const updateDurationDisplay = () => {
+    const duration = videoRef.current?.duration;
+    if (typeof duration === 'number' && Number.isFinite(duration) && duration > 0) {
+      setDurationStr(formatTime(duration));
+    }
+  };
+
   const handleLoadedMetadata = () => {
     if (videoRef.current) {
       const duration = videoRef.current.duration;
-      setDurationStr(formatTime(duration));
+      updateDurationDisplay();
 
       // Seek to saved position on loaded metadata
-      if (savedProgressPosition > 0 && savedProgressPosition < duration) {
+      if (savedProgressPosition > 0 && duration > 0 && savedProgressPosition < duration) {
         videoRef.current.currentTime = savedProgressPosition;
         if (activeLanguage !== 'en' && audioRef.current) {
           audioRef.current.currentTime = savedProgressPosition;
         }
       }
     }
+  };
+
+  // The browser corrects an inaccurate initial duration reading via this
+  // event once it has buffered/parsed enough of the video file.
+  const handleDurationChange = () => {
+    updateDurationDisplay();
   };
 
   const handleEnded = () => {
@@ -379,48 +417,99 @@ export default function CourseLearnPage() {
     }
   };
 
-  // Reset language to English when changing lessons
+  // Reset to English (original video audio) and stop any alternate-language
+  // audio from the previous lesson whenever the active lesson changes.
   useEffect(() => {
     setActiveLanguage('en');
+    setShowLanguageMenu(false);
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.removeAttribute('src');
+      audioRef.current.load();
+    }
+    if (videoRef.current) {
+      videoRef.current.muted = isMuted;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeLesson?.id]);
 
 
-  if (loading) return <div className="min-h-screen bg-black flex items-center justify-center text-[#facc15]">Loading Player...</div>;
-  if (!course) return <div className="min-h-screen bg-black text-white p-8">Course not found.</div>;
+  if (loading) return (
+    <div className="min-h-screen bg-[#050505] flex flex-col items-center justify-center gap-4 text-[#facc15]">
+      <span className="h-8 w-8 border-2 border-[#facc15]/30 border-t-[#facc15] rounded-full animate-spin" />
+      <span className="text-sm font-medium tracking-wide text-zinc-500">Loading player…</span>
+    </div>
+  );
+  if (!course) return (
+    <div className="min-h-screen bg-[#050505] text-white flex flex-col items-center justify-center gap-3 p-8">
+      <p className="text-lg font-medium text-zinc-300">Course not found.</p>
+      <Link href="/dashboard" className="text-sm text-[#facc15] hover:underline font-medium">Back to Dashboard</Link>
+    </div>
+  );
+
+  // Derived, purely for display: flatten modules -> lessons so we can show a
+  // "Module X · Lesson Y" breadcrumb and Previous/Next navigation. Read-only,
+  // doesn't touch the video/audio playback or sync logic above.
+  const flatLessons: { lesson: any; moduleTitle: string; moduleIdx: number; lessonIdx: number }[] = [];
+  course.modules?.forEach((m: any, mIdx: number) => {
+    m.lessons?.forEach((l: any, lIdx: number) => {
+      flatLessons.push({ lesson: l, moduleTitle: m.title, moduleIdx: mIdx, lessonIdx: lIdx });
+    });
+  });
+  const activeFlatIndex = flatLessons.findIndex(f => f.lesson.id === activeLesson?.id);
+  const activeFlatEntry = activeFlatIndex >= 0 ? flatLessons[activeFlatIndex] : null;
+  const prevEntry = activeFlatIndex > 0 ? flatLessons[activeFlatIndex - 1] : null;
+  const nextEntry = activeFlatIndex >= 0 && activeFlatIndex < flatLessons.length - 1 ? flatLessons[activeFlatIndex + 1] : null;
 
   return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col md:flex-row h-screen overflow-hidden">
       
       {/* Sidebar: Curriculum */}
-      <div className="w-full md:w-80 bg-zinc-950 border-r border-white/5 flex flex-col h-1/3 md:h-full overflow-hidden shrink-0">
-        <div className="p-5 border-b border-white/5 shrink-0 bg-zinc-900/50">
-          <Link href="/dashboard" className="text-zinc-400 hover:text-white text-sm flex items-center gap-2 mb-4 font-medium transition-colors">
-            <ChevronLeft className="w-4 h-4" /> Back to Dashboard
+      <div className="w-full md:w-80 bg-gradient-to-b from-zinc-950 to-black border-r border-white/5 flex flex-col h-1/3 md:h-full overflow-hidden shrink-0">
+        <div className="p-5 border-b border-white/5 shrink-0 bg-white/[0.02]">
+          <Link href="/dashboard" className="inline-flex items-center gap-2 text-zinc-400 hover:text-white text-sm mb-4 font-medium transition-colors group">
+            <span className="w-7 h-7 rounded-full bg-white/5 group-hover:bg-white/10 flex items-center justify-center transition-colors">
+              <ChevronLeft className="w-4 h-4" />
+            </span>
+            Back to Dashboard
           </Link>
           <h2 className="font-bold text-lg leading-tight tracking-tight">{course.title}</h2>
+          {flatLessons.length > 0 && (
+            <p className="text-xs text-zinc-500 mt-1.5 font-medium">
+              {flatLessons.length} lesson{flatLessons.length !== 1 ? 's' : ''}
+            </p>
+          )}
         </div>
-        
-        <div className="overflow-y-auto flex-1 p-3">
+
+        <div className="overflow-y-auto flex-1 p-3 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
           {course.modules?.map((module: any, idx: number) => (
             <div key={module.id} className="mb-6">
-              <h3 className="text-xs font-bold text-zinc-500 px-3 mb-3 uppercase tracking-widest">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-zinc-500 px-3 mb-3 uppercase tracking-widest">
+                <span className="w-1 h-3 bg-[#facc15]/40 rounded-full shrink-0" />
                 Module {idx + 1}: {module.title}
               </h3>
               <div className="space-y-1">
-                {module.lessons?.map((lesson: any, lIdx: number) => (
-                  <button
-                    key={lesson.id}
-                    onClick={() => setActiveLesson(lesson)}
-                    className={`w-full text-left px-4 py-3 rounded-xl text-sm flex gap-3 transition-all ${
-                      activeLesson?.id === lesson.id 
-                        ? 'bg-gradient-to-r from-[#facc15]/20 to-[#facc15]/5 text-[#facc15] font-semibold shadow-inner' 
-                        : 'text-zinc-300 hover:bg-white/5'
-                    }`}
-                  >
-                    <Play className={`w-4 h-4 shrink-0 mt-0.5 ${activeLesson?.id === lesson.id ? 'fill-[#facc15] text-[#facc15]' : ''}`} />
-                    <span className="leading-relaxed">{lIdx + 1}. {lesson.title}</span>
-                  </button>
-                ))}
+                {module.lessons?.map((lesson: any, lIdx: number) => {
+                  const isActive = activeLesson?.id === lesson.id;
+                  return (
+                    <button
+                      key={lesson.id}
+                      onClick={() => setActiveLesson(lesson)}
+                      className={`w-full text-left px-3 py-3 rounded-xl text-sm flex items-center gap-3 transition-all duration-200 ${
+                        isActive
+                          ? 'bg-gradient-to-r from-[#facc15]/20 to-[#facc15]/5 text-[#facc15] font-semibold shadow-inner ring-1 ring-[#facc15]/20'
+                          : 'text-zinc-300 hover:bg-white/5 hover:translate-x-0.5'
+                      }`}
+                    >
+                      <span className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-colors ${
+                        isActive ? 'bg-[#facc15] text-black' : 'bg-white/5 text-zinc-500'
+                      }`}>
+                        {isActive ? <Play className="w-2.5 h-2.5 fill-black ml-0.5" /> : lIdx + 1}
+                      </span>
+                      <span className="leading-relaxed truncate">{lesson.title}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           ))}
@@ -428,18 +517,22 @@ export default function CourseLearnPage() {
       </div>
 
       {/* Main Content: Video Player */}
-      <div className="flex-1 flex flex-col h-2/3 md:h-full relative bg-black">
+      <div className="flex-1 flex flex-col h-2/3 md:h-full relative bg-black overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
         {activeLesson ? (
-          <div className="w-full h-full flex flex-col relative">
-            
-            {/* Custom Video Player Container */}
-            <div 
-              ref={containerRef}
-              className="w-full aspect-video bg-black relative group flex items-center justify-center overflow-hidden"
-              onMouseMove={handleMouseMove}
-              onMouseLeave={handleMouseLeave}
-              onDoubleClick={toggleFullscreen}
-            >
+          <div className="w-full flex flex-col relative">
+
+            <div className="relative bg-black md:p-6 md:pb-3">
+              {/* Ambient glow behind the player frame */}
+              <div className="hidden md:block absolute inset-6 bg-[#facc15]/5 blur-[80px] rounded-full pointer-events-none" />
+
+              {/* Custom Video Player Container */}
+              <div
+                ref={containerRef}
+                className="w-full aspect-video bg-black relative group flex items-center justify-center overflow-hidden md:rounded-2xl md:ring-1 md:ring-white/10 md:shadow-[0_25px_70px_-20px_rgba(0,0,0,0.9)]"
+                onMouseMove={handleMouseMove}
+                onMouseLeave={handleMouseLeave}
+                onDoubleClick={toggleFullscreen}
+              >
               <video 
                 ref={videoRef}
                 src={activeLesson.video_file}
@@ -449,6 +542,7 @@ export default function CourseLearnPage() {
                 onSeeked={handleSeek}
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
+                onDurationChange={handleDurationChange}
                 onEnded={handleEnded}
                 onClick={togglePlay}
                 autoPlay
@@ -476,44 +570,44 @@ export default function CourseLearnPage() {
                 className={`absolute bottom-0 left-0 right-0 px-6 pt-24 pb-6 bg-gradient-to-t from-black/90 via-black/50 to-transparent transition-opacity duration-300 z-30 flex flex-col gap-3 ${showControls || !isPlaying ? 'opacity-100' : 'opacity-0'}`}
               >
                 {/* Progress Bar */}
-                <div className="relative w-full h-1.5 bg-white/20 rounded-full group/progress cursor-pointer flex items-center">
-                  <div 
-                    className="absolute top-0 left-0 h-full bg-[#facc15] rounded-full" 
+                <div className="relative w-full h-1.5 group-hover/progress:h-2 bg-white/20 rounded-full group/progress cursor-pointer flex items-center transition-all">
+                  <div
+                    className="absolute top-0 left-0 h-full bg-[#facc15] rounded-full shadow-[0_0_10px_rgba(250,204,21,0.5)]"
                     style={{ width: `${progress}%` }}
                   />
-                  <input 
-                    type="range" 
-                    min="0" 
-                    max="100" 
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
                     step="0.1"
                     value={progress}
                     onChange={handleProgressChange}
                     className="absolute top-0 left-0 w-full h-full opacity-0 cursor-pointer"
                   />
                   {/* Thumb indicator on hover */}
-                  <div 
-                    className="absolute h-4 w-4 bg-[#facc15] rounded-full shadow-lg opacity-0 group-hover/progress:opacity-100 transition-opacity"
-                    style={{ left: `calc(${progress}% - 8px)` }}
+                  <div
+                    className="absolute h-3.5 w-3.5 bg-[#facc15] rounded-full shadow-lg ring-2 ring-black/40 opacity-0 group-hover/progress:opacity-100 transition-opacity"
+                    style={{ left: `calc(${progress}% - 7px)` }}
                   />
                 </div>
 
                 {/* Bottom Controls Row */}
                 <div className="flex items-center justify-between mt-1">
-                  
+
                   {/* Left: Play/Pause, Volume, Time */}
-                  <div className="flex items-center gap-6">
-                    <button onClick={togglePlay} className="text-white hover:text-[#facc15] transition-colors">
-                      {isPlaying ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current" />}
+                  <div className="flex items-center gap-2">
+                    <button onClick={togglePlay} className="text-white hover:text-[#facc15] p-2 rounded-full hover:bg-white/10 transition-colors">
+                      {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current" />}
                     </button>
-                    
-                    <div className="flex items-center gap-3 group/volume">
-                      <button onClick={toggleMute} className="text-white hover:text-[#facc15] transition-colors">
+
+                    <div className="flex items-center gap-2 group/volume pl-1">
+                      <button onClick={toggleMute} className="text-white hover:text-[#facc15] p-2 rounded-full hover:bg-white/10 transition-colors">
                         {isMuted || volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
                       </button>
-                      <input 
-                        type="range" 
-                        min="0" 
-                        max="1" 
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
                         step="0.05"
                         value={isMuted ? 0 : volume}
                         onChange={handleVolumeChange}
@@ -521,23 +615,31 @@ export default function CourseLearnPage() {
                       />
                     </div>
 
-                    <div className="text-sm font-medium text-white/90 font-mono tracking-wider">
+                    <div className="text-sm font-medium text-white/90 font-mono tracking-wider pl-2">
                       {currentTimeStr} <span className="text-white/40 mx-1">/</span> {durationStr}
                     </div>
                   </div>
 
                   {/* Right: Audio Menu & Fullscreen */}
-                  <div className="flex items-center gap-5">
-                    
+                  <div className="flex items-center gap-2">
+
                     {/* Netflix Style Audio Menu */}
                     <div className="relative">
-                      <button 
+                      <button
                         onClick={() => setShowLanguageMenu(!showLanguageMenu)}
-                        className="flex items-center gap-2 text-white/90 hover:text-white transition-colors"
+                        className={`flex items-center gap-2 text-sm font-medium pl-3 pr-2.5 py-2 rounded-full border transition-colors ${
+                          showLanguageMenu
+                            ? 'bg-white/15 border-white/20 text-white'
+                            : 'bg-white/5 border-white/10 text-white/90 hover:bg-white/10 hover:text-white'
+                        }`}
                       >
                         <Settings className="w-5 h-5" />
                         <span className="text-sm font-medium">
-                          {activeLanguage === 'en' ? 'English' : activeLanguage === 'hi' ? 'Hindi' : activeLanguage === 'ta' ? 'Tamil' : activeLanguage === 'ml' ? 'Malayalam' : activeLanguage}
+                          {activeLanguage === 'en'
+                            ? 'English'
+                            : languageDisplayName(
+                                activeLesson.translated_audios?.find((a: any) => a.language_code.split('-')[0] === activeLanguage) || { language_code: activeLanguage }
+                              )}
                         </span>
                       </button>
 
@@ -563,18 +665,17 @@ export default function CourseLearnPage() {
                                 {activeLanguage === 'en' && <Check className="w-4 h-4 text-[#facc15]" />}
                               </button>
 
-                              {activeLesson.translated_audios?.filter((a:any) => a.status === 'completed').map((audio: any) => {
-                                const langMap:any = {'hi-IN': 'Hindi', 'ta-IN': 'Tamil', 'ml-IN': 'Malayalam', 'hi': 'Hindi', 'ta': 'Tamil', 'ml': 'Malayalam', 'fr': 'French', 'de': 'German'};
-                                const langName = langMap[audio.language_code] || audio.language_code;
+                              {activeLesson.translated_audios?.filter((a: any) => a.status === 'completed').map((audio: any) => {
+                                const langName = languageDisplayName(audio);
                                 const isActive = activeLanguage === audio.language_code.split('-')[0];
-                                
+
                                 return (
-                                  <button 
+                                  <button
                                     key={audio.id}
                                     onClick={() => changeLanguage(audio.language_code.split('-')[0])}
                                     className={`w-full text-left px-3 py-2.5 text-sm rounded-xl mb-1 flex justify-between items-center transition-colors ${isActive ? 'bg-white/10 text-white font-medium' : 'hover:bg-white/5 text-zinc-300'}`}
                                   >
-                                    {langName} (Dub)
+                                    {langName}
                                     {isActive && <Check className="w-4 h-4 text-[#facc15]" />}
                                   </button>
                                 )
@@ -585,20 +686,53 @@ export default function CourseLearnPage() {
                       </AnimatePresence>
                     </div>
 
-                    <button onClick={toggleFullscreen} className="text-white hover:text-[#facc15] transition-colors">
+                    <button onClick={toggleFullscreen} className="text-white hover:text-[#facc15] p-2 rounded-full hover:bg-white/10 transition-colors">
                       {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
                     </button>
                   </div>
 
                 </div>
               </div>
-
+              </div>
             </div>
 
             {/* Lesson Details */}
-            <div className="p-8 max-w-4xl overflow-y-auto">
-              <h1 className="text-3xl font-bold mb-4 tracking-tight">{activeLesson.title}</h1>
-              <p className="text-zinc-400 leading-relaxed whitespace-pre-line text-lg">{activeLesson.description}</p>
+            <div className="px-6 md:px-10 pt-6 pb-12 max-w-4xl">
+              {activeFlatEntry && (
+                <div className="flex items-center gap-2 text-xs font-bold text-[#facc15]/80 uppercase tracking-widest mb-3">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#facc15]/60" />
+                  Module {activeFlatEntry.moduleIdx + 1} · Lesson {activeFlatEntry.lessonIdx + 1}
+                </div>
+              )}
+              <h1 className="text-2xl md:text-3xl font-bold mb-4 tracking-tight">{activeLesson.title}</h1>
+              {activeLesson.description && (
+                <p className="text-zinc-400 leading-relaxed whitespace-pre-line text-base md:text-lg">{activeLesson.description}</p>
+              )}
+
+              {/* Previous / Next lesson navigation */}
+              {(prevEntry || nextEntry) && (
+                <div className="flex items-center justify-between gap-4 mt-10 pt-6 border-t border-white/10">
+                  <button
+                    disabled={!prevEntry}
+                    onClick={() => prevEntry && setActiveLesson(prevEntry.lesson)}
+                    className="flex items-center gap-1.5 text-sm font-medium text-zinc-400 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-400 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <ChevronLeft className="w-4 h-4" /> Previous
+                  </button>
+
+                  {nextEntry ? (
+                    <button
+                      onClick={() => setActiveLesson(nextEntry.lesson)}
+                      className="flex items-center gap-2 pl-5 pr-4 py-2.5 bg-[#facc15] text-black font-semibold text-sm rounded-full hover:bg-yellow-400 transition-colors shadow-[0_8px_24px_-8px_rgba(250,204,21,0.5)]"
+                    >
+                      <span className="max-w-[14rem] truncate">Next: {nextEntry.lesson.title}</span>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                    </button>
+                  ) : (
+                    <span className="text-sm font-medium text-zinc-600">🎉 Last lesson in this course</span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         ) : (
