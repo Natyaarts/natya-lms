@@ -1,13 +1,52 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from .models import Course, Module, VideoLesson, TranslatedAudio, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent
+from .languages import get_language_name
 
 User = get_user_model()
 
 class TranslatedAudioSerializer(serializers.ModelSerializer):
     class Meta:
         model = TranslatedAudio
-        fields = ['id', 'language_code', 'audio_file', 'status', 'created_at']
+        fields = ['id', 'lesson', 'language_code', 'language_name', 'audio_file', 'status', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'lesson', 'status', 'created_at', 'updated_at']
+
+
+class TranslatedAudioUploadSerializer(serializers.Serializer):
+    """
+    Input validation for the manual audio-upload endpoint
+    (VideoLessonViewSet.upload_audio). Deliberately separate from
+    TranslatedAudioSerializer, which represents the stored/output shape.
+    """
+    language_code = serializers.CharField(max_length=10, allow_blank=False)
+    language_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    audio_file = serializers.FileField()
+
+    def validate_language_code(self, value):
+        code = value.strip()
+        if not code:
+            raise serializers.ValidationError("language_code is required.")
+        if code.lower() == 'en':
+            raise serializers.ValidationError(
+                "English is the original lesson audio and cannot be uploaded as a translated track."
+            )
+        return code
+
+    def validate_audio_file(self, value):
+        allowed_extensions = ('.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac')
+        name = (value.name or '').lower()
+        if not name.endswith(allowed_extensions):
+            raise serializers.ValidationError(
+                f"Unsupported audio file type. Allowed: {', '.join(allowed_extensions)}"
+            )
+        return value
+
+    def validate(self, attrs):
+        if not attrs.get('language_name'):
+            attrs['language_name'] = get_language_name(attrs['language_code'])
+        else:
+            attrs['language_name'] = attrs['language_name'].strip()
+        return attrs
 
 class VideoLessonSerializer(serializers.ModelSerializer):
     translated_audios = TranslatedAudioSerializer(many=True, read_only=True)

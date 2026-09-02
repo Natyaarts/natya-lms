@@ -69,11 +69,20 @@ class Enrollment(models.Model):
         return f"{self.user.username} enrolled in {self.course.title}"
 
 class TranslatedAudio(models.Model):
+    """
+    An alternate audio track for a lesson, in a language other than the
+    original (English) video audio. The track can come from anywhere --
+    the AI dubbing pipeline (courses/services/ai_translator.py), a human
+    voice artist, a studio, or any external service. The LMS only stores
+    and serves the resulting file; it does not care how it was produced.
+    """
     lesson = models.ForeignKey(VideoLesson, related_name='translated_audios', on_delete=models.CASCADE)
     language_code = models.CharField(max_length=10, help_text="e.g. ml-IN, ta-IN, hi-IN, es-ES")
+    language_name = models.CharField(max_length=100, blank=True, default='', help_text="Display name, e.g. 'Malayalam'")
     audio_file = models.FileField(upload_to='videos/audios/')
     status = models.CharField(max_length=20, default='processing') # 'processing', 'completed', 'failed'
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         unique_together = ('lesson', 'language_code')

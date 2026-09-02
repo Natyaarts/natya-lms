@@ -1,8 +1,8 @@
 from rest_framework import viewsets, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from .models import Course, Module, VideoLesson, Enrollment, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent
-from .serializers import CourseSerializer, ModuleSerializer, VideoLessonSerializer, LessonProgressSerializer, LiveClassSerializer, LiveBatchSerializer, LiveBatchStudentSerializer
+from .models import Course, Module, VideoLesson, Enrollment, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, TranslatedAudio
+from .serializers import CourseSerializer, ModuleSerializer, VideoLessonSerializer, LessonProgressSerializer, LiveClassSerializer, LiveBatchSerializer, LiveBatchStudentSerializer, TranslatedAudioSerializer, TranslatedAudioUploadSerializer
 from users.permissions import IsSuperAdminOrTeacherOrReadOnly
 
 class CourseViewSet(viewsets.ModelViewSet):
@@ -142,6 +142,81 @@ class VideoLessonViewSet(viewsets.ModelViewSet):
             generate_dubbed_audio_task.delay(lesson.id, target_languages=langs_to_process)
 
         return Response({"message": f"AI Audio generation started in background for '{lesson.title}'."})
+
+    @action(detail=True, methods=['post'], url_path='audio')
+    def upload_audio(self, request, pk=None):
+        """
+        Manual audio-track upload for a lesson (POST /api/courses/lessons/{id}/audio/).
+
+        This is the primary, supported workflow for translated/dubbed lesson
+        audio: the client produces the audio externally (AI service, human
+        voice artist, studio, etc.) and uploads the resulting file here. The
+        LMS does not generate or care how the audio was produced -- it just
+        stores it against (lesson, language_code), replacing any existing
+        track for that language rather than creating a duplicate.
+
+        This never triggers the AI dubbing pipeline (generate_ai_audio /
+        generate_dubbed_audio_task) -- that remains a separate, unrelated
+        workflow kept only for backward compatibility.
+        """
+        lesson = self.get_object()
+
+        upload_serializer = TranslatedAudioUploadSerializer(data=request.data)
+        upload_serializer.is_valid(raise_exception=True)
+        validated = upload_serializer.validated_data
+
+        language_code = validated['language_code']
+        language_name = validated['language_name']
+        audio_file = validated['audio_file']
+
+        audio_obj, created = TranslatedAudio.objects.get_or_create(
+            lesson=lesson,
+            language_code=language_code,
+            defaults={'language_name': language_name, 'status': 'completed'}
+        )
+
+        if not created:
+            # Replacing an existing track for this language: drop the old
+            # file from storage before attaching the new one.
+            if audio_obj.audio_file:
+                try:
+                    audio_obj.audio_file.delete(save=False)
+                except Exception:
+                    pass
+            audio_obj.language_name = language_name
+
+        audio_obj.audio_file = audio_file
+        audio_obj.status = 'completed'  # No background processing for manual uploads.
+        audio_obj.save()
+
+        from .services.audio_duration import check_duration_mismatch
+        duration_warning = check_duration_mismatch(lesson, audio_obj)
+
+        response_data = TranslatedAudioSerializer(audio_obj).data
+        if duration_warning:
+            response_data['duration_warning'] = duration_warning
+
+        return Response(
+            response_data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=['delete'], url_path=r'audio/(?P<audio_id>[^/.]+)')
+    def delete_audio(self, request, pk=None, audio_id=None):
+        """Delete a single translated audio track (DELETE /api/courses/lessons/{id}/audio/{audio_id}/)."""
+        lesson = self.get_object()
+        try:
+            audio_obj = TranslatedAudio.objects.get(pk=audio_id, lesson=lesson)
+        except (TranslatedAudio.DoesNotExist, ValueError):
+            return Response({"error": "Audio track not found for this lesson."}, status=status.HTTP_404_NOT_FOUND)
+
+        if audio_obj.audio_file:
+            try:
+                audio_obj.audio_file.delete(save=False)
+            except Exception:
+                pass
+        audio_obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['get', 'post', 'patch'], url_path='progress', permission_classes=[permissions.IsAuthenticated])
     def progress(self, request, pk=None):

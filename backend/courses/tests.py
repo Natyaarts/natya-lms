@@ -1893,3 +1893,188 @@ class LiveClassNotificationTests(APITransactionTestCase):
         send_class_reminder(live_class.id, expected_timestamp)
         # Count should remain 1
         self.assertEqual(Notification.objects.filter(recipient=self.student1, notification_type=NotificationType.LIVE_CLASS).count(), 1)
+
+
+class ManualAudioUploadTests(APITestCase):
+    """
+    Tests for the manual (non-AI) translated-audio upload workflow:
+    POST/DELETE /api/courses/lessons/{id}/audio/[...]
+    """
+
+    def setUp(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        self.course = Course.objects.create(title="Dance Basics", price=100.00, is_published=True)
+        self.module = Module.objects.create(course=self.course, title="Module 1", order=1)
+        self.lesson = VideoLesson.objects.create(
+            module=self.module,
+            title="Lesson 1",
+            video_file=SimpleUploadedFile("lesson.mp4", b"fake-video-bytes", content_type="video/mp4"),
+        )
+
+        self.admin = User.objects.create_superuser(username="admin", password="pw")
+        self.teacher = User.objects.create_user(username="teacher", password="pw", is_teacher=True, is_student=False)
+        self.student = User.objects.create_user(username="student", password="pw")
+        Enrollment.objects.create(user=self.student, course=self.course)
+
+        self.upload_url = f"/api/courses/lessons/{self.lesson.id}/audio/"
+        self.audio_file = lambda name="malayalam.mp3": SimpleUploadedFile(name, b"fake-audio-bytes", content_type="audio/mpeg")
+
+    def _delete_url(self, audio_id):
+        return f"/api/courses/lessons/{self.lesson.id}/audio/{audio_id}/"
+
+    def test_admin_can_upload_audio_track(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(self.upload_url, {
+            "language_code": "ml",
+            "language_name": "Malayalam",
+            "audio_file": self.audio_file(),
+        }, format="multipart")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["language_code"], "ml")
+        self.assertEqual(response.data["language_name"], "Malayalam")
+        self.assertEqual(response.data["status"], "completed")
+        self.assertTrue(TranslatedAudio.objects.filter(lesson=self.lesson, language_code="ml", status="completed").exists())
+
+    def test_teacher_can_upload_audio_track(self):
+        self.client.force_authenticate(user=self.teacher)
+        response = self.client.post(self.upload_url, {
+            "language_code": "hi",
+            "audio_file": self.audio_file("hindi.mp3"),
+        }, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        # language_name auto-derived when not supplied
+        self.assertEqual(response.data["language_name"], "Hindi")
+
+    def test_student_cannot_upload_audio_track(self):
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(self.upload_url, {
+            "language_code": "ml",
+            "audio_file": self.audio_file(),
+        }, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(TranslatedAudio.objects.filter(lesson=self.lesson, language_code="ml").exists())
+
+    def test_anonymous_cannot_upload_audio_track(self):
+        response = self.client.post(self.upload_url, {
+            "language_code": "ml",
+            "audio_file": self.audio_file(),
+        }, format="multipart")
+        self.assertIn(response.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))
+
+    def test_upload_rejects_english_as_translated_language(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(self.upload_url, {
+            "language_code": "en",
+            "audio_file": self.audio_file(),
+        }, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_upload_rejects_missing_audio_file(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(self.upload_url, {
+            "language_code": "ml",
+        }, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_upload_rejects_missing_language_code(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(self.upload_url, {
+            "audio_file": self.audio_file(),
+        }, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_upload_rejects_unsupported_file_type(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(self.upload_url, {
+            "language_code": "ml",
+            "audio_file": SimpleUploadedFile("notaudio.txt", b"not audio", content_type="text/plain"),
+        }, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_duplicate_language_replaces_existing_track_without_duplicating(self):
+        self.client.force_authenticate(user=self.admin)
+        first = self.client.post(self.upload_url, {
+            "language_code": "ta",
+            "audio_file": self.audio_file("tamil_v1.mp3"),
+        }, format="multipart")
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        first_id = first.data["id"]
+
+        second = self.client.post(self.upload_url, {
+            "language_code": "ta",
+            "audio_file": self.audio_file("tamil_v2.mp3"),
+        }, format="multipart")
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.data["id"], first_id)  # same row updated, not a new one
+
+        self.assertEqual(TranslatedAudio.objects.filter(lesson=self.lesson, language_code="ta").count(), 1)
+        updated = TranslatedAudio.objects.get(lesson=self.lesson, language_code="ta")
+        self.assertIn("tamil_v2", updated.audio_file.name)
+
+    def test_legacy_regional_language_codes_are_unaffected(self):
+        # Pre-existing AI-generated rows using regional codes must keep working.
+        legacy = TranslatedAudio.objects.create(lesson=self.lesson, language_code="hi-IN", status="completed")
+        self.client.force_authenticate(user=self.admin)
+
+        # Uploading a new base-code 'hi' track must NOT touch the legacy 'hi-IN' row.
+        response = self.client.post(self.upload_url, {
+            "language_code": "hi",
+            "audio_file": self.audio_file(),
+        }, format="multipart")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.status, "completed")
+        self.assertEqual(TranslatedAudio.objects.filter(lesson=self.lesson).count(), 2)
+
+    def test_admin_can_delete_audio_track(self):
+        track = TranslatedAudio.objects.create(lesson=self.lesson, language_code="ml", status="completed")
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.delete(self._delete_url(track.id))
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(TranslatedAudio.objects.filter(id=track.id).exists())
+
+    def test_student_cannot_delete_audio_track(self):
+        track = TranslatedAudio.objects.create(lesson=self.lesson, language_code="ml", status="completed")
+        self.client.force_authenticate(user=self.student)
+        response = self.client.delete(self._delete_url(track.id))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(TranslatedAudio.objects.filter(id=track.id).exists())
+
+    def test_delete_nonexistent_audio_track_returns_404(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.delete(self._delete_url(999999))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_delete_audio_track_from_wrong_lesson_returns_404(self):
+        other_lesson = VideoLesson.objects.create(module=self.module, title="Other Lesson")
+        track = TranslatedAudio.objects.create(lesson=other_lesson, language_code="ml", status="completed")
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.delete(self._delete_url(track.id))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(TranslatedAudio.objects.filter(id=track.id).exists())
+
+    def test_lesson_serializer_response_includes_translated_audios_with_new_fields(self):
+        TranslatedAudio.objects.create(lesson=self.lesson, language_code="ml", language_name="Malayalam", status="completed")
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(f"/api/courses/{self.course.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        lesson_data = response.data["modules"][0]["lessons"][0]
+        self.assertIn("translated_audios", lesson_data)
+        audio_data = lesson_data["translated_audios"][0]
+        for field in ("id", "lesson", "language_code", "language_name", "audio_file", "status", "created_at", "updated_at"):
+            self.assertIn(field, audio_data)
+
+    def test_manual_upload_does_not_trigger_ai_dubbing_task(self):
+        from unittest.mock import patch
+        self.client.force_authenticate(user=self.admin)
+        with patch('courses.tasks.generate_dubbed_audio_task.delay') as mock_delay:
+            response = self.client.post(self.upload_url, {
+                "language_code": "ml",
+                "audio_file": self.audio_file(),
+            }, format="multipart")
+            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+            mock_delay.assert_not_called()
