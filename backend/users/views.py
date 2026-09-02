@@ -117,13 +117,20 @@ class VerifyOTPView(APIView):
         access_cookie_key = getattr(settings, 'REST_AUTH', {}).get('JWT_AUTH_COOKIE', 'natya-auth')
         refresh_cookie_key = getattr(settings, 'REST_AUTH', {}).get('JWT_AUTH_REFRESH_COOKIE', 'natya-refresh')
         
+        # Use COOKIE_DOMAIN (None on localhost, '.natyaarts.com' in prod) --
+        # NOT SESSION_COOKIE_DOMAIN directly. A cookie's Domain attribute has
+        # to match the request host or a parent of it, so hardcoding the
+        # production domain here made the browser silently drop this cookie
+        # on localhost: the API call looked successful but the user was
+        # never actually logged in.
+        cookie_domain = getattr(settings, 'COOKIE_DOMAIN', None)
         response.set_cookie(
             access_cookie_key,
             str(refresh.access_token),
             httponly=True,
             samesite='None',
             secure=True,
-            domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None)
+            domain=cookie_domain
         )
         response.set_cookie(
             refresh_cookie_key,
@@ -131,7 +138,7 @@ class VerifyOTPView(APIView):
             httponly=True,
             samesite='None',
             secure=True,
-            domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None)
+            domain=cookie_domain
         )
         
         return response

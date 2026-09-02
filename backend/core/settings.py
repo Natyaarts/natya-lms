@@ -93,9 +93,18 @@ CSRF_COOKIE_HTTPONLY = False
 SESSION_COOKIE_SAMESITE = 'None'
 SESSION_COOKIE_SECURE = True
 
-# Allow academy.natyaarts.com to read cookies set by api.natyaarts.com
-CSRF_COOKIE_DOMAIN = '.natyaarts.com'
-SESSION_COOKIE_DOMAIN = '.natyaarts.com'
+# Allow academy.natyaarts.com to read cookies set by api.natyaarts.com.
+# Only applies in production: a cookie's Domain attribute must be the exact
+# request host or a parent of it, so setting '.natyaarts.com' while running
+# locally (localhost/127.0.0.1) makes browsers silently reject the cookie
+# entirely -- the request "succeeds" but the user never actually gets logged
+# in. COOKIE_DOMAIN defaults to None (no Domain attribute -> exact host,
+# works everywhere including localhost) unless DEBUG is off, in which case
+# it falls back to the production domain automatically. Override with the
+# COOKIE_DOMAIN env var for other environments (e.g. staging).
+COOKIE_DOMAIN = os.environ.get('COOKIE_DOMAIN', None if DEBUG else '.natyaarts.com')
+CSRF_COOKIE_DOMAIN = COOKIE_DOMAIN
+SESSION_COOKIE_DOMAIN = COOKIE_DOMAIN
 
 # Tell Django it's behind a secure proxy so it sends Secure cookies over HTTP from the load balancer
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
