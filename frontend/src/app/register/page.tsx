@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import CountrySelect from "@/components/CountrySelect";
 
@@ -10,11 +10,27 @@ export default function Register() {
     identifier: "",
     otp: ""
   });
-  
+
   const [error, setError] = useState("");
   const [step, setStep] = useState(1); // 1 = identifier, 2 = otp
   const [authMethod, setAuthMethod] = useState<'mobile' | 'email'>('mobile');
   const [countryCode, setCountryCode] = useState('+91');
+
+  // Send-OTP button state: `otpLoading` disables the button mid-request
+  // (prevents double submissions / duplicate OTPs), `resendCooldown` is a
+  // countdown (seconds) after a successful send before "Resend OTP" unlocks.
+  const [otpLoading, setOtpLoading] = useState(false);
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const RESEND_COOLDOWN_SECONDS = 30;
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setResendCooldown(prev => (prev <= 1 ? 0 : prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [resendCooldown]);
 
   const handleChange = (e: any) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -22,11 +38,16 @@ export default function Register() {
 
   const handleSendOTP = async (e: any) => {
     e.preventDefault();
+    // Guard against double-submission: ignore clicks while a request is
+    // already in flight or while the resend cooldown hasn't elapsed yet.
+    if (otpLoading || resendCooldown > 0) return;
+
     setError("");
-    
+    setOtpLoading(true);
+
     try {
       // Format the identifier if it's a mobile number
-      const finalIdentifier = authMethod === 'mobile' 
+      const finalIdentifier = authMethod === 'mobile'
         ? `${countryCode}${formData.identifier}`
         : formData.identifier;
 
@@ -36,24 +57,30 @@ export default function Register() {
         body: JSON.stringify({ identifier: finalIdentifier }),
         credentials: 'include'
       });
-      
+
       const data = await res.json();
       if (res.ok) {
         setStep(2);
+        setResendCooldown(RESEND_COOLDOWN_SECONDS);
       } else {
         setError(data.error || "Failed to send OTP");
       }
     } catch (err) {
       setError("Failed to connect to the server.");
+    } finally {
+      setOtpLoading(false);
     }
   };
 
   const handleVerifyOTP = async (e: any) => {
     e.preventDefault();
+    if (verifyLoading) return;
+
     setError("");
-    
+    setVerifyLoading(true);
+
     try {
-      const finalIdentifier = authMethod === 'mobile' 
+      const finalIdentifier = authMethod === 'mobile'
         ? `${countryCode}${formData.identifier}`
         : formData.identifier;
 
@@ -62,15 +89,17 @@ export default function Register() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ identifier: finalIdentifier, otp: formData.otp })
       });
-      
+
       const data = await res.json();
       if (res.ok) {
         window.location.href = "/dashboard";
       } else {
         setError(data.error || "Invalid OTP");
+        setVerifyLoading(false);
       }
     } catch (err) {
       setError("Failed to connect to the server.");
+      setVerifyLoading(false);
     }
   };
 
@@ -140,21 +169,30 @@ export default function Register() {
               />
             </div>
             
-            <button 
+            <motion.button
               type="submit"
-              className="w-full py-3 bg-gradient-to-r from-[#facc15] to-[#a16207] text-black font-semibold rounded-xl hover:opacity-90 transition-opacity mt-2"
+              disabled={otpLoading}
+              whileTap={otpLoading ? undefined : { scale: 0.97 }}
+              className="w-full py-3 bg-gradient-to-r from-[#facc15] to-[#a16207] text-black font-semibold rounded-xl hover:opacity-90 transition-opacity mt-2 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:opacity-60 flex items-center justify-center gap-2"
             >
-              Send OTP
-            </button>
+              {otpLoading ? (
+                <>
+                  <span className="h-4 w-4 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                  Sending…
+                </>
+              ) : (
+                "Send OTP"
+              )}
+            </motion.button>
           </form>
         ) : (
           <form onSubmit={handleVerifyOTP} className="space-y-4">
             <div>
               <div className="text-sm text-zinc-400 mb-2">We sent a 6-digit code to {authMethod === 'mobile' ? `${countryCode}${formData.identifier}` : formData.identifier}</div>
-              <input 
-                type="text" 
+              <input
+                type="text"
                 name="otp"
-                placeholder="Enter 6-digit OTP" 
+                placeholder="Enter 6-digit OTP"
                 required
                 maxLength={6}
                 value={formData.otp}
@@ -162,16 +200,46 @@ export default function Register() {
                 className="w-full px-4 py-3 text-center tracking-[0.5em] text-2xl bg-zinc-900 border border-zinc-800 rounded-xl text-white focus:outline-none focus:border-zinc-500 transition-colors"
               />
             </div>
-            
-            <button 
+
+            {/* Resend OTP countdown */}
+            <div className="text-center text-sm">
+              {resendCooldown > 0 ? (
+                <span className="text-zinc-500">
+                  Resend OTP in{' '}
+                  <span className="text-zinc-300 font-medium tabular-nums">
+                    0:{resendCooldown.toString().padStart(2, '0')}
+                  </span>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSendOTP}
+                  disabled={otpLoading}
+                  className="text-[#facc15] hover:underline font-medium disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed"
+                >
+                  {otpLoading ? "Sending…" : "Resend OTP"}
+                </button>
+              )}
+            </div>
+
+            <motion.button
               type="submit"
-              className="w-full py-3 bg-gradient-to-r from-[#facc15] to-[#a16207] text-black font-semibold rounded-xl hover:opacity-90 transition-opacity mt-2"
+              disabled={verifyLoading}
+              whileTap={verifyLoading ? undefined : { scale: 0.97 }}
+              className="w-full py-3 bg-gradient-to-r from-[#facc15] to-[#a16207] text-black font-semibold rounded-xl hover:opacity-90 transition-opacity mt-2 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:opacity-60 flex items-center justify-center gap-2"
             >
-              Verify and Log In
-            </button>
-            <button 
+              {verifyLoading ? (
+                <>
+                  <span className="h-4 w-4 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                  Verifying…
+                </>
+              ) : (
+                "Verify and Log In"
+              )}
+            </motion.button>
+            <button
               type="button"
-              onClick={() => setStep(1)}
+              onClick={() => { setStep(1); setResendCooldown(0); setError(""); }}
               className="w-full py-2 text-zinc-400 hover:text-white text-sm transition-colors mt-2"
             >
               Change number/email
