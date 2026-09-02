@@ -1,8 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ActivityIndicator, ScrollView, Linking, Image } from 'react-native';
 import client from '../api/client';
-import CustomVideoPlayer from '../components/CustomVideoPlayer';
+import CustomVideoPlayer, { AudioTrackOption } from '../components/CustomVideoPlayer';
 import { usePreventScreenCapture } from 'expo-screen-capture';
+
+// Kept in sync with backend/courses/languages.py -- used as a fallback display
+// name for legacy tracks that don't have language_name set.
+const LANGUAGE_NAME_MAP: Record<string, string> = {
+  ml: 'Malayalam', hi: 'Hindi', ta: 'Tamil', te: 'Telugu', kn: 'Kannada',
+  bn: 'Bengali', mr: 'Marathi', gu: 'Gujarati', pa: 'Punjabi', ar: 'Arabic',
+  fr: 'French', de: 'German', es: 'Spanish', pt: 'Portuguese', it: 'Italian',
+  ja: 'Japanese', ko: 'Korean', zh: 'Chinese', ru: 'Russian',
+};
 
 export default function LearnScreen({ route, navigation }: any) {
   usePreventScreenCapture();
@@ -29,9 +38,23 @@ export default function LearnScreen({ route, navigation }: any) {
     fetchCourse();
   }, [courseId]);
 
-  const videoSource = activeLesson?.video_file 
-    ? (activeLesson.video_file.startsWith('/') ? `https://academy-api.natyaarts.com${activeLesson.video_file}` : activeLesson.video_file)
+  const resolveMediaUrl = (url: string) =>
+    url.startsWith('/') ? `https://academy-api.natyaarts.com${url}` : url;
+
+  const videoSource = activeLesson?.video_file
+    ? resolveMediaUrl(activeLesson.video_file)
     : null;
+
+  // Manually-uploaded translated audio tracks for the active lesson (backend-driven,
+  // see courses/serializers.py TranslatedAudioSerializer). Only completed tracks are
+  // shown to students -- matches the web player's language menu.
+  const audioTracks: AudioTrackOption[] = (activeLesson?.translated_audios || [])
+    .filter((a: any) => a.status === 'completed' && a.audio_file)
+    .map((a: any) => ({
+      code: a.language_code.split('-')[0],
+      name: a.language_name || LANGUAGE_NAME_MAP[a.language_code.split('-')[0].toLowerCase()] || a.language_code,
+      url: resolveMediaUrl(a.audio_file),
+    }));
 
   const handlePurchase = () => {
     // Redirect to web app for purchase to bypass app store 30% fee
@@ -65,7 +88,7 @@ export default function LearnScreen({ route, navigation }: any) {
             </View>
           </>
         ) : videoSource ? (
-          <CustomVideoPlayer source={videoSource} />
+          <CustomVideoPlayer source={videoSource} audioTracks={audioTracks} lessonKey={activeLesson?.id} />
         ) : (
           <View style={styles.noVideo}><Text style={{color: '#666'}}>No video uploaded for this lesson</Text></View>
         )}

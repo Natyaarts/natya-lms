@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, TouchableOpacity, Text, Modal, SafeAreaView, ActivityIndicator } from 'react-native';
-import { useVideoPlayer, VideoView, VideoSource, AudioTrack } from 'expo-video';
+import React, { useEffect, useState } from 'react';
+import { View, StyleSheet, TouchableOpacity, Text, Modal } from 'react-native';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEventListener } from 'expo';
 import Slider from '@react-native-community/slider';
 
@@ -12,53 +12,109 @@ const formatTime = (seconds: number) => {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 };
 
-interface CustomVideoPlayerProps {
-  source: string;
+// One manually-uploaded translated audio track for the active lesson.
+// English isn't included here -- it's always the original video's own audio.
+export interface AudioTrackOption {
+  code: string;
+  name: string;
+  url: string;
 }
 
-export default function CustomVideoPlayer({ source }: CustomVideoPlayerProps) {
+interface CustomVideoPlayerProps {
+  source: string;
+  // Available alternate-language audio tracks for the current lesson
+  // (backend-driven -- see courses/serializers.py TranslatedAudioSerializer).
+  audioTracks?: AudioTrackOption[];
+  // Changes whenever the active lesson changes, so the player can reset
+  // language selection and stop any alternate audio from the old lesson.
+  lessonKey?: string | number;
+}
+
+// How far the alternate audio track is allowed to drift from the video
+// before we force a re-sync (seconds). Small drift is normal and re-syncing
+// too aggressively causes audible stutter.
+const SYNC_DRIFT_TOLERANCE = 0.3;
+
+export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey }: CustomVideoPlayerProps) {
   const [showControls, setShowControls] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [duration, setDuration] = useState(0);
-  const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
-  const [currentAudioTrack, setCurrentAudioTrack] = useState<AudioTrack | null>(null);
 
-  const player = useVideoPlayer(source, player => {
-    player.loop = false;
-    player.play();
+  // 'en' = original video audio. Anything else must match an audioTracks[].code.
+  const [activeAudioCode, setActiveAudioCode] = useState<string>('en');
+
+  const player = useVideoPlayer(source, p => {
+    p.loop = false;
+    p.play();
   });
+
+  const activeTrack = activeAudioCode !== 'en' ? audioTracks.find(t => t.code === activeAudioCode) : null;
+  const altSource = activeTrack?.url ?? null;
+
+  // A second, headless player used purely as an audio source for the
+  // selected translated track. expo-video plays audio-only sources just
+  // like video, so this reuses the one video/audio library already in the
+  // project instead of adding a new dependency. Its source is recreated by
+  // expo-video whenever `altSource` changes, which also cleanly releases
+  // the previous track's player -- exactly what we want on language switch
+  // or lesson change (when altSource becomes null again).
+  const altPlayer = useVideoPlayer(altSource, p => {
+    p.loop = false;
+    if (altSource) {
+      p.currentTime = player.currentTime;
+      p.muted = false;
+      if (player.playing) {
+        p.play();
+      }
+    }
+  });
+
+  // Keep the original video's own audio muted while a translated track is active.
+  useEffect(() => {
+    player.muted = activeAudioCode !== 'en';
+  }, [activeAudioCode, player]);
+
+  // Reset to English and stop any alternate audio whenever the lesson changes,
+  // so audio from the previous lesson never keeps playing into the new one.
+  useEffect(() => {
+    setActiveAudioCode('en');
+    setShowSettings(false);
+  }, [lessonKey]);
 
   // Track time updates
   useEventListener(player, 'timeUpdate', (payload) => {
     setCurrentTime(payload.currentTime);
+    // Periodically correct alternate-audio drift (e.g. after buffering stalls).
+    if (activeAudioCode !== 'en' && Math.abs(altPlayer.currentTime - payload.currentTime) > SYNC_DRIFT_TOLERANCE) {
+      altPlayer.currentTime = payload.currentTime;
+    }
   });
 
-  // Track playing state
+  // Track playing state and mirror play/pause onto the alternate audio track.
   useEventListener(player, 'playingChange', (payload) => {
     setIsPlaying(payload.isPlaying);
+    if (activeAudioCode !== 'en') {
+      if (payload.isPlaying) {
+        if (Math.abs(altPlayer.currentTime - player.currentTime) > SYNC_DRIFT_TOLERANCE) {
+          altPlayer.currentTime = player.currentTime;
+        }
+        altPlayer.play();
+      } else {
+        altPlayer.pause();
+      }
+    }
   });
 
   // Track duration when source loads
   useEventListener(player, 'sourceLoad', (payload) => {
     setDuration(payload.duration);
-    setAudioTracks(payload.availableAudioTracks || []);
-  });
-
-  // Track changes in available audio tracks dynamically
-  useEventListener(player, 'availableAudioTracksChange', (payload) => {
-    setAudioTracks(payload.availableAudioTracks || []);
-  });
-
-  // Track changes in the current audio track
-  useEventListener(player, 'audioTrackChange', (payload) => {
-    setCurrentAudioTrack(payload.audioTrack || null);
   });
 
   // Hide controls after 3 seconds of inactivity
   useEffect(() => {
-    let timeout: NodeJS.Timeout;
+    let timeout: ReturnType<typeof setTimeout>;
     if (showControls && isPlaying) {
       timeout = setTimeout(() => {
         setShowControls(false);
@@ -79,22 +135,25 @@ export default function CustomVideoPlayer({ source }: CustomVideoPlayerProps) {
 
   const handleSeek = (value: number) => {
     player.currentTime = value;
+    if (activeAudioCode !== 'en') {
+      altPlayer.currentTime = value;
+    }
     // Keep controls visible
     setShowControls(true);
   };
 
-  const handleAudioTrackSelect = (track: AudioTrack) => {
-    player.audioTrack = track;
+  const selectAudioTrack = (code: string) => {
+    setActiveAudioCode(code);
     setShowSettings(false);
   };
 
   return (
     <View style={styles.container}>
-      {/* 
+      {/*
         We use nativeControls={false} because we are building a completely custom UI
         overlaid on top of the VideoView.
       */}
-      <TouchableOpacity 
+      <TouchableOpacity
         style={styles.videoTouchArea}
         activeOpacity={1}
         onPress={() => setShowControls(prev => !prev)}
@@ -103,22 +162,23 @@ export default function CustomVideoPlayer({ source }: CustomVideoPlayerProps) {
           player={player}
           style={styles.video}
           nativeControls={false}
-          allowsFullscreen={false} // Custom full screen logic would go here if needed
         />
       </TouchableOpacity>
 
       {/* Custom Controls Overlay */}
       {showControls && (
         <View style={styles.controlsOverlay} pointerEvents="box-none">
-          
-          {/* Top Bar: Settings Icon */}
+
+          {/* Top Bar: Audio Track Selector */}
           <View style={styles.topBar} pointerEvents="box-none">
-            {audioTracks.length > 1 && (
-              <TouchableOpacity 
+            {audioTracks.length > 0 && (
+              <TouchableOpacity
                 style={styles.settingsButton}
                 onPress={() => setShowSettings(true)}
               >
-                <Text style={styles.settingsIcon}>⚙️ Audio</Text>
+                <Text style={styles.settingsIcon}>
+                  🎧 {activeAudioCode === 'en' ? 'English' : (activeTrack?.name || activeAudioCode)}
+                </Text>
               </TouchableOpacity>
             )}
           </View>
@@ -133,7 +193,7 @@ export default function CustomVideoPlayer({ source }: CustomVideoPlayerProps) {
           {/* Bottom Bar: Scrubber and Time */}
           <View style={styles.bottomBar}>
             <Text style={styles.timeText}>{formatTime(currentTime)}</Text>
-            
+
             <Slider
               style={styles.slider}
               minimumValue={0}
@@ -160,26 +220,35 @@ export default function CustomVideoPlayer({ source }: CustomVideoPlayerProps) {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Audio Languages</Text>
-            
-            {audioTracks.map((track, idx) => (
+
+            <TouchableOpacity
+              style={[styles.trackItem, activeAudioCode === 'en' && styles.trackItemActive]}
+              onPress={() => selectAudioTrack('en')}
+            >
+              <Text style={[styles.trackText, activeAudioCode === 'en' && styles.trackTextActive]}>
+                English (Original)
+              </Text>
+            </TouchableOpacity>
+
+            {audioTracks.map((track) => (
               <TouchableOpacity
-                key={track.id || idx.toString()}
+                key={track.code}
                 style={[
-                  styles.trackItem, 
-                  currentAudioTrack?.id === track.id && styles.trackItemActive
+                  styles.trackItem,
+                  activeAudioCode === track.code && styles.trackItemActive
                 ]}
-                onPress={() => handleAudioTrackSelect(track)}
+                onPress={() => selectAudioTrack(track.code)}
               >
                 <Text style={[
                   styles.trackText,
-                  currentAudioTrack?.id === track.id && styles.trackTextActive
+                  activeAudioCode === track.code && styles.trackTextActive
                 ]}>
-                  {track.label || track.language || `Track ${idx + 1}`}
+                  {track.name}
                 </Text>
               </TouchableOpacity>
             ))}
 
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.closeModalButton}
               onPress={() => setShowSettings(false)}
             >
@@ -208,7 +277,7 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   controlsOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     justifyContent: 'space-between',
     backgroundColor: 'rgba(0,0,0,0.3)', // Slight dim when controls are active
   },
