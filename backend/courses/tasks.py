@@ -104,8 +104,22 @@ def generate_dubbed_audio_task(self, lesson_id, target_languages=None):
                 pass
         raise e
 
+REMINDER_LABELS = {
+    '24h': '24 hours',
+    '1h': '1 hour',
+    '15m': '15 minutes',
+}
+
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
-def send_class_reminder(self, class_id, expected_start_timestamp):
+def send_class_reminder(self, class_id, expected_start_timestamp, reminder_type='1h'):
+    """
+    Phase 2: generalized to send any of the 24h/1h/15m reminders via the
+    SAME task and the SAME NotificationService used since Phase 0/1 -- no
+    second notification system. `reminder_type` defaults to '1h' so any
+    Celery message already queued before this change deployed (with only
+    the original 2 positional args) still calls correctly.
+    """
     from courses.models import LiveClass
     from notifications.services import NotificationService
     from notifications.models import NotificationType
@@ -132,6 +146,8 @@ def send_class_reminder(self, class_id, expected_start_timestamp):
         logger.info(f"Reminder skipped: LiveClass {class_id} is already in the past.")
         return
 
+    label = REMINDER_LABELS.get(reminder_type, reminder_type)
+
     # Check batch assignment and dispatch
     from courses.models import LiveBatchStudent
     students = LiveBatchStudent.objects.filter(
@@ -144,11 +160,11 @@ def send_class_reminder(self, class_id, expected_start_timestamp):
         try:
             NotificationService.create_notification(
                 recipient=student,
-                title=f"Reminder: {live_class.title} starts soon",
+                title=f"Reminder: {live_class.title} starts in {label}",
                 body=f"Your live class for {live_class.course.title} will start at {live_class.scheduled_start.strftime('%H:%M')}.",
                 notification_type=NotificationType.LIVE_CLASS,
                 action_url=f"/courses/{live_class.course.id}/live",
-                idempotency_key=f"liveclass:{live_class.id}:reminder:{student.id}"
+                idempotency_key=f"liveclass:{live_class.id}:reminder:{reminder_type}:{student.id}"
             )
         except Exception as e:
             logger.error(f"Failed to create reminder for student {student.id}, class {live_class.id}: {str(e)}", exc_info=True)

@@ -73,6 +73,15 @@ export default function Dashboard() {
             <Link href="/courses" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
               Browse Courses
             </Link>
+            <Link href="/bundles" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
+              Bundles
+            </Link>
+            <Link href="/live-classes" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
+              Live Classes
+            </Link>
+            <Link href="/orders" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
+              My Orders
+            </Link>
 
             <NotificationBell />
 

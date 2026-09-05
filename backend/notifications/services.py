@@ -70,6 +70,41 @@ class NotificationService:
             else:
                 send_notification()
 
+    @staticmethod
+    def trigger_order_payment_success(order, previous_status):
+        """
+        Phase 3.3 sibling of trigger_payment_success() for the new Order
+        model -- same transition-guard/on_commit/idempotency-key shape,
+        same reused "PAYMENT" notification_type (no new type added, per
+        the Phase 3.3 brief). Per-course "You're enrolled!" notifications
+        are NOT duplicated here -- those already fire automatically from
+        the existing Enrollment post_save signal (notifications/signals.py)
+        for every Enrollment created during order fulfillment, whether it
+        came from a single course item or every course inside a bundle.
+        """
+        if previous_status != 'PAID':
+            import logging
+            logger = logging.getLogger(__name__)
+
+            def send_notification():
+                try:
+                    NotificationService.create_notification(
+                        recipient=order.user,
+                        title="Payment successful",
+                        body=f"Your payment of ₹{order.total_amount} for order {order.order_number} was completed successfully.",
+                        notification_type="PAYMENT",
+                        action_url="/dashboard",
+                        idempotency_key=f"order:{order.id}:success"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to create payment success notification for order {order.id}: {str(e)}", exc_info=True)
+
+            connection = transaction.get_connection()
+            if connection.in_atomic_block:
+                transaction.on_commit(send_notification)
+            else:
+                send_notification()
+
 class LiveClassNotificationService:
     @staticmethod
     def _get_assigned_students(live_class):

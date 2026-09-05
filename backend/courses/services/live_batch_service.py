@@ -33,11 +33,16 @@ class LiveBatchService:
             if getattr(student, 'is_teacher', False) and not student.is_superuser:
                 raise ValidationError("Cannot assign a teacher as a student to a batch.")
 
-            # 3. Validate ONE_TO_ONE capacity
+            # 3. Validate capacity: ONE_TO_ONE is always capped at 1; a GROUP
+            # batch respects its own max_participants if one is set (Phase 2).
             if batch.batch_type == LiveBatch.BatchType.ONE_TO_ONE:
                 existing_count = LiveBatchStudent.objects.filter(batch=batch).exclude(student=student).count()
                 if existing_count >= 1:
                     raise ValidationError("This ONE_TO_ONE batch is already assigned to a student.")
+            elif batch.max_participants is not None:
+                existing_count = LiveBatchStudent.objects.filter(batch=batch).exclude(student=student).count()
+                if existing_count >= batch.max_participants:
+                    raise ValidationError(f"This batch is full (max {batch.max_participants} participants).")
 
             # 4. Perform purchase validation
             purchase = None

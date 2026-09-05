@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { ChevronLeft, Plus, Trash2, BookOpen, Users, DollarSign, Calendar, MessageSquare } from "lucide-react";
+import { ChevronLeft, Plus, Trash2, BookOpen, Users, DollarSign, Calendar, MessageSquare, Video, UserCircle } from "lucide-react";
 
 export default function UserDetailPage() {
   const { id } = useParams();
@@ -17,7 +17,26 @@ export default function UserDetailPage() {
   const [courses, setCourses] = useState<any[]>([]);
   const [purchases, setPurchases] = useState<any[]>([]);
   const [teacherStudents, setTeacherStudents] = useState<any[]>([]);
-  
+
+  // Mentor: explicit student<->mentor assignments (Mentorship model) --
+  // deliberately NOT derived from course enrollment.
+  const [mentorships, setMentorships] = useState<any[]>([]);
+
+  // Teacher/Mentor: live classes where this user is the assigned instructor.
+  // Student: live classes they're assigned to via LiveBatchStudent.
+  const [liveClasses, setLiveClasses] = useState<any[]>([]);
+  const [liveClassesLoading, setLiveClassesLoading] = useState(false);
+
+  // Teacher/Mentor: professional profile (TeacherProfile/MentorProfile --
+  // kept separate from User identity/auth fields).
+  const [profile, setProfile] = useState<any>(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileForm, setProfileForm] = useState<any>({});
+  const [profileImageFile, setProfileImageFile] = useState<File | null>(null);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState("");
+  const [profileSaved, setProfileSaved] = useState(false);
+
   // Dummy communication logs
   const [logs, setLogs] = useState<any[]>([]);
 
@@ -105,6 +124,139 @@ export default function UserDetailPage() {
     };
     fetchTeacherStudents();
   }, [user, id]);
+
+  // Fetch mentor's assigned students (Mentorship model) if role matches
+  useEffect(() => {
+    const fetchMentorships = async () => {
+      if (user && user.is_mentor) {
+        try {
+          const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/mentorships/?mentor=${id}`, {
+            credentials: "include"
+          });
+          if (res.ok) setMentorships(await res.json());
+        } catch (err) {
+          console.error("Failed to load mentorships", err);
+        }
+      }
+    };
+    fetchMentorships();
+  }, [user, id]);
+
+  // Fetch live classes: instructor's own classes (teacher/mentor) or the
+  // classes a student is assigned to -- reuses the existing LiveClass API's
+  // ?instructor=/?student= filters, no fake data.
+  useEffect(() => {
+    const fetchLiveClasses = async () => {
+      if (!user) return;
+      const isInstructorRole = user.is_teacher || user.is_mentor;
+      const param = isInstructorRole ? `instructor=${id}` : `student=${id}`;
+      setLiveClassesLoading(true);
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/live-classes/?${param}&page_size=100`, {
+          credentials: "include"
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setLiveClasses(Array.isArray(data) ? data : (data.results || []));
+        }
+      } catch (err) {
+        console.error("Failed to load live classes", err);
+      } finally {
+        setLiveClassesLoading(false);
+      }
+    };
+    fetchLiveClasses();
+  }, [user, id]);
+
+  // Fetch Teacher/Mentor professional profile (created lazily server-side
+  // on first access, so this never fails for an existing account).
+  useEffect(() => {
+    const fetchProfile = async () => {
+      if (!user) return;
+      const isTeacherRoleLocal = user.is_teacher && !user.is_student;
+      const isMentorRoleLocal = user.is_mentor && !user.is_student && !isTeacherRoleLocal;
+      if (!isTeacherRoleLocal && !isMentorRoleLocal) return;
+
+      const endpoint = isTeacherRoleLocal ? 'teacher-profile' : 'mentor-profile';
+      setProfileLoading(true);
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/${endpoint}/`, {
+          credentials: "include"
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setProfile(data);
+          setProfileForm({
+            bio: data.bio || "",
+            specialization: data.specialization || "",
+            qualifications: data.qualifications || "",
+            experience_years: data.experience_years ?? "",
+            languages: Array.isArray(data.languages) ? data.languages.join(", ") : "",
+            short_intro: data.short_intro || "",
+            availability_status: data.availability_status || "AVAILABLE",
+            is_public: data.is_public ?? true,
+            is_active: data.is_active ?? true,
+          });
+        }
+      } catch (err) {
+        console.error("Failed to load profile", err);
+      } finally {
+        setProfileLoading(false);
+      }
+    };
+    fetchProfile();
+  }, [user, id]);
+
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || profileSaving) return;
+    const isTeacherRoleLocal = user.is_teacher && !user.is_student;
+    const endpoint = isTeacherRoleLocal ? 'teacher-profile' : 'mentor-profile';
+
+    setProfileSaving(true);
+    setProfileError("");
+    setProfileSaved(false);
+    try {
+      const formData = new FormData();
+      formData.append("bio", profileForm.bio || "");
+      formData.append("specialization", profileForm.specialization || "");
+      formData.append("qualifications", profileForm.qualifications || "");
+      if (profileForm.experience_years !== "") formData.append("experience_years", profileForm.experience_years);
+      formData.append("languages", JSON.stringify(
+        (profileForm.languages || "").split(",").map((s: string) => s.trim()).filter(Boolean)
+      ));
+      formData.append("is_public", String(!!profileForm.is_public));
+      formData.append("is_active", String(!!profileForm.is_active));
+      if (isTeacherRoleLocal) {
+        formData.append("short_intro", profileForm.short_intro || "");
+      } else {
+        formData.append("availability_status", profileForm.availability_status || "AVAILABLE");
+      }
+      if (profileImageFile) formData.append("profile_image", profileImageFile);
+
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/${endpoint}/`, {
+        method: "PATCH",
+        headers: { "X-CSRFToken": getCsrfToken() },
+        body: formData,
+        credentials: "include"
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setProfile(data);
+        setProfileImageFile(null);
+        setProfileSaved(true);
+        setTimeout(() => setProfileSaved(false), 2500);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setProfileError(typeof data === 'object' ? Object.values(data).flat().join(' ') : "Failed to save profile.");
+      }
+    } catch (err) {
+      console.error(err);
+      setProfileError("Network error saving profile.");
+    } finally {
+      setProfileSaving(false);
+    }
+  };
 
   // Fetch all courses list for the select box
   useEffect(() => {
@@ -230,6 +382,10 @@ export default function UserDetailPage() {
   }
 
   const isTeacherRole = user.is_teacher && !user.is_student;
+  // Mentor is a distinct role from Teacher -- never treated as "another
+  // name for Teacher." If a user somehow holds both flags, the Teacher tab
+  // set takes precedence (matches admin/layout.tsx's nav role priority).
+  const isMentorRole = user.is_mentor && !user.is_student && !isTeacherRole;
 
   return (
     <div className="max-w-6xl mx-auto pb-20 font-sans text-white">
@@ -298,7 +454,17 @@ export default function UserDetailPage() {
 
       {/* Tabs */}
       <div className="flex gap-2 p-1 bg-zinc-950 border border-white/5 rounded-xl w-max mb-6">
-        <button 
+        {(isTeacherRole || isMentorRole) && (
+          <button
+            onClick={() => setActiveTab('profile')}
+            className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
+              activeTab === 'profile' ? 'bg-[#facc15] text-black shadow-sm' : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            <UserCircle className="w-4 h-4" /> {isMentorRole ? 'Mentor Profile' : 'Teacher Profile'}
+          </button>
+        )}
+        <button
           onClick={() => setActiveTab('courses')}
           className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
             activeTab === 'courses' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-400 hover:text-white'
@@ -308,17 +474,46 @@ export default function UserDetailPage() {
         </button>
         
         {isTeacherRole ? (
-          <button 
-            onClick={() => setActiveTab('students')}
-            className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
-              activeTab === 'students' ? 'bg-[#facc15] text-black shadow-sm' : 'text-zinc-400 hover:text-white'
-            }`}
-          >
-            <Users className="w-4 h-4" /> Enrolled Students
-          </button>
+          <>
+            <button
+              onClick={() => setActiveTab('students')}
+              className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
+                activeTab === 'students' ? 'bg-[#facc15] text-black shadow-sm' : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Users className="w-4 h-4" /> Enrolled Students
+            </button>
+            <button
+              onClick={() => setActiveTab('live-classes')}
+              className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
+                activeTab === 'live-classes' ? 'bg-[#facc15] text-black shadow-sm' : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Video className="w-4 h-4" /> Live Classes
+            </button>
+          </>
+        ) : isMentorRole ? (
+          <>
+            <button
+              onClick={() => setActiveTab('students')}
+              className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
+                activeTab === 'students' ? 'bg-[#facc15] text-black shadow-sm' : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Users className="w-4 h-4" /> Assigned Students
+            </button>
+            <button
+              onClick={() => setActiveTab('live-classes')}
+              className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
+                activeTab === 'live-classes' ? 'bg-[#facc15] text-black shadow-sm' : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Video className="w-4 h-4" /> Live Classes
+            </button>
+          </>
         ) : (
           <>
-            <button 
+            <button
               onClick={() => setActiveTab('sessions')}
               className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
                 activeTab === 'sessions' ? 'bg-[#facc15] text-black shadow-sm' : 'text-zinc-400 hover:text-white'
@@ -326,7 +521,7 @@ export default function UserDetailPage() {
             >
               <Calendar className="w-4 h-4" /> Sessions
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('fees')}
               className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
                 activeTab === 'fees' ? 'bg-[#facc15] text-black shadow-sm' : 'text-zinc-400 hover:text-white'
@@ -334,7 +529,7 @@ export default function UserDetailPage() {
             >
               <DollarSign className="w-4 h-4" /> Fees
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('communication')}
               className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
                 activeTab === 'communication' ? 'bg-[#facc15] text-black shadow-sm' : 'text-zinc-400 hover:text-white'
@@ -348,6 +543,159 @@ export default function UserDetailPage() {
 
       {/* Tab Panels */}
       <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 shadow-2xl">
+        {activeTab === 'profile' && (isTeacherRole || isMentorRole) && (
+          <div>
+            <h2 className="text-xl font-bold mb-1">{isMentorRole ? 'Mentor' : 'Teacher'} Profile</h2>
+            <p className="text-zinc-400 text-xs mb-6">
+              Professional/public-facing information, kept separate from the account's login identity.
+            </p>
+
+            {profileLoading ? (
+              <div className="text-center py-16 text-zinc-500 text-sm">Loading...</div>
+            ) : (
+              <form onSubmit={handleSaveProfile} className="space-y-5 max-w-2xl">
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-16 rounded-full overflow-hidden bg-zinc-800 border border-white/10 shrink-0 flex items-center justify-center">
+                    {profileImageFile ? (
+                      <img src={URL.createObjectURL(profileImageFile)} alt="" className="w-full h-full object-cover" />
+                    ) : profile?.profile_image ? (
+                      <img src={profile.profile_image} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <UserCircle className="w-8 h-8 text-zinc-600" />
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Profile Photo</label>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => setProfileImageFile(e.target.files?.[0] || null)}
+                      className="text-xs text-zinc-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-[#facc15] file:text-black hover:file:bg-yellow-500 cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Specialization</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Bharatanatyam, Carnatic Vocals"
+                      value={profileForm.specialization}
+                      onChange={(e) => setProfileForm({ ...profileForm, specialization: e.target.value })}
+                      className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Experience (years)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={profileForm.experience_years}
+                      onChange={(e) => setProfileForm({ ...profileForm, experience_years: e.target.value })}
+                      className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Languages</label>
+                  <input
+                    type="text"
+                    placeholder="Comma-separated, e.g. English, Malayalam, Tamil"
+                    value={profileForm.languages}
+                    onChange={(e) => setProfileForm({ ...profileForm, languages: e.target.value })}
+                    className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                  />
+                </div>
+
+                {isMentorRole && (
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Availability</label>
+                    <select
+                      value={profileForm.availability_status}
+                      onChange={(e) => setProfileForm({ ...profileForm, availability_status: e.target.value })}
+                      className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                    >
+                      <option value="AVAILABLE">Available</option>
+                      <option value="BUSY">Busy</option>
+                      <option value="UNAVAILABLE">Unavailable</option>
+                    </select>
+                  </div>
+                )}
+
+                {isTeacherRole && (
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Short Intro</label>
+                    <input
+                      type="text"
+                      maxLength={500}
+                      placeholder="One-line intro shown on course/catalog pages (future use)"
+                      value={profileForm.short_intro}
+                      onChange={(e) => setProfileForm({ ...profileForm, short_intro: e.target.value })}
+                      className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Qualifications</label>
+                  <textarea
+                    rows={2}
+                    value={profileForm.qualifications}
+                    onChange={(e) => setProfileForm({ ...profileForm, qualifications: e.target.value })}
+                    className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] resize-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Bio</label>
+                  <textarea
+                    rows={4}
+                    value={profileForm.bio}
+                    onChange={(e) => setProfileForm({ ...profileForm, bio: e.target.value })}
+                    className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] resize-vertical"
+                  />
+                </div>
+
+                <div className="flex items-center gap-6">
+                  <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={!!profileForm.is_public}
+                      onChange={(e) => setProfileForm({ ...profileForm, is_public: e.target.checked })}
+                      className="accent-[#facc15]"
+                    />
+                    Publicly visible profile (future use)
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={!!profileForm.is_active}
+                      onChange={(e) => setProfileForm({ ...profileForm, is_active: e.target.checked })}
+                      className="accent-[#facc15]"
+                    />
+                    Profile active
+                  </label>
+                </div>
+
+                {profileError && <p className="text-xs text-red-400">{profileError}</p>}
+                {profileSaved && <p className="text-xs text-green-400">Profile saved.</p>}
+
+                <div className="flex justify-end pt-4 border-t border-white/5">
+                  <button
+                    type="submit"
+                    disabled={profileSaving}
+                    className="px-5 py-2.5 bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-colors disabled:opacity-50 text-sm"
+                  >
+                    {profileSaving ? "Saving..." : "Save Profile"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+
         {activeTab === 'courses' && (
           <div>
             <div className="flex justify-between items-center mb-6">
@@ -403,12 +751,12 @@ export default function UserDetailPage() {
           </div>
         )}
 
-        {/* Teacher Tab: Enrolled Students List */}
+        {/* Teacher Tab: Enrolled Students List (from CourseInstructor + Enrollment) */}
         {activeTab === 'students' && isTeacherRole && (
           <div>
             <h2 className="text-xl font-bold mb-4">Students in Teacher's Courses</h2>
             <p className="text-zinc-400 text-xs mb-6">List of students enrolled in the courses taught by this instructor.</p>
-            
+
             {teacherStudents.length === 0 ? (
               <div className="text-center py-16 text-zinc-500 border border-dashed border-white/5 rounded-2xl text-sm">
                 No students are currently enrolled in this teacher's assigned courses.
@@ -427,7 +775,7 @@ export default function UserDetailPage() {
                   </thead>
                   <tbody className="divide-y divide-white/5 text-zinc-300">
                     {teacherStudents.map(student => (
-                      <tr 
+                      <tr
                         key={student.id}
                         onClick={() => router.push(`/admin/users/${student.id}`)}
                         className="hover:bg-white/5 transition-colors cursor-pointer font-medium"
@@ -450,16 +798,133 @@ export default function UserDetailPage() {
           </div>
         )}
 
-        {activeTab === 'sessions' && !isTeacherRole && (
+        {/* Mentor Tab: Assigned Students (from Mentorship model -- NOT enrollment) */}
+        {activeTab === 'students' && isMentorRole && (
           <div>
-            <h2 className="text-xl font-bold mb-6">Upcoming & Past Sessions</h2>
-            <div className="text-center py-16 text-zinc-500 border border-dashed border-white/5 rounded-2xl text-sm">
-              No live coaching or interactive sessions scheduled.
-            </div>
+            <h2 className="text-xl font-bold mb-4">Assigned Students</h2>
+            <p className="text-zinc-400 text-xs mb-6">Students explicitly assigned to this mentor (independent of course enrollment).</p>
+
+            {mentorships.length === 0 ? (
+              <div className="text-center py-16 text-zinc-500 border border-dashed border-white/5 rounded-2xl text-sm">
+                No students assigned to this mentor yet.
+              </div>
+            ) : (
+              <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-hidden">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
+                      <th className="p-4 font-semibold">Student</th>
+                      <th className="p-4 font-semibold">Assigned On</th>
+                      <th className="p-4 font-semibold text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5 text-zinc-300">
+                    {mentorships.map((m: any) => (
+                      <tr
+                        key={m.id}
+                        onClick={() => router.push(`/admin/users/${m.student}`)}
+                        className="hover:bg-white/5 transition-colors cursor-pointer font-medium"
+                      >
+                        <td className="p-4 text-white font-bold">{m.student_name}</td>
+                        <td className="p-4 text-zinc-400">{new Date(m.assigned_at).toLocaleDateString()}</td>
+                        <td className="p-4 text-center">
+                          <span className={`px-2 py-0.5 text-[10px] font-bold rounded ${m.status === 'ACTIVE' ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-zinc-700/50 text-zinc-400 border border-white/10'}`}>
+                            {m.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
-        {activeTab === 'fees' && !isTeacherRole && (
+        {/* Teacher/Mentor Tab: Live Classes they instruct */}
+        {activeTab === 'live-classes' && (isTeacherRole || isMentorRole) && (
+          <div>
+            <h2 className="text-xl font-bold mb-4">Live Classes</h2>
+            <p className="text-zinc-400 text-xs mb-6">Sessions this {isMentorRole ? 'mentor' : 'teacher'} is scheduled to conduct.</p>
+
+            {liveClassesLoading ? (
+              <div className="text-center py-16 text-zinc-500 text-sm">Loading...</div>
+            ) : liveClasses.length === 0 ? (
+              <div className="text-center py-16 text-zinc-500 border border-dashed border-white/5 rounded-2xl text-sm">
+                No live classes scheduled for this instructor.
+              </div>
+            ) : (
+              <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-hidden">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
+                      <th className="p-4 font-semibold">Title</th>
+                      <th className="p-4 font-semibold">Course</th>
+                      <th className="p-4 font-semibold">Scheduled</th>
+                      <th className="p-4 font-semibold text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5 text-zinc-300">
+                    {liveClasses.map((lc: any) => (
+                      <tr key={lc.id}>
+                        <td className="p-4 text-white font-bold">{lc.title}</td>
+                        <td className="p-4">{lc.course_title || lc.course}</td>
+                        <td className="p-4 text-zinc-400">{new Date(lc.scheduled_start).toLocaleString()}</td>
+                        <td className="p-4 text-center">
+                          <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-zinc-700/50 text-zinc-300 border border-white/10">
+                            {lc.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'sessions' && !isTeacherRole && !isMentorRole && (
+          <div>
+            <h2 className="text-xl font-bold mb-6">Upcoming & Past Sessions</h2>
+            {liveClassesLoading ? (
+              <div className="text-center py-16 text-zinc-500 text-sm">Loading...</div>
+            ) : liveClasses.length === 0 ? (
+              <div className="text-center py-16 text-zinc-500 border border-dashed border-white/5 rounded-2xl text-sm">
+                No live coaching or interactive sessions scheduled.
+              </div>
+            ) : (
+              <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-hidden">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
+                      <th className="p-4 font-semibold">Title</th>
+                      <th className="p-4 font-semibold">Course</th>
+                      <th className="p-4 font-semibold">Scheduled</th>
+                      <th className="p-4 font-semibold text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5 text-zinc-300">
+                    {liveClasses.map((lc: any) => (
+                      <tr key={lc.id}>
+                        <td className="p-4 text-white font-bold">{lc.title}</td>
+                        <td className="p-4">{lc.course_title || lc.course}</td>
+                        <td className="p-4 text-zinc-400">{new Date(lc.scheduled_start).toLocaleString()}</td>
+                        <td className="p-4 text-center">
+                          <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-zinc-700/50 text-zinc-300 border border-white/10">
+                            {lc.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'fees' && !isTeacherRole && !isMentorRole && (
           <div>
             <h2 className="text-xl font-bold mb-4">Payment & Fees History</h2>
             <p className="text-zinc-400 text-xs mb-6">Record of online Razorpay or manual admin billing transactions.</p>
@@ -508,7 +973,7 @@ export default function UserDetailPage() {
           </div>
         )}
 
-        {activeTab === 'communication' && !isTeacherRole && (
+        {activeTab === 'communication' && !isTeacherRole && !isMentorRole && (
           <div>
             <h2 className="text-xl font-bold mb-4">Interakt WhatsApp Delivery Logs</h2>
             <p className="text-zinc-400 text-xs mb-6">Logs of template communication sent to phone numbers.</p>

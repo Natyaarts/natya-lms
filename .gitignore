@@ -14,3 +14,7 @@ env/
 db.sqlite3
 media/
 static/
+
+# Stray extracted deployment artifacts -- never part of the real app source.
+test_zip_extract/
+*-release.zip

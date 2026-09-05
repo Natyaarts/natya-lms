@@ -102,6 +102,18 @@ export default function CourseManager() {
   const [replacingAudioId, setReplacingAudioId] = useState<number | null>(null);
   const [deletingAudioId, setDeletingAudioId] = useState<number | null>(null);
 
+  // State for Instructor management (Course -> CourseInstructor -> Teacher/Mentor/Assistant)
+  const [instructors, setInstructors] = useState<any[]>([]);
+  const [instructorsLoading, setInstructorsLoading] = useState(true);
+  const [eligibleUsers, setEligibleUsers] = useState<any[]>([]);
+  const [showAddInstructorForm, setShowAddInstructorForm] = useState(false);
+  const [newInstructorUserId, setNewInstructorUserId] = useState("");
+  const [newInstructorRole, setNewInstructorRole] = useState("TEACHER");
+  const [newInstructorPrimary, setNewInstructorPrimary] = useState(false);
+  const [instructorSaving, setInstructorSaving] = useState(false);
+  const [instructorError, setInstructorError] = useState("");
+  const [removingInstructorId, setRemovingInstructorId] = useState<number | null>(null);
+
   const getCsrfToken = () => {
     let csrfToken = "";
     if (typeof document !== 'undefined' && document.cookie) {
@@ -134,6 +146,107 @@ export default function CourseManager() {
       setLoading(false);
     }
   };
+
+  // --- Course Instructor management (separate from Enrollment) ---
+  // CourseInstructor = "who is responsible for this course" (teacher/mentor/
+  // assistant). Enrollment = "who has learner access to this course." These
+  // are intentionally never mixed here.
+
+  const fetchInstructors = async () => {
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/${id}/instructors/`, {
+        credentials: "include"
+      });
+      if (res.ok) setInstructors(await res.json());
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setInstructorsLoading(false);
+    }
+  };
+
+  const fetchEligibleUsers = async () => {
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/`, {
+        credentials: "include"
+      });
+      if (res.ok) {
+        const all = await res.json();
+        setEligibleUsers(all.filter((u: any) => u.is_teacher || u.is_mentor));
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleAddInstructor = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newInstructorUserId || instructorSaving) return;
+
+    setInstructorSaving(true);
+    setInstructorError("");
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/${id}/instructors/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCsrfToken()
+        },
+        body: JSON.stringify({
+          user: newInstructorUserId,
+          role: newInstructorRole,
+          is_primary: newInstructorPrimary
+        }),
+        credentials: "include"
+      });
+
+      if (res.ok) {
+        setShowAddInstructorForm(false);
+        setNewInstructorUserId("");
+        setNewInstructorRole("TEACHER");
+        setNewInstructorPrimary(false);
+        fetchInstructors();
+      } else {
+        const data = await res.json();
+        const message = data.non_field_errors?.[0] || data.user?.[0] || data.detail || "Failed to add instructor.";
+        setInstructorError(message);
+      }
+    } catch (err) {
+      console.error(err);
+      setInstructorError("Network error adding instructor.");
+    } finally {
+      setInstructorSaving(false);
+    }
+  };
+
+  const handleRemoveInstructor = async (instructorId: number, name: string) => {
+    if (!confirm(`Remove "${name}" from this course's instructors?`)) return;
+    setRemovingInstructorId(instructorId);
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/${id}/instructors/${instructorId}/`, {
+        method: "DELETE",
+        headers: { "X-CSRFToken": getCsrfToken() },
+        credentials: "include"
+      });
+      if (res.ok) {
+        fetchInstructors();
+      } else {
+        alert("Failed to remove instructor.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Network error removing instructor.");
+    } finally {
+      setRemovingInstructorId(null);
+    }
+  };
+
+  useEffect(() => {
+    if (id) {
+      fetchInstructors();
+      fetchEligibleUsers();
+    }
+  }, [id]);
 
   useEffect(() => {
     if (id) fetchCourse();
@@ -677,6 +790,134 @@ export default function CourseManager() {
                 </button>
               </>
             )}
+          </div>
+
+          {/* Instructors: who is responsible for this course (Teacher/Mentor/
+              Assistant). Separate from Enrollment (who has learner access). */}
+          <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold">Instructors</h2>
+              <button
+                onClick={() => { setShowAddInstructorForm(true); setInstructorError(""); }}
+                className="text-xs font-bold text-[#facc15] hover:text-yellow-400 transition-colors"
+              >
+                + Add
+              </button>
+            </div>
+
+            {instructorsLoading ? (
+              <div className="text-xs text-zinc-500 py-4">Loading instructors...</div>
+            ) : instructors.length === 0 && !showAddInstructorForm ? (
+              <div className="text-center py-6 text-zinc-500 text-xs border border-dashed border-white/10 rounded-xl">
+                No instructors assigned yet.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {instructors.map((inst: any) => (
+                  <div key={inst.id} className="flex items-center justify-between bg-zinc-950 border border-white/5 rounded-xl px-4 py-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-white text-sm truncate">{inst.user_name}</span>
+                        {inst.is_primary && (
+                          <span className="px-1.5 py-0.5 bg-[#facc15]/20 text-[#facc15] text-[9px] font-bold rounded uppercase tracking-wide">Primary</span>
+                        )}
+                        {!inst.is_active_user && (
+                          <span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[9px] font-bold rounded uppercase tracking-wide">Inactive</span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-zinc-500 mt-0.5 truncate">
+                        {inst.user_email || inst.user_phone || "No contact info"}
+                      </div>
+                      <span className={`inline-block mt-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${
+                        inst.role === 'TEACHER' ? 'bg-blue-500/10 text-blue-400' :
+                        inst.role === 'MENTOR' ? 'bg-purple-500/10 text-purple-400' :
+                        'bg-zinc-700/50 text-zinc-400'
+                      }`}>
+                        {inst.role}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => handleRemoveInstructor(inst.id, inst.user_name)}
+                      disabled={removingInstructorId === inst.id}
+                      className="p-2 hover:bg-red-500/10 rounded-lg transition-colors text-zinc-500 hover:text-red-400 disabled:opacity-50 shrink-0"
+                      title="Remove instructor"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <AnimatePresence>
+              {showAddInstructorForm && (
+                <motion.form
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  onSubmit={handleAddInstructor}
+                  className="mt-4 bg-black border border-white/10 rounded-xl p-4 space-y-3 overflow-hidden"
+                >
+                  <div>
+                    <label className="block text-[10px] font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Person</label>
+                    <select
+                      required
+                      value={newInstructorUserId}
+                      onChange={(e) => setNewInstructorUserId(e.target.value)}
+                      className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                    >
+                      <option value="" disabled>Select a teacher or mentor</option>
+                      {eligibleUsers.map((u: any) => (
+                        <option key={u.id} value={u.id}>
+                          {(u.first_name || u.last_name) ? `${u.first_name} ${u.last_name}`.trim() : u.username} ({u.is_teacher ? 'Teacher' : ''}{u.is_teacher && u.is_mentor ? '/' : ''}{u.is_mentor ? 'Mentor' : ''})
+                        </option>
+                      ))}
+                    </select>
+                    {eligibleUsers.length === 0 && (
+                      <p className="text-[10px] text-zinc-600 mt-1">No teacher/mentor accounts found -- create one under Users first.</p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Role</label>
+                    <select
+                      value={newInstructorRole}
+                      onChange={(e) => setNewInstructorRole(e.target.value)}
+                      className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                    >
+                      <option value="TEACHER">Teacher</option>
+                      <option value="MENTOR">Mentor</option>
+                      <option value="ASSISTANT">Assistant</option>
+                    </select>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={newInstructorPrimary}
+                      onChange={(e) => setNewInstructorPrimary(e.target.checked)}
+                      className="accent-[#facc15]"
+                    />
+                    Set as primary instructor
+                  </label>
+                  {instructorError && <p className="text-xs text-red-400">{instructorError}</p>}
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => { setShowAddInstructorForm(false); setInstructorError(""); }}
+                      className="px-3 py-1.5 text-xs text-zinc-400 hover:text-white"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={instructorSaving || !newInstructorUserId}
+                      className="px-4 py-1.5 text-xs bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-colors disabled:opacity-50"
+                    >
+                      {instructorSaving ? "Adding..." : "Add Instructor"}
+                    </button>
+                  </div>
+                </motion.form>
+              )}
+            </AnimatePresence>
           </div>
         </div>
 

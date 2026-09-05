@@ -15,6 +15,7 @@ import os
 import ssl
 from pathlib import Path
 from dotenv import load_dotenv
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -26,16 +27,38 @@ load_dotenv(os.path.join(BASE_DIR, '.env'), override=True)
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
+# SECURITY WARNING: don't run with debug turned on in production!
+# Defaults to False (production-safe). Local development must opt in
+# explicitly via DEBUG=True in a local .env (gitignored, never committed) --
+# this previously defaulted to True, so a production boot that was ever
+# missing this env var would silently run with verbose debug error pages
+# and every other permissive fallback below.
+DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-z+-r&vtsk(wij@)-86pfj@3g&j0&48lov2mdd7qxk9kyz$86%m')
+# Production MUST set SECRET_KEY -- no fallback is available outside of
+# local development (DEBUG=True), where an obviously-fake placeholder is
+# used instead of a real-looking hardcoded key sitting in source control.
+if DEBUG:
+    SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-local-dev-only-do-not-use-in-production')
+else:
+    SECRET_KEY = os.environ.get('SECRET_KEY')
+    if not SECRET_KEY:
+        raise ImproperlyConfigured("SECRET_KEY environment variable must be set in production.")
 
 # OpenAI API Key for Whisper Transcription
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get('DEBUG', 'True') == 'True'
-
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
+# ALLOWED_HOSTS: production must set this explicitly. No '*' fallback --
+# that would silently accept any Host header if the env var were ever
+# missing from the deployment environment.
+if DEBUG:
+    ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+else:
+    _allowed_hosts_env = os.environ.get('ALLOWED_HOSTS')
+    if not _allowed_hosts_env:
+        raise ImproperlyConfigured("ALLOWED_HOSTS environment variable must be set in production.")
+    ALLOWED_HOSTS = _allowed_hosts_env.split(',')
 
 
 # Application definition
@@ -113,7 +136,11 @@ ACCOUNT_EMAIL_VERIFICATION = 'none'
 ACCOUNT_AUTHENTICATION_METHOD = 'username_email'
 ACCOUNT_EMAIL_REQUIRED = True
 SOCIALACCOUNT_LOGIN_ON_GET = True
-LOGIN_REDIRECT_URL = 'http://localhost:3000/dashboard'
+
+# Post-social-login redirect target. Must never resolve to localhost in
+# production regardless of whether FRONTEND_URL is explicitly set.
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000' if DEBUG else 'https://academy.natyaarts.com')
+LOGIN_REDIRECT_URL = f'{FRONTEND_URL}/dashboard'
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
@@ -128,27 +155,25 @@ MIDDLEWARE = [
     'allauth.account.middleware.AccountMiddleware',
 ]
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://localhost:8081",
-    "http://localhost:8082",
-    "http://127.0.0.1:8081",
-    "http://127.0.0.1:8082",
-    "http://192.168.1.43:8081",
-    "http://192.168.1.43:8082",
-    "https://natya-lms.vercel.app",
-    "https://academy.natyaarts.com",
-]
+# CORS/CSRF origins are environment-driven. Defaults keep localhost support
+# for local development ONLY (DEBUG=True); the production defaults are the
+# real deployed origins so this can't break live CORS/CSRF if the env vars
+# aren't set yet in the deployment environment -- override via
+# CORS_ALLOWED_ORIGINS / CSRF_TRUSTED_ORIGINS (comma-separated) to add more.
+_default_cors_origins = (
+    'http://localhost:3000,http://localhost:8081,http://localhost:8082,http://127.0.0.1:8081,http://127.0.0.1:8082'
+    if DEBUG else
+    'https://natya-lms.vercel.app,https://academy.natyaarts.com'
+)
+CORS_ALLOWED_ORIGINS = os.environ.get('CORS_ALLOWED_ORIGINS', _default_cors_origins).split(',')
 CORS_ALLOW_CREDENTIALS = True
-CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:3000",
-    "http://localhost:8081",
-    "http://localhost:8082",
-    "http://192.168.1.43:8081",
-    "http://192.168.1.43:8082",
-    "https://natya-lms.vercel.app",
-    "https://academy.natyaarts.com"
-]
+
+_default_csrf_origins = (
+    'http://localhost:3000,http://localhost:8081,http://localhost:8082'
+    if DEBUG else
+    'https://natya-lms.vercel.app,https://academy.natyaarts.com'
+)
+CSRF_TRUSTED_ORIGINS = os.environ.get('CSRF_TRUSTED_ORIGINS', _default_csrf_origins).split(',')
 
 ROOT_URLCONF = 'core.urls'
 
@@ -254,7 +279,7 @@ AWS_S3_SIGNATURE_VERSION = 's3v4'
 AWS_S3_FILE_OVERWRITE = False
 AWS_DEFAULT_ACL = None
 
-if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
+if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_STORAGE_BUCKET_NAME:
     STORAGES = {
         "default": {
             "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
@@ -263,6 +288,13 @@ if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
         },
     }
+elif not DEBUG:
+    raise ImproperlyConfigured(
+        "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_STORAGE_BUCKET_NAME must all be set in "
+        "production -- refusing to silently fall back to local/ephemeral disk storage for media uploads."
+    )
+# else: DEBUG and no S3 creds -- falls through to Django's default local
+# FileSystemStorage (MEDIA_ROOT above), matching existing local dev behavior.
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/6.0/ref/settings/#default-auto-field
@@ -272,16 +304,54 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'users.User'
 
 # Interakt WhatsApp API
-INTERAKT_SECRET_KEY = os.getenv('INTERAKT_SECRET_KEY', 'aDRtZ09CT3FBVEZvRVhTbFU3UnFPSFJEVS1hbzl2alRyVE1JUWlma1lPUTo=')
+# Production MUST set INTERAKT_SECRET_KEY -- no fallback outside local dev.
+# (The previous fallback here was a real-looking, source-visible credential,
+# not a placeholder -- rotate this key if it was ever live.)
+if DEBUG:
+    INTERAKT_SECRET_KEY = os.getenv('INTERAKT_SECRET_KEY', '')
+else:
+    INTERAKT_SECRET_KEY = os.getenv('INTERAKT_SECRET_KEY')
+    if not INTERAKT_SECRET_KEY:
+        raise ImproperlyConfigured("INTERAKT_SECRET_KEY environment variable must be set in production.")
 INTERAKT_TEMPLATE_NAME = os.getenv('INTERAKT_TEMPLATE_NAME', 'login_otp_v1')
 
 # Razorpay Settings
 RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID', '')
 RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET', '')
 
+# Phase 3.2: a separate secret from RAZORPAY_KEY_SECRET, configured in the
+# Razorpay dashboard specifically for webhook signature verification --
+# never the same value as the API key secret.
+#
+# Deliberately NOT a hard fail-at-boot requirement (unlike SECRET_KEY/
+# ALLOWED_HOSTS/S3/Celery in the earlier production-hardening pass): those
+# were all pieces of already-running production infrastructure, so failing
+# loudly at startup if one went missing was the safe choice. The webhook
+# endpoint is brand new -- nothing in the current production environment
+# has this variable set yet, and this app boots and serves checkout/login/
+# every other route whether or not a webhook secret is configured. Crashing
+# the ENTIRE application at startup over one new, optional-until-you-wire-
+# it-up-in-the-Razorpay-dashboard feature would be strictly worse than the
+# webhook endpoint alone refusing requests. RazorpayWebhookView checks this
+# itself at request time and returns 400 (logged) if it's blank, so the
+# feature degrades in isolation instead of taking the whole site down.
+RAZORPAY_WEBHOOK_SECRET = os.getenv('RAZORPAY_WEBHOOK_SECRET', '')
+
 # Celery Configuration
-CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+# Production must set both env vars explicitly -- no localhost:6379
+# fallback, which would silently point at a Redis that doesn't exist on
+# the production host instead of failing at boot.
+if DEBUG:
+    CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+    CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
+else:
+    CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL')
+    CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND')
+    if not CELERY_BROKER_URL or not CELERY_RESULT_BACKEND:
+        raise ImproperlyConfigured(
+            "CELERY_BROKER_URL and CELERY_RESULT_BACKEND environment variables must be set in "
+            "production -- refusing to silently fall back to a local Redis that doesn't exist on the server."
+        )
 
 if CELERY_BROKER_URL.startswith('rediss://'):
     CELERY_BROKER_USE_SSL = {'ssl_cert_reqs': ssl.CERT_REQUIRED}

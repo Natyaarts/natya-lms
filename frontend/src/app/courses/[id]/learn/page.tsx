@@ -6,7 +6,7 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Play, Pause, Volume2, VolumeX, Maximize, Minimize,
-  Settings, Check, ChevronLeft
+  Settings, Check, ChevronLeft, Lock
 } from "lucide-react";
 
 // Canonical language list, kept in sync with backend/courses/languages.py.
@@ -185,12 +185,23 @@ export default function CourseLearnPage() {
           setCourse(data);
           
           if (data.modules && data.modules.length > 0) {
+            // Prefer the first UNLOCKED lesson as the default view (an
+            // is_locked lesson has no playable video_file) -- fall back to
+            // the very first lesson overall so the course structure is
+            // still shown if nothing is unlocked yet.
+            let firstLesson: any = null;
+            let firstUnlockedLesson: any = null;
             for (let module of data.modules) {
               if (module.lessons && module.lessons.length > 0) {
-                setActiveLesson(module.lessons[0]);
-                break;
+                if (!firstLesson) firstLesson = module.lessons[0];
+                const unlocked = module.lessons.find((l: any) => !l.is_locked);
+                if (unlocked) {
+                  firstUnlockedLesson = unlocked;
+                  break;
+                }
               }
             }
+            setActiveLesson(firstUnlockedLesson || firstLesson);
           }
         }
       } catch (err) {
@@ -506,7 +517,8 @@ export default function CourseLearnPage() {
                       }`}>
                         {isActive ? <Play className="w-2.5 h-2.5 fill-black ml-0.5" /> : lIdx + 1}
                       </span>
-                      <span className="leading-relaxed truncate">{lesson.title}</span>
+                      <span className="leading-relaxed truncate flex-1">{lesson.title}</span>
+                      {lesson.is_locked && <Lock className="w-3.5 h-3.5 text-zinc-600 shrink-0" />}
                     </button>
                   );
                 })}
@@ -519,6 +531,19 @@ export default function CourseLearnPage() {
       {/* Main Content: Video Player */}
       <div className="flex-1 flex flex-col h-2/3 md:h-full relative bg-black overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
         {activeLesson ? (
+          activeLesson.is_locked ? (
+            <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 bg-[#050505] p-6 text-center">
+              <Lock className="w-14 h-14 mb-6 opacity-40" />
+              <p className="text-lg font-medium text-zinc-300 mb-2">{activeLesson.title}</p>
+              <p className="text-sm text-zinc-500 mb-6 max-w-sm">This lesson is locked. Enroll in this course or subscribe to a plan that includes it to watch.</p>
+              <Link
+                href={`/courses/${id}`}
+                className="px-5 py-2.5 bg-[#facc15] text-black font-semibold text-sm rounded-full hover:bg-yellow-400 transition-colors"
+              >
+                View Course Options
+              </Link>
+            </div>
+          ) : (
           <div className="w-full flex flex-col relative">
 
             <div className="relative bg-black md:p-6 md:pb-3">
@@ -735,6 +760,7 @@ export default function CourseLearnPage() {
               )}
             </div>
           </div>
+          )
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 bg-[#050505]">
             <Play className="w-16 h-16 mb-6 opacity-20" />

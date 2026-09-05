@@ -1,5 +1,5 @@
 from django.contrib import admin, messages
-from .models import Course, Module, VideoLesson, TranslatedAudio, LiveClass, LiveBatch, LiveBatchStudent
+from .models import Course, Module, VideoLesson, TranslatedAudio, LiveClass, LiveBatch, LiveBatchStudent, CourseInstructor, RecurrenceRule, TeacherAvailability, Attendance
 
 class VideoLessonInline(admin.TabularInline):
     model = VideoLesson
@@ -128,3 +128,61 @@ class LiveBatchStudentAdmin(admin.ModelAdmin):
     list_display = ('batch', 'student', 'purchase', 'created_at')
     list_filter = ('batch__batch_type', 'batch__course')
     search_fields = ('student__username', 'student__email', 'batch__course__title')
+
+
+@admin.register(CourseInstructor)
+class CourseInstructorAdmin(admin.ModelAdmin):
+    list_display = ('course', 'user', 'role', 'is_primary', 'created_at')
+    list_filter = ('role', 'is_primary', 'course')
+    search_fields = ('course__title', 'user__username', 'user__email')
+
+
+@admin.register(RecurrenceRule)
+class RecurrenceRuleAdmin(admin.ModelAdmin):
+    list_display = ('id', 'frequency', 'end_date', 'occurrence_count', 'created_by', 'created_at')
+    list_filter = ('frequency',)
+
+
+@admin.register(TeacherAvailability)
+class TeacherAvailabilityAdmin(admin.ModelAdmin):
+    list_display = ('user', 'day_of_week', 'start_time', 'end_time', 'is_active')
+    list_filter = ('day_of_week', 'is_active')
+    search_fields = ('user__username', 'user__email')
+
+
+@admin.register(Attendance)
+class AttendanceAdmin(admin.ModelAdmin):
+    list_display = ('live_class', 'student', 'status', 'marked_by', 'marked_at')
+    list_filter = ('status',)
+    search_fields = ('student__username', 'live_class__title')
+
+
+from .models import Bundle
+
+@admin.register(Bundle)
+class BundleAdmin(admin.ModelAdmin):
+    """
+    Phase 3.3: the primary Bundle management surface -- deliberately
+    Django's built-in admin, not a new custom Next.js CRUD page (see
+    IsSuperAdminOrAdminOrReadOnly in orders/views.py for why). Covers every
+    "Bundle Admin" requirement: create/edit (standard admin form),
+    activate/deactivate (the is_active field, editable inline via
+    list_editable), assign/remove courses (filter_horizontal gives a
+    proper dual-list widget for the M2M instead of a bare multi-select),
+    set price (plain field).
+    """
+    list_display = ('name', 'price', 'currency', 'is_active', 'course_count', 'is_purchasable', 'created_at')
+    list_filter = ('is_active', 'currency')
+    list_editable = ('is_active',)
+    search_fields = ('name', 'slug', 'description')
+    filter_horizontal = ('courses',)
+    prepopulated_fields = {'slug': ('name',)}
+    readonly_fields = ('created_at', 'updated_at')
+
+    def course_count(self, obj):
+        return obj.courses.count()
+    course_count.short_description = 'Courses'
+
+    def is_purchasable(self, obj):
+        return obj.is_purchasable
+    is_purchasable.boolean = True

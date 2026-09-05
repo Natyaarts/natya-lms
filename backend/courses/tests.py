@@ -1,6 +1,7 @@
 import requests
 from django.contrib.auth import get_user_model
 from django.urls import reverse
+from django.test import TestCase, Client as DjangoClient
 from rest_framework.test import APITestCase
 from rest_framework import status
 from django.utils import timezone
@@ -622,6 +623,7 @@ class LiveClassAPITests(APITestCase):
 
 from .serializers import CourseSerializer, LiveBatchSerializer, LiveBatchStudentSerializer
 from .models import LiveBatch, LiveBatchStudent
+from .models import RecurrenceRule, TeacherAvailability, Attendance
 from django.contrib import admin
 
 class CourseTypeTests(APITestCase):
@@ -1051,13 +1053,22 @@ class LiveBatchAPIViewTests(APITestCase):
         self.client.force_authenticate(user=self.teacher1)
         url_list = reverse('live-batch-list')
 
-        # 1. Teachers cannot create batches
+        # 1. Phase 2: a teacher CAN now create their own batch (self-service
+        # scheduling -- "Teacher can create/manage classes assigned to
+        # them"), but still cannot create one on another teacher's behalf.
         response = self.client.post(url_list, {
             "course": self.live_course.id,
             "instructor": self.teacher1.id,
             "batch_type": "GROUP"
         })
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        response = self.client.post(url_list, {
+            "course": self.live_course.id,
+            "instructor": self.teacher2.id,
+            "batch_type": "GROUP"
+        })
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
         # 2. Teachers can view their own batches, but not others
         response = self.client.get(url_list)
@@ -1075,9 +1086,13 @@ class LiveBatchAPIViewTests(APITestCase):
         response = self.client.get(reverse('live-batch-detail', kwargs={'pk': self.batch2.id}))
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
-        # 5. Teacher cannot update or delete own batch
+        # 5. Phase 2: a teacher CAN now update their own batch, but still
+        # cannot touch another teacher's.
         response = self.client.patch(reverse('live-batch-detail', kwargs={'pk': self.batch1.id}), {"batch_type": "ONE_TO_ONE"})
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        response = self.client.patch(reverse('live-batch-detail', kwargs={'pk': self.batch2.id}), {"batch_type": "ONE_TO_ONE"})
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_student_permission_boundaries(self):
         self.client.force_authenticate(user=self.student1)
@@ -1884,7 +1899,9 @@ class LiveClassNotificationTests(APITransactionTestCase):
         stu1_notifs = Notification.objects.filter(recipient=self.student1, notification_type=NotificationType.LIVE_CLASS)
         self.assertEqual(stu1_notifs.count(), 1)
         self.assertIn("Reminder", stu1_notifs.first().title)
-        self.assertEqual(stu1_notifs.first().idempotency_key, f"liveclass:{live_class.id}:reminder:{self.student1.id}")
+        # Phase 2: idempotency key now includes reminder_type (default '1h') so
+        # the 24h/1h/15m reminders for the same class+student don't collide.
+        self.assertEqual(stu1_notifs.first().idempotency_key, f"liveclass:{live_class.id}:reminder:1h:{self.student1.id}")
 
         # Test reminder aborts if cancelled
         live_class.status = 'CANCELLED'
@@ -1916,6 +1933,13 @@ class ManualAudioUploadTests(APITestCase):
         self.teacher = User.objects.create_user(username="teacher", password="pw", is_teacher=True, is_student=False)
         self.student = User.objects.create_user(username="student", password="pw")
         Enrollment.objects.create(user=self.student, course=self.course)
+
+        # Phase 1: course write access (including lesson/audio management)
+        # is scoped to the course's actual assigned instructor via
+        # CourseInstructor -- this teacher must be genuinely assigned to
+        # this course, matching real usage, not just any is_teacher account.
+        from .models import CourseInstructor
+        CourseInstructor.objects.create(course=self.course, user=self.teacher, role=CourseInstructor.InstructorRole.TEACHER)
 
         self.upload_url = f"/api/courses/lessons/{self.lesson.id}/audio/"
         self.audio_file = lambda name="malayalam.mp3": SimpleUploadedFile(name, b"fake-audio-bytes", content_type="audio/mpeg")
@@ -2078,3 +2102,886 @@ class ManualAudioUploadTests(APITestCase):
             }, format="multipart")
             self.assertEqual(response.status_code, status.HTTP_201_CREATED)
             mock_delay.assert_not_called()
+
+
+class CourseInstructorTests(APITestCase):
+    """
+    Phase 1: CourseInstructor integration into course permissions/queries.
+    See ARCHITECTURE_PROPOSAL.md Phase 1.
+    """
+
+    def setUp(self):
+        from .models import CourseInstructor
+        self.CourseInstructor = CourseInstructor
+
+        self.admin = User.objects.create_superuser(username="p1_ci_admin", password="pw")
+        self.teacher_a = User.objects.create_user(username="p1_ci_teacher_a", password="pw", is_teacher=True, is_student=False)
+        self.teacher_b = User.objects.create_user(username="p1_ci_teacher_b", password="pw", is_teacher=True, is_student=False)
+        self.mentor = User.objects.create_user(username="p1_ci_mentor", password="pw", is_mentor=True, is_student=False)
+        self.student = User.objects.create_user(username="p1_ci_student", password="pw")
+
+        self.course_a = Course.objects.create(title="Course A", price=100, is_published=True)
+        self.course_b = Course.objects.create(title="Course B", price=100, is_published=True)
+
+        CourseInstructor.objects.create(course=self.course_a, user=self.teacher_a, role='TEACHER', is_primary=True)
+
+        self.instructors_url = reverse('course-instructors', kwargs={'pk': self.course_a.id})
+
+    def _remove_url(self, course_id, instructor_id):
+        return reverse('course-remove-instructor', kwargs={'pk': course_id, 'instructor_id': instructor_id})
+
+    # --- Item 1: Student cannot create CourseInstructor ---
+    def test_student_cannot_create_course_instructor(self):
+        self.client.force_authenticate(user=self.student)
+        res = self.client.post(self.instructors_url, {"user": self.teacher_b.id, "role": "TEACHER"})
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    # --- Item 2: Student cannot assign instructors (alias of above via a
+    # different course, confirming it's not course-specific) ---
+    def test_student_cannot_assign_instructor_on_any_course(self):
+        self.client.force_authenticate(user=self.student)
+        url = reverse('course-instructors', kwargs={'pk': self.course_b.id})
+        res = self.client.post(url, {"user": self.mentor.id, "role": "MENTOR"})
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(self.CourseInstructor.objects.filter(course=self.course_b).exists())
+
+    # --- Item 3: Teacher can access (write to) their assigned course ---
+    def test_teacher_can_edit_assigned_course(self):
+        self.client.force_authenticate(user=self.teacher_a)
+        url = reverse('course-detail', kwargs={'pk': self.course_a.id})
+        res = self.client.patch(url, {"description": "Updated by assigned teacher"})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.course_a.refresh_from_db()
+        self.assertEqual(self.course_a.description, "Updated by assigned teacher")
+
+    # --- Item 4: Teacher cannot manage an unrelated course ---
+    def test_teacher_cannot_edit_unrelated_course(self):
+        self.client.force_authenticate(user=self.teacher_b)
+        url = reverse('course-detail', kwargs={'pk': self.course_a.id})
+        res = self.client.patch(url, {"description": "Should not be allowed"})
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.course_a.refresh_from_db()
+        self.assertNotEqual(self.course_a.description, "Should not be allowed")
+
+    def test_mentor_cannot_edit_course_even_if_assigned(self):
+        # Mentor role must NOT automatically receive full teacher permissions.
+        self.CourseInstructor.objects.create(course=self.course_b, user=self.mentor, role='MENTOR')
+        self.client.force_authenticate(user=self.mentor)
+        url = reverse('course-detail', kwargs={'pk': self.course_b.id})
+        res = self.client.patch(url, {"description": "Mentor should not be able to do this"})
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    # --- Item 7: Admin can manage instructors ---
+    def test_admin_can_add_and_view_instructor(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(self.instructors_url, {"user": self.mentor.id, "role": "MENTOR"})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+        res_get = self.client.get(self.instructors_url)
+        self.assertEqual(res_get.status_code, status.HTTP_200_OK)
+        roles = {row['user']: row['role'] for row in res_get.data}
+        self.assertEqual(roles.get(self.teacher_a.id), 'TEACHER')
+        self.assertEqual(roles.get(self.mentor.id), 'MENTOR')
+
+    def test_admin_can_remove_instructor(self):
+        self.client.force_authenticate(user=self.admin)
+        ci = self.CourseInstructor.objects.get(course=self.course_a, user=self.teacher_a)
+        res = self.client.delete(self._remove_url(self.course_a.id, ci.id))
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(self.CourseInstructor.objects.filter(pk=ci.pk).exists())
+
+    # --- Item 8: Duplicate CourseInstructor prevented ---
+    def test_duplicate_course_instructor_prevented(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(self.instructors_url, {"user": self.teacher_a.id, "role": "TEACHER"})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.CourseInstructor.objects.filter(course=self.course_a, user=self.teacher_a, role='TEACHER').count(), 1)
+
+    def test_cannot_assign_plain_student_as_instructor(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(self.instructors_url, {"user": self.student.id, "role": "TEACHER"})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_setting_primary_unsets_previous_primary(self):
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.instructors_url, {"user": self.mentor.id, "role": "MENTOR", "is_primary": True})
+        self.CourseInstructor.objects.get(course=self.course_a, user=self.teacher_a).refresh_from_db()
+        primaries = self.CourseInstructor.objects.filter(course=self.course_a, is_primary=True)
+        self.assertEqual(primaries.count(), 1)
+        self.assertEqual(primaries.first().user, self.mentor)
+
+    # --- Item 10: Student remains enrolled after instructor changes ---
+    def test_student_enrollment_unaffected_by_instructor_changes(self):
+        Enrollment.objects.create(user=self.student, course=self.course_a)
+        self.client.force_authenticate(user=self.admin)
+
+        ci = self.CourseInstructor.objects.get(course=self.course_a, user=self.teacher_a)
+        self.client.delete(self._remove_url(self.course_a.id, ci.id))
+        self.client.post(self.instructors_url, {"user": self.teacher_b.id, "role": "TEACHER"})
+
+        self.assertTrue(Enrollment.objects.filter(user=self.student, course=self.course_a).exists())
+
+    # --- Item 15: CourseInstructor does not interfere with Enrollment ---
+    def test_course_instructor_and_enrollment_are_independent(self):
+        Enrollment.objects.create(user=self.student, course=self.course_a)
+        # Student is enrolled but has no instructor role -- must not appear
+        # as an instructor, and instructor assignment must not create/imply
+        # an Enrollment for the instructor.
+        self.assertFalse(self.CourseInstructor.objects.filter(course=self.course_a, user=self.student).exists())
+        self.assertFalse(Enrollment.objects.filter(user=self.teacher_a, course=self.course_a).exists())
+
+    # --- Item 11: Existing (legacy) teacher accounts continue working ---
+    def test_legacy_teacher_without_courseinstructor_row_still_has_access(self):
+        # Simulates a teacher who predates Phase 0's backfill: no
+        # CourseInstructor row, only the old self-enrollment relationship.
+        legacy_teacher = User.objects.create_user(username="p1_legacy_teacher", password="pw", is_teacher=True, is_student=False)
+        Enrollment.objects.create(user=legacy_teacher, course=self.course_b)
+
+        self.client.force_authenticate(user=legacy_teacher)
+        url = reverse('course-detail', kwargs={'pk': self.course_b.id})
+        res = self.client.patch(url, {"description": "Legacy teacher fallback works"})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_legacy_teacher_sees_their_course_in_list(self):
+        legacy_teacher = User.objects.create_user(username="p1_legacy_teacher2", password="pw", is_teacher=True, is_student=False)
+        Enrollment.objects.create(user=legacy_teacher, course=self.course_b)
+        self.course_b.is_published = False
+        self.course_b.save()
+
+        self.client.force_authenticate(user=legacy_teacher)
+        res = self.client.get(reverse('course-list'))
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        course_ids = [c['id'] for c in res.data]
+        self.assertIn(self.course_b.id, course_ids)
+
+    # --- Item 12: Existing courses continue working (public/student read access) ---
+    def test_published_course_still_publicly_readable(self):
+        res = self.client.get(reverse('course-list'))
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        course_ids = [c['id'] for c in res.data]
+        self.assertIn(self.course_a.id, course_ids)
+        self.assertIn(self.course_b.id, course_ids)
+
+
+class AssistantPermissionSplitTests(APITestCase):
+    """
+    Phase 1 (second pass): Assistant may manage lesson/module/audio content
+    for a course it's assigned to, but must NOT be able to edit the course's
+    own metadata (title/description/price/publish/delete) -- only TEACHER
+    role (or admin) can. See IsSuperAdminOrCourseTeacherOrReadOnly.
+    """
+
+    def setUp(self):
+        from .models import CourseInstructor
+        self.CourseInstructor = CourseInstructor
+
+        self.admin = User.objects.create_superuser(username="p1b_admin", password="pw")
+        self.teacher = User.objects.create_user(username="p1b_teacher", password="pw", is_teacher=True, is_student=False)
+        self.assistant_user = User.objects.create_user(username="p1b_assistant", password="pw", is_teacher=True, is_student=False)
+
+        self.course = Course.objects.create(title="Assistant Split Course", price=100, is_published=True)
+        self.module = Module.objects.create(course=self.course, title="Module 1", order=1)
+
+        CourseInstructor.objects.create(course=self.course, user=self.teacher, role='TEACHER', is_primary=True)
+        CourseInstructor.objects.create(course=self.course, user=self.assistant_user, role='ASSISTANT')
+
+    def test_assistant_can_create_module(self):
+        self.client.force_authenticate(user=self.assistant_user)
+        res = self.client.post(reverse('module-list'), {"course": self.course.id, "title": "New Module", "order": 2})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    def test_assistant_can_edit_existing_module(self):
+        self.client.force_authenticate(user=self.assistant_user)
+        res = self.client.patch(reverse('module-detail', kwargs={'pk': self.module.id}), {"title": "Renamed by assistant"})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_assistant_cannot_edit_course_metadata(self):
+        self.client.force_authenticate(user=self.assistant_user)
+        res = self.client.patch(reverse('course-detail', kwargs={'pk': self.course.id}), {"description": "Assistant should not be able to do this"})
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.course.refresh_from_db()
+        self.assertNotEqual(self.course.description, "Assistant should not be able to do this")
+
+    def test_assistant_cannot_publish_course(self):
+        self.client.force_authenticate(user=self.assistant_user)
+        res = self.client.patch(reverse('course-detail', kwargs={'pk': self.course.id}), {"is_published": False})
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_teacher_can_still_edit_course_metadata(self):
+        # Confirms the split didn't accidentally narrow TEACHER's own access.
+        self.client.force_authenticate(user=self.teacher)
+        res = self.client.patch(reverse('course-detail', kwargs={'pk': self.course.id}), {"description": "Teacher update"})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_teacher_can_still_edit_modules(self):
+        self.client.force_authenticate(user=self.teacher)
+        res = self.client.patch(reverse('module-detail', kwargs={'pk': self.module.id}), {"title": "Renamed by teacher"})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_mentor_gets_no_course_editing_at_all(self):
+        mentor = User.objects.create_user(username="p1b_mentor", password="pw", is_mentor=True, is_student=False)
+        self.CourseInstructor.objects.create(course=self.course, user=mentor, role='MENTOR')
+        self.client.force_authenticate(user=mentor)
+
+        res_course = self.client.patch(reverse('course-detail', kwargs={'pk': self.course.id}), {"description": "no"})
+        self.assertEqual(res_course.status_code, status.HTTP_403_FORBIDDEN)
+
+        res_module = self.client.patch(reverse('module-detail', kwargs={'pk': self.module.id}), {"title": "no"})
+        self.assertEqual(res_module.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_student_gets_no_course_editing(self):
+        student = User.objects.create_user(username="p1b_student", password="pw")
+        self.client.force_authenticate(user=student)
+        res = self.client.patch(reverse('course-detail', kwargs={'pk': self.course.id}), {"description": "no"})
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+
+# ============================================================================
+# PHASE 2: LIVE CLASS SYSTEM
+# ============================================================================
+# Uses plain APITestCase (DB-transaction-per-test, never actually committed)
+# for pure permission/status-code/validation checks -- transaction.on_commit
+# callbacks (notification + reminder dispatch) simply never fire in that
+# case, so no Celery/Redis mocking is needed there. Any test that asserts on
+# the *content* of a dispatched notification/reminder uses
+# APITransactionTestCase (real commits) plus the established
+# @patch('courses.tasks.send_class_reminder.apply_async') convention from
+# LiveClassNotificationTests, since a live broker is not available in this
+# environment.
+
+class Phase2BatchSelfServiceTests(APITestCase):
+    """Requirement: 'Teacher can create/manage classes assigned to them' /
+    'Mentor can create/manage their own mentor sessions' -- via LiveBatch,
+    since a LiveClass requires a batch."""
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser(username="p2_admin", password="pw")
+        self.teacher1 = User.objects.create_user(username="p2_teacher1", password="pw", is_teacher=True, is_student=False)
+        self.teacher2 = User.objects.create_user(username="p2_teacher2", password="pw", is_teacher=True, is_student=False)
+        self.mentor = User.objects.create_user(username="p2_mentor", password="pw", is_mentor=True, is_student=False)
+        self.student = User.objects.create_user(username="p2_student", password="pw")
+        self.course = Course.objects.create(title="P2 Live Course", price=0, course_type='LIVE', is_published=True)
+
+    def test_teacher_self_service_batch_create_defaults_to_self(self):
+        self.client.force_authenticate(user=self.teacher1)
+        res = self.client.post(reverse('live-batch-list'), {"course": self.course.id, "batch_type": "GROUP"})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['instructor'], self.teacher1.id)
+
+    def test_mentor_self_service_batch_create_defaults_to_self(self):
+        self.client.force_authenticate(user=self.mentor)
+        res = self.client.post(reverse('live-batch-list'), {"course": self.course.id, "batch_type": "ONE_TO_ONE"})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['instructor'], self.mentor.id)
+
+    def test_teacher_cannot_create_batch_on_behalf_of_another_teacher(self):
+        self.client.force_authenticate(user=self.teacher1)
+        res = self.client.post(reverse('live-batch-list'), {"course": self.course.id, "batch_type": "GROUP", "instructor": self.teacher2.id})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("instructor", res.data)
+
+    def test_admin_can_create_batch_for_any_instructor(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(reverse('live-batch-list'), {"course": self.course.id, "batch_type": "GROUP", "instructor": self.teacher1.id})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['instructor'], self.teacher1.id)
+
+    def test_student_cannot_create_batch(self):
+        self.client.force_authenticate(user=self.student)
+        res = self.client.post(reverse('live-batch-list'), {"course": self.course.id, "batch_type": "GROUP"})
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_teacher_cannot_manage_another_teachers_batch(self):
+        other_batch = LiveBatch.objects.create(course=self.course, instructor=self.teacher2, batch_type='GROUP')
+        self.client.force_authenticate(user=self.teacher1)
+        res = self.client.patch(reverse('live-batch-detail', kwargs={'pk': other_batch.id}), {"batch_type": "ONE_TO_ONE"})
+        # get_queryset() already scopes a non-admin to their own batches, so
+        # another teacher's batch isn't visible at all -> 404, not 403 (same
+        # isolation pattern as IsSuperAdminOrAuthorizedTeacherOrReadOnly).
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_teacher_can_assign_and_remove_students_on_own_batch(self):
+        batch = LiveBatch.objects.create(course=self.course, instructor=self.teacher1, batch_type='GROUP')
+        self.client.force_authenticate(user=self.teacher1)
+        res = self.client.post(reverse('live-batch-students', kwargs={'pk': batch.id}), {"student_id": self.student.id})
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+        res = self.client.delete(reverse('live-batch-remove-student', kwargs={'pk': batch.id, 'student_id': self.student.id}))
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_teacher_cannot_assign_students_on_another_teachers_batch(self):
+        other_batch = LiveBatch.objects.create(course=self.course, instructor=self.teacher2, batch_type='GROUP')
+        self.client.force_authenticate(user=self.teacher1)
+        res = self.client.post(reverse('live-batch-students', kwargs={'pk': other_batch.id}), {"student_id": self.student.id})
+        # Same queryset-scoping isolation as above -- 404, not 403.
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_group_batch_capacity_enforced(self):
+        batch = LiveBatch.objects.create(course=self.course, instructor=self.teacher1, batch_type='GROUP', max_participants=1)
+        s2 = User.objects.create_user(username="p2_student2", password="pw")
+        self.client.force_authenticate(user=self.teacher1)
+        res1 = self.client.post(reverse('live-batch-students', kwargs={'pk': batch.id}), {"student_id": self.student.id})
+        self.assertEqual(res1.status_code, status.HTTP_201_CREATED)
+        res2 = self.client.post(reverse('live-batch-students', kwargs={'pk': batch.id}), {"student_id": s2.id})
+        self.assertEqual(res2.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("full", res2.data['error'])
+
+
+class Phase2LiveClassSchedulingTests(APITestCase):
+    """Scheduling + ownership enforcement for a single (non-recurring) LiveClass."""
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser(username="p2s_admin", password="pw")
+        self.teacher1 = User.objects.create_user(username="p2s_teacher1", password="pw", is_teacher=True, is_student=False)
+        self.teacher2 = User.objects.create_user(username="p2s_teacher2", password="pw", is_teacher=True, is_student=False)
+        self.mentor = User.objects.create_user(username="p2s_mentor", password="pw", is_mentor=True, is_student=False)
+        self.student = User.objects.create_user(username="p2s_student", password="pw")
+        self.outsider_student = User.objects.create_user(username="p2s_outsider", password="pw")
+        self.course = Course.objects.create(title="P2S Live Course", price=0, course_type='LIVE', is_published=True)
+
+        self.teacher1_batch = LiveBatch.objects.create(course=self.course, instructor=self.teacher1, batch_type='GROUP')
+        self.mentor_batch = LiveBatch.objects.create(course=self.course, instructor=self.mentor, batch_type='ONE_TO_ONE')
+        LiveBatchStudent.objects.create(batch=self.teacher1_batch, student=self.student)
+        LiveBatchStudent.objects.create(batch=self.mentor_batch, student=self.student)
+
+        self.future_time = timezone.now() + timezone.timedelta(days=3)
+
+    def _payload(self, batch):
+        return {
+            "title": "P2 Session",
+            "batch": batch.id,
+            "scheduled_start": self.future_time.isoformat(),
+            "duration_minutes": 60,
+            "meeting_url": "http://zoom.us/p2test",
+        }
+
+    def test_teacher_can_schedule_on_own_batch_and_sees_meeting_url(self):
+        self.client.force_authenticate(user=self.teacher1)
+        res = self.client.post(reverse('live-class-list'), self._payload(self.teacher1_batch))
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['meeting_url'], "http://zoom.us/p2test")
+
+    def test_teacher_cannot_schedule_on_another_teachers_batch(self):
+        other_batch = LiveBatch.objects.create(course=self.course, instructor=self.teacher2, batch_type='GROUP')
+        self.client.force_authenticate(user=self.teacher1)
+        res = self.client.post(reverse('live-class-list'), self._payload(other_batch))
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("batch", res.data)
+
+    def test_mentor_can_schedule_own_session_and_sees_meeting_url(self):
+        """Regression check for the meeting_url-visibility bug fixed in Phase 2:
+        a mentor conducting their own batch must see their own meeting_url."""
+        self.client.force_authenticate(user=self.mentor)
+        res = self.client.post(reverse('live-class-list'), self._payload(self.mentor_batch))
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['meeting_url'], "http://zoom.us/p2test")
+
+    def test_mentor_cannot_schedule_on_teachers_batch(self):
+        """Regression check for the ownership-check bug fixed in Phase 2: a
+        mentor could previously create a LiveClass under ANY batch because
+        only is_teacher was checked in LiveClassSerializer.validate()."""
+        self.client.force_authenticate(user=self.mentor)
+        res = self.client.post(reverse('live-class-list'), self._payload(self.teacher1_batch))
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("batch", res.data)
+
+    def test_student_cannot_schedule_a_class(self):
+        self.client.force_authenticate(user=self.student)
+        res = self.client.post(reverse('live-class-list'), self._payload(self.teacher1_batch))
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_student_does_not_see_meeting_url_unless_assigned(self):
+        live_class = LiveClass.objects.create(
+            course=self.course, batch=self.teacher1_batch, instructor=self.teacher1,
+            title="Hidden", scheduled_start=self.future_time, duration_minutes=60,
+            status='SCHEDULED', meeting_url="http://zoom.us/hidden"
+        )
+        self.client.force_authenticate(user=self.outsider_student)
+        res = self.client.get(reverse('live-class-detail', kwargs={'pk': live_class.id}))
+        # Outsider isn't assigned to the batch, so has_object_permission denies entirely.
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+        self.client.force_authenticate(user=self.student)
+        res = self.client.get(reverse('live-class-detail', kwargs={'pk': live_class.id}))
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['meeting_url'], "http://zoom.us/hidden")
+
+    def test_overlapping_classes_for_same_instructor_rejected(self):
+        LiveClass.objects.create(
+            course=self.course, batch=self.teacher1_batch, instructor=self.teacher1,
+            title="Existing", scheduled_start=self.future_time, duration_minutes=60,
+            status='SCHEDULED', meeting_url="http://zoom.us/existing"
+        )
+        self.client.force_authenticate(user=self.teacher1)
+        overlapping_payload = self._payload(self.teacher1_batch)
+        overlapping_payload['scheduled_start'] = (self.future_time + timezone.timedelta(minutes=30)).isoformat()
+        res = self.client.post(reverse('live-class-list'), overlapping_payload)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("scheduled_start", res.data)
+
+    def test_cancel_with_reason_notifies_and_persists_reason(self):
+        live_class = LiveClass.objects.create(
+            course=self.course, batch=self.teacher1_batch, instructor=self.teacher1,
+            title="To Cancel", scheduled_start=self.future_time, duration_minutes=60,
+            status='SCHEDULED', meeting_url="http://zoom.us/cancel"
+        )
+        self.client.force_authenticate(user=self.teacher1)
+        res = self.client.post(reverse('live-class-cancel', args=[live_class.id]), {"reason": "Instructor unavailable"})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        live_class.refresh_from_db()
+        self.assertEqual(live_class.status, 'CANCELLED')
+        self.assertEqual(live_class.cancellation_reason, "Instructor unavailable")
+
+    def test_today_action_scopes_to_todays_classes_only(self):
+        today_start = timezone.now().replace(hour=10, minute=0, second=0, microsecond=0)
+        if today_start < timezone.now():
+            today_start = timezone.now() + timezone.timedelta(minutes=5)
+        LiveClass.objects.create(
+            course=self.course, batch=self.teacher1_batch, instructor=self.teacher1,
+            title="Today Session", scheduled_start=today_start, duration_minutes=60,
+            status='SCHEDULED', meeting_url="http://zoom.us/today"
+        )
+        LiveClass.objects.create(
+            course=self.course, batch=self.teacher1_batch, instructor=self.teacher1,
+            title="Future Session", scheduled_start=self.future_time, duration_minutes=60,
+            status='SCHEDULED', meeting_url="http://zoom.us/future"
+        )
+        self.client.force_authenticate(user=self.teacher1)
+        res = self.client.get(reverse('live-class-today'))
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        titles = [c['title'] for c in res.data['results']] if isinstance(res.data, dict) and 'results' in res.data else [c['title'] for c in res.data]
+        self.assertIn("Today Session", titles)
+        self.assertNotIn("Future Session", titles)
+
+
+class Phase2AvailabilityTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser(username="p2a_admin", password="pw")
+        self.teacher = User.objects.create_user(username="p2a_teacher", password="pw", is_teacher=True, is_student=False)
+        self.other_teacher = User.objects.create_user(username="p2a_teacher2", password="pw", is_teacher=True, is_student=False)
+        self.course = Course.objects.create(title="P2A Live Course", price=0, course_type='LIVE', is_published=True)
+        self.batch = LiveBatch.objects.create(course=self.course, instructor=self.teacher, batch_type='GROUP')
+
+    def test_teacher_self_service_create_omitting_user(self):
+        self.client.force_authenticate(user=self.teacher)
+        res = self.client.post(reverse('availability-list'), {
+            "day_of_week": 0, "start_time": "09:00:00", "end_time": "12:00:00"
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['user'], self.teacher.id)
+
+    def test_teacher_cannot_set_availability_for_another_user(self):
+        self.client.force_authenticate(user=self.teacher)
+        res = self.client.post(reverse('availability-list'), {
+            "user": self.other_teacher.id, "day_of_week": 0, "start_time": "09:00:00", "end_time": "12:00:00"
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_admin_can_create_on_behalf_of_teacher(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(reverse('availability-list'), {
+            "user": self.teacher.id, "day_of_week": 1, "start_time": "09:00:00", "end_time": "12:00:00"
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['user'], self.teacher.id)
+
+    def test_end_time_before_start_time_rejected(self):
+        self.client.force_authenticate(user=self.teacher)
+        res = self.client.post(reverse('availability-list'), {
+            "day_of_week": 0, "start_time": "12:00:00", "end_time": "09:00:00"
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_non_owner_cannot_delete_others_availability(self):
+        window = TeacherAvailability.objects.create(user=self.teacher, day_of_week=0, start_time="09:00", end_time="12:00")
+        self.client.force_authenticate(user=self.other_teacher)
+        res = self.client.delete(reverse('availability-detail', kwargs={'pk': window.id}))
+        # get_queryset() already scopes a non-admin to only their own rows,
+        # so another teacher's window isn't visible at all -> 404. The
+        # perform_destroy() ownership guard is defense-in-depth behind that.
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(TeacherAvailability.objects.filter(pk=window.id).exists())
+
+    def test_owner_can_delete_own_availability(self):
+        window = TeacherAvailability.objects.create(user=self.teacher, day_of_week=0, start_time="09:00", end_time="12:00")
+        self.client.force_authenticate(user=self.teacher)
+        res = self.client.delete(reverse('availability-detail', kwargs={'pk': window.id}))
+        self.assertEqual(res.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_scheduling_outside_configured_availability_rejected(self):
+        # Pick a concrete future Monday and give the teacher a 09:00-12:00
+        # window on Mondays only.
+        import datetime
+        base = timezone.now() + timezone.timedelta(days=10)
+        days_ahead = (0 - base.weekday()) % 7  # next Monday
+        monday = base + timezone.timedelta(days=days_ahead)
+        TeacherAvailability.objects.create(user=self.teacher, day_of_week=0, start_time=datetime.time(9, 0), end_time=datetime.time(12, 0))
+
+        self.client.force_authenticate(user=self.teacher)
+
+        outside_window = timezone.make_aware(datetime.datetime.combine(monday.date(), datetime.time(14, 0)))
+        res = self.client.post(reverse('live-class-list'), {
+            "title": "Outside window", "batch": self.batch.id,
+            "scheduled_start": outside_window.isoformat(), "duration_minutes": 60,
+            "meeting_url": "http://zoom.us/x"
+        })
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("scheduled_start", res.data)
+
+        inside_window = timezone.make_aware(datetime.datetime.combine(monday.date(), datetime.time(10, 0)))
+        res = self.client.post(reverse('live-class-list'), {
+            "title": "Inside window", "batch": self.batch.id,
+            "scheduled_start": inside_window.isoformat(), "duration_minutes": 60,
+            "meeting_url": "http://zoom.us/y"
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    def test_no_availability_rows_means_unrestricted_backward_compat(self):
+        # Teacher has zero TeacherAvailability rows -- any future time is fine.
+        self.client.force_authenticate(user=self.teacher)
+        future = timezone.now() + timezone.timedelta(days=5)
+        res = self.client.post(reverse('live-class-list'), {
+            "title": "Any time", "batch": self.batch.id,
+            "scheduled_start": future.isoformat(), "duration_minutes": 60,
+            "meeting_url": "http://zoom.us/z"
+        })
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+
+class Phase2RecurringClassTests(APITransactionTestCase):
+    """Recurring series creation, per-occurrence validation, and cancel-series.
+    Uses APITransactionTestCase + mocked apply_async since class creation
+    dispatches notifications/reminders via transaction.on_commit."""
+
+    def setUp(self):
+        self.teacher = User.objects.create_user(username="p2r_teacher", password="pw", is_teacher=True, is_student=False)
+        self.student = User.objects.create_user(username="p2r_student", password="pw")
+        self.course = Course.objects.create(title="P2R Live Course", price=0, course_type='LIVE', is_published=True)
+        self.batch = LiveBatch.objects.create(course=self.course, instructor=self.teacher, batch_type='GROUP')
+        LiveBatchStudent.objects.create(batch=self.batch, student=self.student)
+        self.client.force_authenticate(user=self.teacher)
+        self.start = timezone.now() + timezone.timedelta(days=7)
+
+    @patch('courses.tasks.send_class_reminder.apply_async')
+    def test_weekly_recurring_series_creates_linked_occurrences(self, mock_apply_async):
+        payload = {
+            "title": "Weekly Session",
+            "batch": self.batch.id,
+            "scheduled_start": self.start.isoformat(),
+            "duration_minutes": 60,
+            "meeting_url": "http://zoom.us/weekly",
+            "recurrence": {"frequency": "WEEKLY", "weekdays": [self.start.weekday()], "occurrence_count": 3},
+        }
+        res = self.client.post(reverse('live-class-list'), payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(res.data), 3)
+
+        rule_ids = {c['recurrence_rule']['id'] for c in res.data}
+        self.assertEqual(len(rule_ids), 1)  # all occurrences share one RecurrenceRule
+        self.assertEqual(RecurrenceRule.objects.count(), 1)
+        self.assertEqual(LiveClass.objects.filter(recurrence_rule_id=rule_ids.pop()).count(), 3)
+
+    @patch('courses.tasks.send_class_reminder.apply_async')
+    def test_recurring_series_conflict_rolls_back_entire_series(self, mock_apply_async):
+        # Pre-existing class 14 days out collides with the 3rd weekly occurrence.
+        LiveClass.objects.create(
+            course=self.course, batch=self.batch, instructor=self.teacher,
+            title="Blocker", scheduled_start=self.start + timezone.timedelta(days=14),
+            duration_minutes=60, status='SCHEDULED', meeting_url="http://zoom.us/blocker"
+        )
+        payload = {
+            "title": "Weekly Session",
+            "batch": self.batch.id,
+            "scheduled_start": self.start.isoformat(),
+            "duration_minutes": 60,
+            "meeting_url": "http://zoom.us/weekly",
+            "recurrence": {"frequency": "WEEKLY", "weekdays": [self.start.weekday()], "occurrence_count": 3},
+        }
+        res = self.client.post(reverse('live-class-list'), payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        # Nothing from the failed series should have been persisted (atomic rollback).
+        self.assertEqual(LiveClass.objects.filter(title="Weekly Session").count(), 0)
+        self.assertEqual(RecurrenceRule.objects.count(), 0)
+
+    @patch('courses.tasks.send_class_reminder.apply_async')
+    def test_cancel_series_cancels_all_future_scheduled_occurrences(self, mock_apply_async):
+        payload = {
+            "title": "Weekly Session",
+            "batch": self.batch.id,
+            "scheduled_start": self.start.isoformat(),
+            "duration_minutes": 60,
+            "meeting_url": "http://zoom.us/weekly",
+            "recurrence": {"frequency": "WEEKLY", "weekdays": [self.start.weekday()], "occurrence_count": 3},
+        }
+        res = self.client.post(reverse('live-class-list'), payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        occurrence_ids = [c['id'] for c in res.data]
+
+        # Manually complete the first occurrence -- cancel-series must leave it alone.
+        first = LiveClass.objects.get(pk=occurrence_ids[0])
+        first.status = 'COMPLETED'
+        first.save()
+
+        res = self.client.post(reverse('live-class-cancel-series', args=[occurrence_ids[1]]), {"reason": "Series cancelled"})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        first.refresh_from_db()
+        self.assertEqual(first.status, 'COMPLETED')  # untouched
+        second = LiveClass.objects.get(pk=occurrence_ids[1])
+        third = LiveClass.objects.get(pk=occurrence_ids[2])
+        self.assertEqual(second.status, 'CANCELLED')
+        self.assertEqual(third.status, 'CANCELLED')
+        self.assertEqual(second.cancellation_reason, "Series cancelled")
+
+    def test_non_recurring_create_unaffected(self):
+        payload = {
+            "title": "One-off",
+            "batch": self.batch.id,
+            "scheduled_start": self.start.isoformat(),
+            "duration_minutes": 60,
+            "meeting_url": "http://zoom.us/oneoff",
+        }
+        with patch('courses.tasks.send_class_reminder.apply_async'):
+            res = self.client.post(reverse('live-class-list'), payload, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(res.data.get('recurrence_rule'))
+
+
+class Phase2AttendanceTests(APITestCase):
+    def setUp(self):
+        self.teacher = User.objects.create_user(username="p2at_teacher", password="pw", is_teacher=True, is_student=False)
+        self.other_teacher = User.objects.create_user(username="p2at_teacher2", password="pw", is_teacher=True, is_student=False)
+        self.student1 = User.objects.create_user(username="p2at_student1", password="pw")
+        self.student2 = User.objects.create_user(username="p2at_student2", password="pw")
+        self.outsider = User.objects.create_user(username="p2at_outsider", password="pw")
+        self.course = Course.objects.create(title="P2AT Live Course", price=0, course_type='LIVE', is_published=True)
+        self.batch = LiveBatch.objects.create(course=self.course, instructor=self.teacher, batch_type='GROUP')
+        LiveBatchStudent.objects.create(batch=self.batch, student=self.student1)
+        LiveBatchStudent.objects.create(batch=self.batch, student=self.student2)
+        self.live_class = LiveClass.objects.create(
+            course=self.course, batch=self.batch, instructor=self.teacher,
+            title="Attendance Session", scheduled_start=timezone.now() + timezone.timedelta(days=1),
+            duration_minutes=60, status='SCHEDULED', meeting_url="http://zoom.us/att"
+        )
+
+    def test_instructor_can_mark_single_and_bulk_attendance(self):
+        self.client.force_authenticate(user=self.teacher)
+        url = reverse('live-class-attendance', args=[self.live_class.id])
+
+        res = self.client.post(url, {"student": self.student1.id, "status": "PRESENT"}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        res = self.client.post(url, [
+            {"student": self.student1.id, "status": "LATE"},
+            {"student": self.student2.id, "status": "ABSENT"},
+        ], format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(Attendance.objects.filter(live_class=self.live_class).count(), 2)
+        self.assertEqual(Attendance.objects.get(live_class=self.live_class, student=self.student1).status, "LATE")
+
+    def test_instructor_cannot_mark_attendance_for_non_batch_student(self):
+        self.client.force_authenticate(user=self.teacher)
+        url = reverse('live-class-attendance', args=[self.live_class.id])
+        res = self.client.post(url, {"student": self.outsider.id, "status": "PRESENT"}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_student_cannot_mark_attendance(self):
+        self.client.force_authenticate(user=self.student1)
+        url = reverse('live-class-attendance', args=[self.live_class.id])
+        res = self.client.post(url, {"student": self.student1.id, "status": "PRESENT"}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_other_teacher_cannot_mark_attendance(self):
+        self.client.force_authenticate(user=self.other_teacher)
+        url = reverse('live-class-attendance', args=[self.live_class.id])
+        res = self.client.get(url)
+        # Not the batch instructor and not assigned as a student -> object permission denies.
+        self.assertIn(res.status_code, (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+
+    def test_student_sees_only_own_attendance_row(self):
+        Attendance.objects.create(live_class=self.live_class, student=self.student1, status='PRESENT', marked_by=self.teacher)
+        Attendance.objects.create(live_class=self.live_class, student=self.student2, status='ABSENT', marked_by=self.teacher)
+
+        self.client.force_authenticate(user=self.student1)
+        url = reverse('live-class-attendance', args=[self.live_class.id])
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 1)
+        self.assertEqual(res.data[0]['student'], self.student1.id)
+
+    def test_instructor_sees_all_attendance_rows(self):
+        Attendance.objects.create(live_class=self.live_class, student=self.student1, status='PRESENT', marked_by=self.teacher)
+        Attendance.objects.create(live_class=self.live_class, student=self.student2, status='ABSENT', marked_by=self.teacher)
+
+        self.client.force_authenticate(user=self.teacher)
+        url = reverse('live-class-attendance', args=[self.live_class.id])
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 2)
+
+
+class Phase2RecordingTests(APITransactionTestCase):
+    """Recording attach dispatches a notification per assigned student --
+    needs a real commit, hence APITransactionTestCase (no apply_async
+    involved here, so no mocking needed, but NotificationService writes are
+    checked post-commit like the existing LiveClassNotificationTests do)."""
+
+    def setUp(self):
+        self.teacher = User.objects.create_user(username="p2rec_teacher", password="pw", is_teacher=True, is_student=False)
+        self.other_teacher = User.objects.create_user(username="p2rec_teacher2", password="pw", is_teacher=True, is_student=False)
+        self.student1 = User.objects.create_user(username="p2rec_student1", password="pw")
+        self.course = Course.objects.create(title="P2REC Live Course", price=0, course_type='LIVE', is_published=True)
+        self.batch = LiveBatch.objects.create(course=self.course, instructor=self.teacher, batch_type='GROUP')
+        LiveBatchStudent.objects.create(batch=self.batch, student=self.student1)
+        self.live_class = LiveClass.objects.create(
+            course=self.course, batch=self.batch, instructor=self.teacher,
+            title="Recorded Session", scheduled_start=timezone.now() - timezone.timedelta(days=1),
+            duration_minutes=60, status='COMPLETED', meeting_url="http://zoom.us/rec"
+        )
+
+    def test_instructor_can_attach_recording_and_students_are_notified(self):
+        from notifications.models import Notification, NotificationType
+
+        self.client.force_authenticate(user=self.teacher)
+        url = reverse('live-class-recording', args=[self.live_class.id])
+        res = self.client.post(url, {"recording_url": "https://cdn.example.com/rec1.mp4"}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        self.live_class.refresh_from_db()
+        self.assertEqual(self.live_class.recording_url, "https://cdn.example.com/rec1.mp4")
+        self.assertIsNotNone(self.live_class.recording_uploaded_at)
+
+        notifs = Notification.objects.filter(recipient=self.student1, notification_type=NotificationType.LIVE_CLASS)
+        self.assertEqual(notifs.filter(idempotency_key=f"liveclass:{self.live_class.id}:recording:{self.student1.id}").count(), 1)
+
+    def test_recording_url_required(self):
+        self.client.force_authenticate(user=self.teacher)
+        url = reverse('live-class-recording', args=[self.live_class.id])
+        res = self.client.post(url, {}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_non_instructor_cannot_attach_recording(self):
+        self.client.force_authenticate(user=self.other_teacher)
+        url = reverse('live-class-recording', args=[self.live_class.id])
+        res = self.client.post(url, {"recording_url": "https://cdn.example.com/rec2.mp4"}, format='json')
+        self.assertIn(res.status_code, (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND))
+
+    def test_student_cannot_attach_recording(self):
+        self.client.force_authenticate(user=self.student1)
+        url = reverse('live-class-recording', args=[self.live_class.id])
+        res = self.client.post(url, {"recording_url": "https://cdn.example.com/rec3.mp4"}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class Phase2ReminderSchedulingTests(APITransactionTestCase):
+    """Verifies _schedule_class_reminders (24h/1h/15m, reusing the single
+    existing Celery task) is called with the right args, and skips any
+    reminder whose ETA has already passed."""
+
+    def setUp(self):
+        self.teacher = User.objects.create_user(username="p2rem_teacher", password="pw", is_teacher=True, is_student=False)
+        self.student = User.objects.create_user(username="p2rem_student", password="pw")
+        self.course = Course.objects.create(title="P2REM Live Course", price=0, course_type='LIVE', is_published=True)
+        self.batch = LiveBatch.objects.create(course=self.course, instructor=self.teacher, batch_type='GROUP')
+        LiveBatchStudent.objects.create(batch=self.batch, student=self.student)
+        self.client.force_authenticate(user=self.teacher)
+
+    @patch('courses.tasks.send_class_reminder.apply_async')
+    def test_all_three_reminders_scheduled_for_a_far_future_class(self, mock_apply_async):
+        far_future = timezone.now() + timezone.timedelta(days=5)
+        res = self.client.post(reverse('live-class-list'), {
+            "title": "Far Future", "batch": self.batch.id,
+            "scheduled_start": far_future.isoformat(), "duration_minutes": 60,
+            "meeting_url": "http://zoom.us/far"
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+        self.assertEqual(mock_apply_async.call_count, 3)
+        reminder_types = {call.kwargs['args'][2] for call in mock_apply_async.call_args_list}
+        self.assertEqual(reminder_types, {'24h', '1h', '15m'})
+
+    @patch('courses.tasks.send_class_reminder.apply_async')
+    def test_only_still_future_reminders_are_scheduled_for_a_near_class(self, mock_apply_async):
+        near_future = timezone.now() + timezone.timedelta(minutes=30)
+        res = self.client.post(reverse('live-class-list'), {
+            "title": "Near Future", "batch": self.batch.id,
+            "scheduled_start": near_future.isoformat(), "duration_minutes": 60,
+            "meeting_url": "http://zoom.us/near"
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+        # Only the 15-minutes-before reminder still has a future ETA.
+        self.assertEqual(mock_apply_async.call_count, 1)
+        self.assertEqual(mock_apply_async.call_args_list[0].kwargs['args'][2], '15m')
+
+    @patch('courses.tasks.send_class_reminder.apply_async')
+    def test_reschedule_reschedules_reminders(self, mock_apply_async):
+        live_class = LiveClass.objects.create(
+            course=self.course, batch=self.batch, instructor=self.teacher,
+            title="To Reschedule", scheduled_start=timezone.now() + timezone.timedelta(days=5),
+            duration_minutes=60, status='SCHEDULED', meeting_url="http://zoom.us/resched"
+        )
+        mock_apply_async.reset_mock()
+        new_time = timezone.now() + timezone.timedelta(days=6)
+        res = self.client.post(reverse('live-class-reschedule', args=[live_class.id]), {"scheduled_start": new_time.isoformat()})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(mock_apply_async.call_count, 3)
+
+
+class Phase2RealJWTPermissionTests(TestCase):
+    """Explicit real-JWT-cookie verification (not force_authenticate) for the
+    two most security-critical Phase 2 boundaries, mirroring the pattern
+    used for the equivalent checks in Phase 0/1."""
+
+    def _jwt_client(self, user):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        client = DjangoClient()
+        access = str(RefreshToken.for_user(user).access_token)
+        client.cookies['natya-auth'] = access
+        return client
+
+    def setUp(self):
+        self.teacher1 = User.objects.create_user(username="p2jwt_teacher1", password="pw", is_teacher=True, is_student=False)
+        self.teacher2 = User.objects.create_user(username="p2jwt_teacher2", password="pw", is_teacher=True, is_student=False)
+        self.student = User.objects.create_user(username="p2jwt_student", password="pw")
+        self.course = Course.objects.create(title="P2JWT Live Course", price=0, course_type='LIVE', is_published=True)
+        self.teacher1_batch = LiveBatch.objects.create(course=self.course, instructor=self.teacher1, batch_type='GROUP')
+
+    def test_real_jwt_teacher_blocked_from_another_teachers_batch(self):
+        client = self._jwt_client(self.teacher2)
+        future = timezone.now() + timezone.timedelta(days=3)
+        res = client.post(
+            '/api/courses/live-classes/',
+            data={
+                "title": "Cross-teacher attempt", "batch": self.teacher1_batch.id,
+                "scheduled_start": future.isoformat(), "duration_minutes": 60,
+                "meeting_url": "http://zoom.us/cross",
+            },
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_real_jwt_student_cannot_create_live_class(self):
+        client = self._jwt_client(self.student)
+        future = timezone.now() + timezone.timedelta(days=3)
+        res = client.post(
+            '/api/courses/live-classes/',
+            data={
+                "title": "Student attempt", "batch": self.teacher1_batch.id,
+                "scheduled_start": future.isoformat(), "duration_minutes": 60,
+                "meeting_url": "http://zoom.us/studentattempt",
+            },
+        )
+        self.assertEqual(res.status_code, 403)
+
+    def test_real_jwt_teacher_can_create_on_own_batch(self):
+        client = self._jwt_client(self.teacher1)
+        future = timezone.now() + timezone.timedelta(days=3)
+        res = client.post(
+            '/api/courses/live-classes/',
+            data={
+                "title": "Own batch", "batch": self.teacher1_batch.id,
+                "scheduled_start": future.isoformat(), "duration_minutes": 60,
+                "meeting_url": "http://zoom.us/ownbatch",
+            },
+        )
+        self.assertEqual(res.status_code, 201)

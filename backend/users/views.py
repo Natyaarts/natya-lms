@@ -146,12 +146,12 @@ class VerifyOTPView(APIView):
 from rest_framework import status, viewsets, permissions
 from rest_framework.decorators import action
 from .serializers import AdminUserSerializer
-from .permissions import IsSuperAdmin
+from .permissions import IsSuperAdminOrAdmin
 
 class AdminUserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all().order_by('-date_joined')
     serializer_class = AdminUserSerializer
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdminOrAdmin]
 
     @action(detail=True, methods=['get'])
     def courses(self, request, pk=None):
@@ -219,15 +219,28 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         # Check if already purchased
         if Purchase.objects.filter(user=user, course=course, status='SUCCESS').exists():
             return Response({"error": "User already has this course"}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         amount = request.data.get('amount', course.price)
-            
-        Purchase.objects.create(
-            user=user,
-            course=course,
-            amount=amount,
-            status=payment_status
-        )
+
+        from django.db import transaction
+        from orders.services import fulfill_purchase
+        # Phase 3.1: wrapped in atomic() so the Purchase row and its
+        # fulfillment (Enrollment + notification) either both happen or
+        # neither does -- no change to the existing behavior otherwise.
+        with transaction.atomic():
+            purchase = Purchase.objects.create(
+                user=user,
+                course=course,
+                amount=amount,
+                status=payment_status
+            )
+
+            # If created directly as SUCCESS (the default), this must grant
+            # access the same way every other "successful payment" path does --
+            # previously this silently created a paid-looking Purchase with no
+            # Enrollment and no notification. See orders/services.py.
+            fulfill_purchase(purchase, previous_status='PENDING')
+
         return Response({"message": f"Successfully assigned {course.title} to {user.username}"})
 
     @action(detail=True, methods=['post'])
@@ -238,15 +251,25 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         if not purchase_id:
             return Response({"error": "purchase_id is required"}, status=status.HTTP_400_BAD_REQUEST)
             
+        from django.db import transaction
         from orders.models import Purchase
+        from orders.services import fulfill_purchase
         try:
-            purchase = Purchase.objects.get(id=purchase_id, user=user)
-            previous_status = purchase.status
-            purchase.status = 'SUCCESS'
-            purchase.save()
+            # Phase 3.1: same select_for_update()+atomic() treatment as
+            # AdminPurchaseViewSet.mark_paid -- this is the second of the
+            # two separate "mark paid" endpoints/frontends the Phase 3 audit
+            # found, so it needs the identical concurrency fix.
+            with transaction.atomic():
+                purchase = Purchase.objects.select_for_update().get(id=purchase_id, user=user)
+                previous_status = purchase.status
+                purchase.status = Purchase.Status.SUCCESS
+                purchase.save()
 
-            from notifications.services import NotificationService
-            NotificationService.trigger_payment_success(purchase, previous_status)
+                # Same fulfillment path as every other "mark paid" action -- this
+                # previously did NOT enroll the user, unlike
+                # AdminPurchaseViewSet.mark_paid, which did. See
+                # orders/services.py for the single source of truth.
+                fulfill_purchase(purchase, previous_status)
 
             return Response({"message": "Successfully marked as paid!"})
         except Purchase.DoesNotExist:
@@ -289,15 +312,19 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         teacher = self.get_object()
         if not teacher.is_teacher:
             return Response({"error": "User is not a teacher"}, status=status.HTTP_400_BAD_REQUEST)
-            
+
         from courses.models import Course
         from django.db.models import Q
-        
-        # Get courses assigned to this teacher
+
+        # CourseInstructor is now the canonical "who teaches this course"
+        # relationship; the Enrollment condition is kept only as a fallback
+        # for legacy teachers not yet captured by a CourseInstructor row
+        # (see courses.CourseViewSet.get_queryset for the same pattern).
         teacher_courses = Course.objects.filter(
+            Q(instructors__user=teacher, instructors__role='TEACHER') |
             Q(enrollments__user=teacher)
         ).distinct()
-        
+
         # Get students enrolled in these courses
         students = User.objects.filter(
             is_student=True,
@@ -306,8 +333,36 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         ).filter(
             Q(enrollments__course__in=teacher_courses)
         ).distinct().order_by('-date_joined')
-        
+
         serializer = self.get_serializer(students, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get', 'patch'], url_path='teacher-profile')
+    def teacher_profile(self, request, pk=None):
+        """Admin view/edit of any user's TeacherProfile."""
+        target = self.get_object()
+        if not target.is_teacher:
+            return Response({"error": "User is not a teacher."}, status=status.HTTP_400_BAD_REQUEST)
+        profile, _ = TeacherProfile.objects.get_or_create(user=target)
+        if request.method == 'GET':
+            return Response(TeacherProfileSerializer(profile).data)
+        serializer = TeacherProfileSerializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get', 'patch'], url_path='mentor-profile')
+    def mentor_profile(self, request, pk=None):
+        """Admin view/edit of any user's MentorProfile."""
+        target = self.get_object()
+        if not target.is_mentor:
+            return Response({"error": "User is not a mentor."}, status=status.HTTP_400_BAD_REQUEST)
+        profile, _ = MentorProfile.objects.get_or_create(user=target)
+        if request.method == 'GET':
+            return Response(MentorProfileSerializer(profile).data)
+        serializer = MentorProfileSerializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
         return Response(serializer.data)
 
 from django.db.models import Sum
@@ -315,7 +370,7 @@ from courses.models import Course
 from orders.models import Purchase
 
 class AdminStatsView(APIView):
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdminOrAdmin]
 
     def get(self, request):
         from django.utils import timezone
@@ -463,9 +518,66 @@ class CurrentUserView(APIView):
             "phone_number": request.user.phone_number,
             "is_student": getattr(request.user, 'is_student', False),
             "is_teacher": getattr(request.user, 'is_teacher', False),
+            "is_mentor": getattr(request.user, 'is_mentor', False),
             "is_superuser": request.user.is_superuser,
+            "is_staff": request.user.is_staff,
+            "is_admin": bool(request.user.is_staff and not request.user.is_superuser),
             "is_onboarded": getattr(request.user, 'is_onboarded', False)
         })
+
+
+class MyStudentsView(APIView):
+    """
+    Self-service "my students" for a teacher or mentor -- unlike
+    AdminUserViewSet.teacher_students (IsSuperAdmin-only, admin looking up
+    *any* teacher's roster), this lets the caller see their own, with each
+    role's students coming from the correct, separate relationship:
+
+    - Teacher: students enrolled in courses the teacher is assigned to via
+      CourseInstructor (role=TEACHER), plus the legacy self-enrollment
+      fallback for teachers predating that model.
+    - Mentor: students explicitly assigned via Mentorship (status=ACTIVE).
+      Deliberately NOT derived from course enrollment.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        if getattr(user, 'is_mentor', False):
+            from .models import Mentorship
+            mentorships = Mentorship.objects.filter(
+                mentor=user, status=Mentorship.Status.ACTIVE
+            ).select_related('student').order_by('-assigned_at')
+            students = [m.student for m in mentorships]
+        elif getattr(user, 'is_teacher', False):
+            from courses.models import Course, Enrollment
+            from django.db.models import Q
+            teacher_courses = Course.objects.filter(
+                Q(instructors__user=user, instructors__role='TEACHER') |
+                Q(enrollments__user=user)  # legacy fallback, see CourseViewSet.get_queryset
+            ).distinct()
+            students = User.objects.filter(
+                is_student=True, is_teacher=False, is_superuser=False,
+                enrollments__course__in=teacher_courses
+            ).distinct().order_by('-date_joined')
+        else:
+            return Response(
+                {"error": "Only teacher or mentor accounts have a student roster."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        data = [{
+            "id": s.id,
+            "username": s.username,
+            "first_name": s.first_name,
+            "last_name": s.last_name,
+            "email": s.email,
+            "phone_number": s.phone_number,
+            "is_active": s.is_active,
+            "date_joined": s.date_joined,
+        } for s in students]
+        return Response(data)
 
 class OnboardingFieldsView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -557,4 +669,101 @@ from .serializers import OnboardingFieldSerializer
 class OnboardingFieldViewSet(viewsets.ModelViewSet):
     queryset = OnboardingField.objects.all().order_by('order')
     serializer_class = OnboardingFieldSerializer
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdminOrAdmin]
+
+
+from .models import Mentorship
+from .serializers import MentorshipSerializer
+from .permissions import IsSuperAdminOrReadOnlyMentorship
+
+
+class MentorshipViewSet(viewsets.ModelViewSet):
+    """
+    The explicit, persistent student<->mentor relationship (see Mentorship
+    model). Admin/staff manage assignments; a mentor sees only their own
+    students, a student sees only their own mentors -- enforced here, not
+    just hidden in the frontend.
+    """
+    serializer_class = MentorshipSerializer
+    permission_classes = [permissions.IsAuthenticated, IsSuperAdminOrReadOnlyMentorship]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = Mentorship.objects.all().select_related('student', 'mentor', 'assigned_by')
+        if user.is_superuser or user.is_staff:
+            # Admin use, e.g. a specific user's detail page: ?student= or
+            # ?mentor= narrows the "see everything" queryset, same pattern
+            # as LiveClassViewSet's ?instructor=/?student= filters.
+            student_id = self.request.query_params.get('student')
+            if student_id:
+                qs = qs.filter(student_id=student_id)
+            mentor_id = self.request.query_params.get('mentor')
+            if mentor_id:
+                qs = qs.filter(mentor_id=mentor_id)
+            return qs
+        if getattr(user, 'is_mentor', False):
+            return qs.filter(mentor=user)
+        return qs.filter(student=user)
+
+    def perform_create(self, serializer):
+        serializer.save(assigned_by=self.request.user)
+
+
+from .models import TeacherProfile, MentorProfile
+from .serializers import TeacherProfileSerializer, MentorProfileSerializer
+
+
+class MyTeacherProfileView(APIView):
+    """
+    Self-service Teacher profile (professional info, kept separate from
+    User -- see TeacherProfile model). Created lazily on first access so
+    every existing teacher account keeps working without a data migration.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_profile_or_403(self, request):
+        if not getattr(request.user, 'is_teacher', False):
+            return None, Response({"error": "Only teacher accounts have a teacher profile."}, status=status.HTTP_403_FORBIDDEN)
+        profile, _ = TeacherProfile.objects.get_or_create(user=request.user)
+        return profile, None
+
+    def get(self, request):
+        profile, error = self._get_profile_or_403(request)
+        if error:
+            return error
+        return Response(TeacherProfileSerializer(profile).data)
+
+    def patch(self, request):
+        profile, error = self._get_profile_or_403(request)
+        if error:
+            return error
+        serializer = TeacherProfileSerializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class MyMentorProfileView(APIView):
+    """Self-service Mentor profile -- see MentorProfile model."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_profile_or_403(self, request):
+        if not getattr(request.user, 'is_mentor', False):
+            return None, Response({"error": "Only mentor accounts have a mentor profile."}, status=status.HTTP_403_FORBIDDEN)
+        profile, _ = MentorProfile.objects.get_or_create(user=request.user)
+        return profile, None
+
+    def get(self, request):
+        profile, error = self._get_profile_or_403(request)
+        if error:
+            return error
+        return Response(MentorProfileSerializer(profile).data)
+
+    def patch(self, request):
+        profile, error = self._get_profile_or_403(request)
+        if error:
+            return error
+        serializer = MentorProfileSerializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

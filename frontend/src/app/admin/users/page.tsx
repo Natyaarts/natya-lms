@@ -14,17 +14,17 @@ export default function AdminUsers() {
   const [error, setError] = useState("");
   
   // Tabs & Filters State
-  const [activeTab, setActiveTab] = useState<'students' | 'teachers'>('students');
+  const [activeTab, setActiveTab] = useState<'students' | 'teachers' | 'mentors'>('students');
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
-  
+
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 8;
-  
+
   // Add Modals State
   const [showAddModal, setShowAddModal] = useState(false);
-  const [modalType, setModalType] = useState<'student' | 'teacher'>('student');
+  const [modalType, setModalType] = useState<'student' | 'teacher' | 'mentor'>('student');
   const [submitting, setSubmitting] = useState(false);
   
   // Form State
@@ -118,6 +118,7 @@ export default function AdminUsers() {
       last_name: formFields.last_name,
       is_student: modalType === 'student',
       is_teacher: modalType === 'teacher',
+      is_mentor: modalType === 'mentor',
       is_superuser: false,
       is_active: true
     };
@@ -176,7 +177,8 @@ export default function AdminUsers() {
     // Role filter
     if (activeTab === 'students' && !user.is_student) return false;
     if (activeTab === 'teachers' && !user.is_teacher) return false;
-    
+    if (activeTab === 'mentors' && !user.is_mentor) return false;
+
     // Status filter
     if (statusFilter === 'active' && !user.is_active) return false;
     if (statusFilter === 'inactive' && user.is_active) return false;
@@ -213,13 +215,13 @@ export default function AdminUsers() {
         </div>
         <button
           onClick={() => {
-            setModalType(activeTab === 'students' ? 'student' : 'teacher');
+            setModalType(activeTab === 'students' ? 'student' : activeTab === 'mentors' ? 'mentor' : 'teacher');
             setFormError("");
             setShowAddModal(true);
           }}
           className="flex items-center gap-2 px-5 py-3 bg-[#facc15] hover:bg-yellow-500 text-black font-bold rounded-xl shadow-lg transition-colors text-sm"
         >
-          <Plus className="w-4 h-4" /> Add {activeTab === 'students' ? 'Student' : 'Teacher'}
+          <Plus className="w-4 h-4" /> Add {activeTab === 'students' ? 'Student' : activeTab === 'mentors' ? 'Mentor' : 'Teacher'}
         </button>
       </div>
 
@@ -248,6 +250,16 @@ export default function AdminUsers() {
             }`}
           >
             Teachers
+          </button>
+          <button
+            onClick={() => setActiveTab('mentors')}
+            className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+              activeTab === 'mentors'
+                ? 'bg-[#facc15] text-black shadow-sm'
+                : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            Mentors
           </button>
         </div>
 
@@ -335,7 +347,7 @@ export default function AdminUsers() {
                       </div>
                     </td>
 
-                    {/* Parent Name / Phone OR Teacher Info */}
+                    {/* Parent Name / Phone OR Teacher/Mentor Info */}
                     <td className="p-4 text-xs">
                       {activeTab === 'students' ? (
                         user.parent_name ? (
@@ -348,12 +360,12 @@ export default function AdminUsers() {
                         )
                       ) : (
                         <span className="px-2 py-0.5 bg-zinc-800 text-zinc-400 rounded text-[10px] font-semibold border border-white/5 uppercase">
-                          Instructor
+                          {activeTab === 'mentors' ? 'Mentor' : 'Instructor'}
                         </span>
                       )}
                     </td>
 
-                    {/* Enrolled Count OR Teacher Flag */}
+                    {/* Enrolled Count OR Teacher/Mentor Role Badge */}
                     <td className="p-4 text-center">
                       {activeTab === 'students' ? (
                         <span className="px-2 py-1 bg-zinc-800 text-zinc-300 rounded text-xs font-semibold">
@@ -361,7 +373,7 @@ export default function AdminUsers() {
                         </span>
                       ) : (
                         <span className="px-2 py-1 bg-zinc-800 text-[#facc15] rounded text-xs font-semibold">
-                          Active Mentor
+                          {activeTab === 'mentors' ? 'Active Mentor' : 'Active Teacher'}
                         </span>
                       )}
                     </td>
@@ -449,7 +461,7 @@ export default function AdminUsers() {
                 <X className="w-4 h-4" />
               </button>
 
-              <h2 className="text-xl font-bold mb-1">Add New {modalType === 'student' ? 'Student' : 'Teacher'}</h2>
+              <h2 className="text-xl font-bold mb-1">Add New {modalType === 'student' ? 'Student' : modalType === 'mentor' ? 'Mentor' : 'Teacher'}</h2>
               <p className="text-zinc-400 text-xs mb-6">Create a profile in the database directory.</p>
 
               {formError && (
