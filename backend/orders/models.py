@@ -115,9 +115,9 @@ class Order(models.Model):
     class Meta:
         ordering = ['-created_at']
         constraints = [
-            models.CheckConstraint(check=models.Q(subtotal__gte=0), name='order_subtotal_non_negative'),
-            models.CheckConstraint(check=models.Q(discount_amount__gte=0), name='order_discount_non_negative'),
-            models.CheckConstraint(check=models.Q(total_amount__gte=0), name='order_total_non_negative'),
+            models.CheckConstraint(condition=models.Q(subtotal__gte=0), name='order_subtotal_non_negative'),
+            models.CheckConstraint(condition=models.Q(discount_amount__gte=0), name='order_discount_non_negative'),
+            models.CheckConstraint(condition=models.Q(total_amount__gte=0), name='order_total_non_negative'),
         ]
 
     def __str__(self):
@@ -153,15 +153,15 @@ class OrderItem(models.Model):
         ordering = ['id']
         constraints = [
             models.CheckConstraint(
-                check=(
+                condition=(
                     models.Q(item_type='COURSE', course__isnull=False, bundle__isnull=True) |
                     models.Q(item_type='BUNDLE', course__isnull=True, bundle__isnull=False)
                 ),
                 name='orderitem_exactly_one_of_course_or_bundle'
             ),
-            models.CheckConstraint(check=models.Q(unit_price__gte=0), name='orderitem_unit_price_non_negative'),
-            models.CheckConstraint(check=models.Q(total_price__gte=0), name='orderitem_total_price_non_negative'),
-            models.CheckConstraint(check=models.Q(quantity__gte=1), name='orderitem_quantity_at_least_one'),
+            models.CheckConstraint(condition=models.Q(unit_price__gte=0), name='orderitem_unit_price_non_negative'),
+            models.CheckConstraint(condition=models.Q(total_price__gte=0), name='orderitem_total_price_non_negative'),
+            models.CheckConstraint(condition=models.Q(quantity__gte=1), name='orderitem_quantity_at_least_one'),
         ]
 
     def __str__(self):
@@ -254,7 +254,7 @@ class SubscriptionPlan(models.Model):
             models.Index(fields=['is_active'], name='subplan_is_active_idx'),
         ]
         constraints = [
-            models.CheckConstraint(check=models.Q(price__gte=0), name='subscriptionplan_price_non_negative'),
+            models.CheckConstraint(condition=models.Q(price__gte=0), name='subscriptionplan_price_non_negative'),
         ]
 
     def __str__(self):
@@ -441,7 +441,7 @@ class SubscriptionPayment(models.Model):
     class Meta:
         ordering = ['-created_at']
         constraints = [
-            models.CheckConstraint(check=models.Q(amount__gte=0), name='subscriptionpayment_amount_non_negative'),
+            models.CheckConstraint(condition=models.Q(amount__gte=0), name='subscriptionpayment_amount_non_negative'),
         ]
 
     def __str__(self):
