@@ -664,3 +664,73 @@ You may reorder 3.4 (Subscriptions) later if it's lower business priority than R
 ---
 
 **No code was written. No migrations were created. No files outside this document were modified. Waiting for approval before starting 3.1.**
+
+---
+
+## PART N — Phase 3.5.7: Finance Reconciliation & Production Hardening (as built)
+
+Everything above this line is the original pre-implementation sketch (Parts A–M), written before the `finance` app existed and before Phases 3.5.1–3.5.6 actually built `LedgerEntry`/`Payout`/`Invoice`/`Refund` (which evolved beyond this sketch — see each phase's own report for the reconciled differences). This section documents Phase 3.5.7 **as actually implemented**, not as a plan.
+
+### Purpose
+
+A dedicated, **read-only** reconciliation service detecting drift between successful payments (`Purchase`/`Order`/`SubscriptionPayment`) and the financial records that should follow from them (`LedgerEntry`, `Invoice`, `Refund` clawbacks, `Payout` totals). Nothing in this phase creates, repairs, or mutates a financial record — it is DETECT → REPORT only. All code lives in `finance/reconciliation.py`.
+
+### Architecture
+
+No new Django model backs a "reconciliation issue" — every run computes findings fresh, in memory, as a `dataclasses.dataclass` (`ReconciliationIssue`), and nothing is ever persisted. This is deliberate: it keeps the phase migration-free and means a result can never itself drift from reality. `run_reconciliation(**filters)` orchestrates one `check_*()` function per issue type below and returns a `ReconciliationReport`.
+
+### Issue types and severity
+
+| Issue type | Severity | What it means |
+|---|---|---|
+| `PURCHASE_MISSING_LEDGER_ENTRY` / `ORDER_ITEM_MISSING_LEDGER_ENTRY` / `SUBSCRIPTION_PAYMENT_MISSING_LEDGER_ENTRY` | CRITICAL | A successful transaction had an eligible instructor (an `is_primary` `CourseInstructor` with `commission_rate` configured) but no `EARNING` `LedgerEntry` was created. **Only reported when an eligible instructor existed** — a transaction with none is `_create_earning_entry`'s documented, correct safe no-op, never flagged. |
+| `PURCHASE_MISSING_INVOICE` / `ORDER_MISSING_INVOICE` / `SUBSCRIPTION_PAYMENT_MISSING_INVOICE` | WARNING | A successful transaction has no `Invoice`. Unconditional (Invoice creation has no eligibility concept), so always a genuine gap — but scored lower than a missing ledger entry since no instructor payment is at risk, only a customer-facing receipt. |
+| `REFUND_MISSING_CLAWBACK` | CRITICAL | A `SUCCESS` `Refund` exists, an `EARNING` entry existed for its source, but no `CLAWBACK` entry linked to that refund reverses it — the instructor keeps money they shouldn't. |
+| `DUPLICATE_EARNING_ENTRY` / `DUPLICATE_INVOICE` | CRITICAL | More than one `EARNING`/`Invoice` row for the same source. **Defense-in-depth only** — `ledgerentry_unique_*_entry_type` and `invoice_unique_*` DB constraints already make this structurally impossible; this check cannot be exercised with a genuine duplicate without bypassing a working safeguard (see `finance/test_reconciliation.py`'s own docstring). |
+| `LEDGER_ENTRY_INVALID_SOURCE` | CRITICAL | Either all three source FKs are null (also DB-constraint-prevented, defense-in-depth), or an `EARNING` entry's `course_instructor.course` doesn't match its source transaction's actual course — this second sub-check is **not** prevented by any existing constraint and is genuinely testable/useful. |
+| `LEDGER_ENTRY_CALCULATION_MISMATCH` | CRITICAL | `commission_amount`/`net_amount` don't match the `gross_amount`/`commission_rate` snapshot's own arithmetic. |
+| `PAYOUT_TOTAL_MISMATCH` / `PAYOUT_INELIGIBLE_ENTRY` / `PAYOUT_RECIPIENT_MISMATCH` / `PAYOUT_CURRENCY_INCONSISTENT` / `PAYOUT_NEGATIVE_VALUE` | CRITICAL | See "Payout reconciliation" below. |
+| `REFUND_EXCEEDS_SOURCE_AMOUNT` | CRITICAL | Cumulative `REQUESTED`+`PROCESSING`+`SUCCESS` refunds against one source exceed that source's total amount — re-verifies, as a drift check, what `create_and_process_refund`'s own locked validation already enforces at creation time. |
+| `CLAWBACK_AGAINST_PAID_PAYOUT` | WARNING | A `CLAWBACK` entry corrects an `EARNING` entry already batched into a `PAID` `Payout` — expected, documented Phase 3.5.6 behavior (see Part 4 below), not a bug. |
+| `INSTRUCTOR_NEGATIVE_BALANCE` | WARNING | An instructor has unbatched `CLAWBACK` exposure not yet netted against anything. |
+
+Every issue carries: `issue_type`, `severity`, `source_type`, `source_id`, `related_object_id`, `message`, `expected_value`, `actual_value`, `instructor_user_id`, `detected_at`. Never includes a Razorpay webhook payload, secret, or credential — only the same class of field every other finance serializer in this codebase already exposes.
+
+### Instructor balance calculation
+
+`get_instructor_balance(user)` computes, purely from aggregate queries over existing immutable `LedgerEntry` rows (never mutating any of them):
+
+- **EARNED** — sum of `net_amount` across every `EARNING` entry ever created for this instructor.
+- **CLAWED_BACK** — sum of `net_amount` across every `CLAWBACK` entry (negative).
+- **ADJUSTMENTS** — sum of `net_amount` across `ADJUSTMENT` entries (always 0 today — no code creates these).
+- **PAID** — sum of `net_amount` across `EARNING` entries whose `payout.status == PAID` (money actually sent).
+- **AVAILABLE** — sum of `net_amount` across exactly what `get_eligible_ledger_entries_queryset()` (unchanged, reused from Phase 3.5.4) would let a new payout batch include right now.
+- **OUTSTANDING_DEBT** — magnitude of unbatched (`payout IS NULL`) `CLAWBACK` entries — clawback exposure the existing payout system has no mechanism to net against anything yet.
+- **OUTSTANDING_DEBT_FROM_PAID_PAYOUTS** — the subset of the above whose original `EARNING` was already paid out — money genuinely already sent that a refund has since reversed.
+
+### Clawback + payout handling (Objective 4)
+
+The existing payout system (`get_eligible_ledger_entries_queryset`/`create_payout_batch`, both **unchanged** in this phase) only ever selects/batches `entry_type=EARNING` rows — it has no concept of netting a `CLAWBACK` against a future payout. This phase does not add that netting logic (out of scope — "do not redesign the existing refund/payout implementation"). Instead, `check_clawback_against_paid_payout()` surfaces every such case as a `WARNING`, and `get_instructor_balance()`'s two debt fields give it a concrete number. **This is the single largest known gap this phase deliberately leaves open** — see Remaining Risks in the final Phase 3.5.7 report.
+
+### Payout reconciliation (Objective 5)
+
+`reconcile_payout(payout)` verifies: `gross_amount`/`commission_amount`/`net_amount` equal the sum of assigned `LedgerEntry` rows; every assigned entry is `entry_type=EARNING` (not `CLAWBACK`/`ADJUSTMENT`); every assigned entry's `course_instructor.user` matches `payout.recipient`; all assigned entries share one currency (`Payout` itself has no `currency` field — see `finance/models.py`); no negative values. **"No LedgerEntry assigned to multiple payouts" is not implemented as a check** — `LedgerEntry.payout` is a single-valued `ForeignKey`, so this is a schema-level guarantee, not something that can drift.
+
+### APIs (admin-only, read-only)
+
+- `GET /api/finance/admin/reconciliation/` — full issue list, filterable by `severity`/`issue_type`/`source_type`/`instructor_id`/`date_from`/`date_to` (the date range narrows which `Purchase`/`Order`/`SubscriptionPayment` rows are examined, not a meaningless "when detected" — nothing is persisted).
+- `GET /api/finance/admin/finance-health/` — the same scan reduced to aggregate counts (`missing_ledger_count`, `missing_invoice_count`, `refund_clawback_mismatches`, `payout_mismatches`, `instructor_negative_balances`, `duplicate_records`, plus the summary block).
+
+### Management command
+
+`python manage.py reconcile_finance` — prints the same summary/issue list, exits 1 if any `CRITICAL` issue exists, 0 otherwise. Never modifies a record.
+
+### Known limitations
+
+- **Full-table-scan checks** (`check_ledger_entry_invalid_source`'s course-mismatch sub-check, `check_ledger_entry_calculation_mismatch`, `check_duplicate_financial_records`) iterate every `LedgerEntry`/`Invoice` row with no pagination — appropriate for an admin-triggered or periodic-cron reconciliation run at current data volumes, not a per-request hot path. Revisit if/when table sizes grow large enough to matter.
+- **Two check functions are defense-in-depth only** (`check_duplicate_financial_records`, and `check_ledger_entry_invalid_source`'s "all sources null" sub-check) — genuinely testable only in the sense of "produces no false positives," since the conditions they guard against are already prevented by DB constraints and cannot be constructed via the ORM without bypassing a working safeguard.
+- **The payout-netting gap** described above is intentionally left unresolved this phase.
+
+### PostgreSQL staging verification requirement
+
+Reconciliation itself performs **no locking of its own** (pure reads) — no new concurrency code was introduced this phase. The pre-existing caveat on `create_payout_batch`/`approve_payout`/`create_and_process_refund`'s `select_for_update()` usage (SQLite, this project's test backend, does not enforce real row-level locking; verified here only via sequential-call tests, as in every prior finance phase) is **unchanged and still applies** — it was reviewed, not touched, in this phase. True concurrent-lock behavior for those three functions still requires staging verification against the production PostgreSQL backend before being considered fully proven.

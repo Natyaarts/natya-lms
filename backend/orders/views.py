@@ -13,7 +13,7 @@ from .models import Purchase
 client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
 
 from django.utils.decorators import method_decorator
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from rest_framework.authentication import SessionAuthentication
 from dj_rest_auth.jwt_auth import JWTCookieAuthentication
 
@@ -21,12 +21,64 @@ class CsrfExemptSessionAuthentication(SessionAuthentication):
     def enforce_csrf(self, request):
         return  # Bypass CSRF
 
+
+class CSRFEnforcedJWTCookieAuthentication(JWTCookieAuthentication):
+    """
+    Payment/subscription CSRF hardening (final release audit finding).
+
+    Root cause this replaces CsrfExemptSessionAuthentication for: dj-rest-auth's
+    JWTCookieAuthentication already HAS its own enforce_csrf() (reads the JWT
+    from a cookie when no Authorization header is present, and -- per its own
+    source -- calls enforce_csrf() only if REST_AUTH['JWT_AUTH_COOKIE_USE_CSRF']
+    is on). That setting is intentionally left OFF globally in this project
+    (core/settings.py) -- turning it on project-wide would silently start
+    requiring a CSRF header on every cookie-authenticated POST across
+    courses/notifications/users/finance too, none of which this fix is
+    scoped to touch. This subclass reproduces the exact same "enforce CSRF
+    only when the JWT came from a cookie, never when it came from an
+    Authorization header" behavior, but opted into on these payment/
+    subscription views alone.
+
+    Why @csrf_exempt (below, on each view) still has to stay: Django's own
+    CsrfViewMiddleware runs BEFORE any DRF authentication class and knows
+    nothing about Authorization headers -- it rejects ANY POST lacking a
+    csrftoken cookie outright (REASON_NO_CSRF_COOKIE), which would 403 every
+    mobile bearer-token request (mobile sends no cookies at all -- see
+    mobile/src/api/client.ts). @csrf_exempt disables that blunt, request-
+    type-blind middleware check; the real, request-type-AWARE protection
+    below (enforced only for cookie-based/browser requests) is what
+    actually closes the CSRF gap without touching mobile.
+    """
+    def authenticate(self, request):
+        if self.get_header(request) is None:
+            from dj_rest_auth.app_settings import api_settings as dj_rest_auth_settings
+            jwt_cookie_name = dj_rest_auth_settings.JWT_AUTH_COOKIE
+            if jwt_cookie_name and request.COOKIES.get(jwt_cookie_name):
+                # No Authorization header, but a JWT cookie is present --
+                # this is a browser/cookie-authenticated request, so
+                # Django's standard double-submit CSRF check applies.
+                # Raises PermissionDenied (-> DRF 403) on a missing/
+                # invalid token; a bearer-token (mobile) request never
+                # reaches this branch at all, since get_header() would be
+                # non-None for it.
+                self.enforce_csrf(request)
+        return super().authenticate(request)
+
+
 from rest_framework.permissions import IsAuthenticated
+
+from .throttles import (
+    OrderCreationRateThrottle, PaymentVerificationRateThrottle,
+    SubscriptionCreationRateThrottle, SubscriptionVerificationRateThrottle,
+)
 
 @method_decorator(csrf_exempt, name='dispatch')
 class CreateOrderView(APIView):
-    authentication_classes = [JWTCookieAuthentication, CsrfExemptSessionAuthentication]
+    authentication_classes = [CSRFEnforcedJWTCookieAuthentication]
     permission_classes = [IsAuthenticated]
+    # General API rate limiting gap fix -- per-user, generous enough for a
+    # legitimate retry-after-failure pattern (see orders/throttles.py).
+    throttle_classes = [OrderCreationRateThrottle]
 
     def post(self, request):
         course_id = request.data.get('course_id')
@@ -83,8 +135,10 @@ class CreateOrderView(APIView):
 
 @method_decorator(csrf_exempt, name='dispatch')
 class VerifyPaymentView(APIView):
-    authentication_classes = [JWTCookieAuthentication, CsrfExemptSessionAuthentication]
+    authentication_classes = [CSRFEnforcedJWTCookieAuthentication]
     permission_classes = [IsAuthenticated]
+    # General API rate limiting gap fix -- see orders/throttles.py.
+    throttle_classes = [PaymentVerificationRateThrottle]
 
     def post(self, request):
         razorpay_payment_id = request.data.get('razorpay_payment_id')
@@ -200,6 +254,18 @@ class RazorpayWebhookView(APIView):
     SUCCESS_EVENT_TYPES = {'payment.captured', 'order.paid'}
     FAILURE_EVENT_TYPES = {'payment.failed'}
 
+    # Phase 3.5.6: refund lifecycle events (confirmed against Razorpay's
+    # current refunds webhook documentation). refund.processed is the
+    # authoritative final-status signal Razorpay itself recommends over
+    # trusting only the synchronous client.payment.refund() response --
+    # see finance/services.py's refund module docstring. refund.created
+    # fires the moment a refund is initiated (by us, synchronously, or in
+    # principle by anyone with dashboard access) and is handled here only
+    # as an informational, idempotent no-op -- our own synchronous call
+    # already applies whatever client.payment.refund() returns, so acting
+    # on refund.created again here would be redundant, not incremental.
+    REFUND_EVENT_TYPES = {'refund.created', 'refund.processed', 'refund.failed'}
+
     # Phase 3.4.3.1: Razorpay subscription lifecycle events. Confirmed
     # against Razorpay's current webhook payload documentation that every
     # one of these carries payload.subscription.entity, and that only
@@ -301,6 +367,8 @@ class RazorpayWebhookView(APIView):
                 self._reconcile_payment(webhook_event)
             elif webhook_event.event_type in self.SUBSCRIPTION_EVENT_TYPES:
                 self._reconcile_subscription(webhook_event)
+            elif webhook_event.event_type in self.REFUND_EVENT_TYPES:
+                self._reconcile_refund(webhook_event)
             else:
                 webhook_event.status = WebhookEvent.Status.IGNORED
                 webhook_event.processed_at = timezone.now()
@@ -765,9 +833,10 @@ class RazorpayWebhookView(APIView):
         # covers the (vanishingly unlikely, but possible) case of the same
         # razorpay_payment_id ever appearing against a different
         # subscription row, without poisoning the outer transaction.
+        subscription_payment = None
         try:
             with transaction.atomic():
-                SubscriptionPayment.objects.create(
+                subscription_payment = SubscriptionPayment.objects.create(
                     subscription=subscription,
                     razorpay_payment_id=razorpay_payment_id,
                     razorpay_subscription_id=subscription.razorpay_subscription_id,
@@ -781,13 +850,93 @@ class RazorpayWebhookView(APIView):
                 f"subscription.charged duplicate ignored (race): razorpay_payment_id={razorpay_payment_id} "
                 f"already recorded by a concurrent delivery (event_id={webhook_event.razorpay_event_id})."
             )
+            return
+
+        # Phase 3.5.2: revenue attribution, hooked into this already-proven
+        # success path -- only for an ACTUALLY successful charge, never
+        # for one merely recorded (CREATED) or explicitly failed. See
+        # finance/services.py's own docstring for why this can never
+        # raise back into this method.
+        if is_successful_charge:
+            from finance.services import create_earning_entry_for_subscription_payment, create_invoice_for_subscription_payment
+            create_earning_entry_for_subscription_payment(subscription_payment)
+            # Phase 3.5.5: customer invoice/receipt, same success gate.
+            create_invoice_for_subscription_payment(subscription_payment)
+
+    def _reconcile_refund(self, webhook_event):
+        """
+        Phase 3.5.6. Handles refund.created/refund.processed/refund.failed.
+        Every refund this app knows about was created by
+        finance/services.py's create_and_process_refund (admin-only,
+        never inferred here) and already has its razorpay_refund_id
+        recorded from the synchronous client.payment.refund() response --
+        so the ONLY thing this method ever does is look that id up and
+        apply whatever Razorpay now reports. It NEVER creates a local
+        Refund row itself. An event for a razorpay_refund_id this table
+        doesn't recognize (most plausibly: a refund initiated directly
+        from the Razorpay dashboard, bypassing this app's refund API
+        entirely) is a real, deliberately un-fabricated gap -- recorded
+        as FAILED on this WebhookEvent for admin visibility, exactly like
+        an unmatched order_id in _reconcile_payment already is, not
+        silently invented into a guessed local record.
+
+        refund.created is intentionally treated as a no-op beyond that
+        lookup (see REFUND_EVENT_TYPES' own comment for why) -- it's
+        still routed through this same method (not left to fall through
+        to IGNORED) purely so a refund.created for an unrecognized id is
+        still visible to admins the same way, for the same reason, as
+        every other unmatched-webhook case in this view.
+        """
+        refund_entity = webhook_event.payload.get('payload', {}).get('refund', {}).get('entity', {})
+        razorpay_refund_id = refund_entity.get('id')
+
+        if not razorpay_refund_id:
+            raise ValueError(f"{webhook_event.event_type} webhook payload missing payload.refund.entity.id")
+
+        from finance.services import confirm_refund_by_razorpay_id, mark_refund_failed_by_razorpay_id
+
+        if webhook_event.event_type == 'refund.processed':
+            found = confirm_refund_by_razorpay_id(razorpay_refund_id, processed_at=timezone.now())
+        elif webhook_event.event_type == 'refund.failed':
+            found = mark_refund_failed_by_razorpay_id(
+                razorpay_refund_id,
+                failure_reason=f"Razorpay reported this refund as failed (event_id={webhook_event.razorpay_event_id}).",
+                processed_at=timezone.now(),
+            )
+        else:  # refund.created -- informational only, see this method's own docstring above.
+            # No state change: confirming SUCCESS is refund.processed's job
+            # alone (a "normal" speed refund's initial created/pending
+            # state is not yet a confirmed outcome). Still looked up so an
+            # unrecognized id is surfaced the same way any other unmatched
+            # webhook already is, per this method's own docstring.
+            from finance.models import Refund
+            found = Refund.objects.filter(razorpay_refund_id=razorpay_refund_id).exists()
+
+        if found is False:
+            webhook_event.status = WebhookEvent.Status.FAILED
+            webhook_event.error_message = f"No local Refund found for razorpay_refund_id={razorpay_refund_id}"
+            webhook_event.processed_at = timezone.now()
+            webhook_event.save(update_fields=['status', 'error_message', 'processed_at'])
+            logger.warning(
+                f"Razorpay webhook: no matching Refund for razorpay_refund_id={razorpay_refund_id}, "
+                f"event_type={webhook_event.event_type}, event_id={webhook_event.razorpay_event_id}."
+            )
+            return
+
+        webhook_event.status = WebhookEvent.Status.PROCESSED
+        webhook_event.processed_at = timezone.now()
+        webhook_event.save(update_fields=['status', 'processed_at'])
+        logger.info(
+            f"Razorpay webhook reconciled against Refund razorpay_refund_id={razorpay_refund_id} "
+            f"(event_type={webhook_event.event_type}, event_id={webhook_event.razorpay_event_id})."
+        )
 
 
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from users.permissions import IsSuperAdminOrAdmin
-from .serializers import AdminPurchaseSerializer
+from .serializers import AdminPurchaseSerializer, MyPurchaseSerializer
 
 class StandardResultsSetPagination(PageNumberPagination):
     page_size = 10
@@ -837,6 +986,40 @@ class AdminPurchaseViewSet(viewsets.ModelViewSet):
             fulfill_purchase(purchase, previous_status)
 
         return Response({"message": "Successfully marked as paid and course enrolled!"})
+
+
+from rest_framework import generics
+
+
+class MyPurchaseListView(generics.ListAPIView):
+    """
+    GET /api/orders/my-purchases/ -- mobile purchase-history gap fix. The
+    authenticated student's own legacy single-course Purchase rows --
+    the flow CreateOrderView/VerifyPaymentView/fulfill_purchase drives,
+    still the active path behind every single "Buy This Course" checkout,
+    which until now had NO student-facing list/detail endpoint at all
+    (only AdminPurchaseViewSet, admin-only, existed). Mirrors
+    OrderViewSet's own "always scoped to request.user" security boundary
+    -- unlike OrderViewSet, staff/superuser get no special "see
+    everyone's" case here, since admin-wide Purchase inspection already
+    has its own dedicated endpoint (purchases-admin/); this one is
+    deliberately always self-only, matching MyInvoicesView/
+    MyPayoutListView's simpler established "my own, full stop" pattern.
+
+    Unpaginated (a plain array), matching OrderViewSet's own response
+    shape exactly -- the two are meant to be fetched together and merged
+    client-side into one combined purchase-history list.
+    """
+    serializer_class = MyPurchaseSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return (
+            Purchase.objects.filter(user=self.request.user)
+            .select_related('course')
+            .prefetch_related('invoices')
+            .order_by('-created_at')
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -908,9 +1091,25 @@ class OrderViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     http_method_names = ['get', 'post', 'head', 'options']
 
+    def get_throttles(self):
+        # General API rate limiting gap fix -- only create()/verify() get
+        # the tight, per-user mutation-specific scope; list/retrieve (a
+        # student checking their own order history) stay on the general
+        # 'user' baseline (DEFAULT_THROTTLE_CLASSES), since throttle_classes
+        # is per-action here, not a single class-level list that would
+        # otherwise also throttle plain reads down to order_create's rate.
+        if self.action == 'create':
+            return [OrderCreationRateThrottle()]
+        if self.action == 'verify':
+            return [PaymentVerificationRateThrottle()]
+        return super().get_throttles()
+
     def get_queryset(self):
         user = self.request.user
-        qs = Order.objects.all().select_related('user').prefetch_related('items__course', 'items__bundle')
+        qs = (
+            Order.objects.all().select_related('user')
+            .prefetch_related('items__course', 'items__bundle', 'invoices')
+        )
         if user.is_superuser or user.is_staff:
             return qs
         # Security boundary: a student can only ever see their OWN orders --
@@ -1246,8 +1445,10 @@ class CreateSubscriptionView(APIView):
     whole transaction and never leaves an orphaned local row with no
     razorpay_subscription_id.
     """
-    authentication_classes = [JWTCookieAuthentication, CsrfExemptSessionAuthentication]
+    authentication_classes = [CSRFEnforcedJWTCookieAuthentication]
     permission_classes = [IsAuthenticated]
+    # General API rate limiting gap fix -- see orders/throttles.py.
+    throttle_classes = [SubscriptionCreationRateThrottle]
 
     def post(self, request):
         plan_id = request.data.get('plan_id')
@@ -1384,8 +1585,10 @@ class VerifySubscriptionPaymentView(APIView):
     "payment_id|subscription_id" keyed by RAZORPAY_KEY_SECRET, never the
     webhook secret).
     """
-    authentication_classes = [JWTCookieAuthentication, CsrfExemptSessionAuthentication]
+    authentication_classes = [CSRFEnforcedJWTCookieAuthentication]
     permission_classes = [IsAuthenticated]
+    # General API rate limiting gap fix -- see orders/throttles.py.
+    throttle_classes = [SubscriptionVerificationRateThrottle]
 
     def post(self, request):
         razorpay_payment_id = request.data.get('razorpay_payment_id')
@@ -1514,18 +1717,26 @@ class VerifySubscriptionPaymentView(APIView):
 # belongs to them.
 # ---------------------------------------------------------------------------
 
-from .serializers import SubscriptionSerializer
+from .serializers import AdminSubscriptionSerializer, SubscriptionSerializer
 
 
 @method_decorator(csrf_exempt, name='dispatch')
+@method_decorator(ensure_csrf_cookie, name='get')
 class SubscriptionMeView(APIView):
     """
     GET /api/orders/subscriptions/me/ -- the authenticated user's own
     current (non-terminal) subscription, or 404 if they don't have one.
     Read-only; existence of this endpoint is what CancelSubscriptionView's
     frontend consumer needs to know what to show before offering to cancel.
+
+    ensure_csrf_cookie (CSRF hardening fix): this is exactly the request
+    the subscriptions page fires right before it might offer a Cancel
+    button -- guaranteeing the browser has a csrftoken cookie by the time
+    CancelSubscriptionView's own CSRF check needs one to compare against.
+    Harmless to call twice/redundantly with users.views.CurrentUserView's
+    own copy of this decorator; Django's csrf cookie is idempotent to set.
     """
-    authentication_classes = [JWTCookieAuthentication, CsrfExemptSessionAuthentication]
+    authentication_classes = [CSRFEnforcedJWTCookieAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1564,7 +1775,7 @@ class CancelSubscriptionView(APIView):
     cancellation was REQUESTED and the local fields that are genuinely
     known right now (cancel_at_period_end, cancelled_at).
     """
-    authentication_classes = [JWTCookieAuthentication, CsrfExemptSessionAuthentication]
+    authentication_classes = [CSRFEnforcedJWTCookieAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -1618,6 +1829,145 @@ class CancelSubscriptionView(APIView):
                 {"error": "Unable to cancel your subscription right now. Please try again or contact support."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.8: the one admin gap the Phase 3.4 subscriptions system never
+# closed -- CancelSubscriptionView above only ever defers to cycle end
+# (Business Rule #3, deliberate, student-only). This adds the single
+# missing admin capability: cancel ANY user's subscription RIGHT NOW,
+# immediately cutting off subscription-granted access, for cases the
+# student-facing cycle-end flow can't handle (policy violation, chargeback,
+# support escalation, etc.). Deliberately NOT a subscriptions dashboard --
+# no list, no retrieve, exactly one write action, gated by the same
+# IsSuperAdminOrAdmin every other admin-only endpoint in this file already
+# uses (see AdminPurchaseViewSet above).
+# ---------------------------------------------------------------------------
+
+from rest_framework import mixins
+
+
+class AdminSubscriptionResultsSetPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class AdminSubscriptionViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """
+    Admin Dashboard Completion gap fix: list/retrieve added -- this
+    ViewSet previously exposed only cancel-immediate, with no way for an
+    admin to see subscriptions at all via the API (Django admin's
+    read-only SubscriptionAdmin was the only view). get_object() (used
+    by both retrieve and cancel-immediate) is what actually enforces
+    IsSuperAdminOrAdmin + resolves the target subscription unambiguously
+    from the URL pk (never from anything the request body claims) -- the
+    same two-step "unlocked permission check via get_object(), then a
+    locked re-fetch for the actual mutation" pattern AdminPurchaseViewSet.
+    mark_paid already uses above; cancel-immediate itself is completely
+    unchanged.
+
+    Filterable by status/plan_id/user_id -- the same explicit query-param
+    whitelisting convention every other admin list endpoint in this
+    codebase already uses, never a raw filter-string passthrough.
+    """
+    serializer_class = AdminSubscriptionSerializer
+    permission_classes = [IsSuperAdminOrAdmin]
+    pagination_class = AdminSubscriptionResultsSetPagination
+
+    def get_queryset(self):
+        qs = Subscription.objects.select_related('user', 'plan').order_by('-created_at')
+        params = self.request.query_params
+
+        status_param = params.get('status')
+        if status_param in Subscription.Status.values:
+            qs = qs.filter(status=status_param)
+
+        plan_id = params.get('plan_id')
+        if plan_id:
+            qs = qs.filter(plan_id=plan_id)
+
+        user_id = params.get('user_id')
+        if user_id:
+            qs = qs.filter(user_id=user_id)
+
+        return qs
+
+    @action(detail=True, methods=['post'], url_path='cancel-immediate')
+    def cancel_immediate(self, request, pk=None):
+        target = self.get_object()
+
+        with transaction.atomic():
+            subscription = Subscription.objects.select_related('plan').select_for_update().get(pk=target.pk)
+
+            # Idempotent: already fully cancelled (the subscription.cancelled
+            # webhook already confirmed it) or already cut off locally (a
+            # prior call to this same action, e.g. a double-click or retry,
+            # already set access_until). Either way: no second Razorpay
+            # call, no error, just the current state returned -- mirrors
+            # CancelSubscriptionView's own "second request is a no-op
+            # success" idempotency contract above.
+            already_terminal = subscription.status in Subscription.TERMINAL_STATUSES
+            already_cut_off = subscription.access_until is not None and subscription.access_until <= timezone.now()
+            if already_terminal or already_cut_off:
+                return Response(SubscriptionSerializer(subscription).data)
+
+            if not subscription.razorpay_subscription_id:
+                # Shouldn't be reachable in practice (every Subscription
+                # gets one at creation, see CreateSubscriptionView) --
+                # refuse rather than ever calling Razorpay with an
+                # invalid/empty subscription id.
+                logger.error(f"Subscription {subscription.id} has no razorpay_subscription_id; admin immediate cancellation refused.")
+                return Response(
+                    {"error": "This subscription cannot be cancelled right now. Please contact support."},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            try:
+                # cancel_at_cycle_end explicitly 0 -- Razorpay's documented
+                # default for immediate cancellation (confirmed against the
+                # same Cancel Subscription API documentation
+                # CancelSubscriptionView's own docstring already cites),
+                # passed explicitly rather than relied on implicitly, the
+                # same way that view passes its own cancel_at_cycle_end=1
+                # explicitly for the opposite case.
+                client.subscription.cancel(subscription.razorpay_subscription_id, {"cancel_at_cycle_end": 0})
+            except Exception as e:
+                logger.error(
+                    f"Razorpay immediate subscription cancellation failed for subscription {subscription.id} "
+                    f"(razorpay_subscription_id={subscription.razorpay_subscription_id}), admin={request.user.id}: {e}",
+                    exc_info=True,
+                )
+                return Response(
+                    {"error": "Unable to cancel this subscription right now. Please try again or contact support."},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+
+            # Deliberately does NOT set Subscription.status to CANCELLED
+            # itself -- same principle CancelSubscriptionView already
+            # follows (see its own docstring): that stays the existing,
+            # approved subscription.cancelled webhook's job alone, so an
+            # admin action never forks the state machine into a second,
+            # parallel path. access_until = now() is what ACTUALLY revokes
+            # access, immediately, with ZERO changes needed to
+            # courses/services/access.py: _valid_subscription_filter
+            # already treats access_until as authoritative over
+            # current_period_end the instant it's set (Phase 3.4.5 -- see
+            # that function's own docstring) -- so setting it here is
+            # sufficient on its own to make the very next access check deny
+            # subscription-based access to this student.
+            now = timezone.now()
+            subscription.access_until = now
+            if not subscription.cancelled_at:
+                subscription.cancelled_at = now
+            subscription.save()
+
+            logger.info(
+                f"Subscription {subscription.id} (user={subscription.user_id}) immediately cancelled by "
+                f"admin={request.user.id}; access cut off effective now."
+            )
+
+        return Response(SubscriptionSerializer(subscription).data)
 
 
 # ---------------------------------------------------------------------------

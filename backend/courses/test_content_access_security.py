@@ -399,10 +399,32 @@ class ContentAccessQueryCountTests(TestCase):
         # this student has no matching subscription at all) +
         # instructor_course_ids_for_user's 1 (no is_teacher, so no 2nd
         # legacy-fallback query either).
-        with self.assertNumQueries(1 + 1 + 1 + 1 + 3):  # course, modules, lessons, translated_audio, + access context
+        # Phase 3.9 added CourseSerializer.progress_percentage, which costs
+        # exactly 2 fixed queries per course for an authenticated request
+        # (total-lesson COUNT + completed-lesson COUNT) -- a flat per-course
+        # cost, not a per-lesson multiplier, so it belongs in the fixed part
+        # of this formula and must NOT change with lesson count (that's
+        # still the thing this test protects against).
+        # Phase 4.3 added a single, fixed-cost (not per-module) query in
+        # CourseViewSet.get_serializer_context() for this authenticated
+        # user's own AssessmentAttempt rows (ModuleSerializer.get_assessments
+        # reads from it). This student has no access to either course, so
+        # get_assessments short-circuits with ZERO extra queries per module
+        # -- the fixed context-fetch is the only addition, on both sides,
+        # so the delta this test protects is unchanged.
+        # Phase 4.5 added one more fixed-cost (not per-module/per-lesson)
+        # context query in get_serializer_context() for this user's own
+        # completed_lesson_ids (module/course completion reads from it) --
+        # same reasoning as the assessment-attempts context query before it.
+        # Phase 4.7 added one more fixed-cost context query for this
+        # user's own student_submissions_by_assignment_id (this student
+        # has no access to either course, so get_assignments -- like
+        # get_assessments -- short-circuits to [] with zero extra
+        # per-module queries; only the fixed context fetch is added).
+        with self.assertNumQueries(1 + 1 + 1 + 1 + 3 + 2 + 1 + 1 + 1):  # course, modules, lessons, translated_audio, + access context, + progress, + assessment-attempts context, + completed-lessons context, + assignment-submissions context
             small_response = client.get(reverse('course-detail', kwargs={'pk': self.small_course.pk}))
         self.assertEqual(small_response.status_code, 200)
 
-        with self.assertNumQueries(1 + 1 + 3 + 9 + 3):  # same access-context cost, only fetch queries scale
+        with self.assertNumQueries(1 + 1 + 3 + 9 + 3 + 2 + 1 + 1 + 1):  # same access-context + progress + assessment-attempts + completed-lessons + assignment-submissions cost, only fetch queries scale
             large_response = client.get(reverse('course-detail', kwargs={'pk': self.large_course.pk}))
         self.assertEqual(large_response.status_code, 200)

@@ -33,6 +33,7 @@ export default async function BundleCatalog() {
           </Link>
           <div className="flex gap-4">
             <Link href="/courses" className="text-sm font-medium hover:text-[#facc15] transition-colors">Courses</Link>
+            <Link href="/subscriptions" className="text-sm font-medium hover:text-[#facc15] transition-colors">Subscriptions</Link>
             <Link href="/dashboard" className="text-sm font-medium hover:text-[#facc15] transition-colors">Dashboard</Link>
           </div>
         </div>

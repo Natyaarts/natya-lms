@@ -31,12 +31,14 @@ from courses.services.access import user_has_course_access
 from orders.models import Subscription, SubscriptionPlan, SubscriptionPayment, WebhookEvent
 from orders.tests import WEBHOOK_TEST_SECRET, sign_webhook_payload
 from orders.test_subscription_webhooks import subscription_entity, payment_entity
+from django.core.cache import cache
 
 User = get_user_model()
 
 
 class CancelSubscriptionAPITests(APITestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.student = User.objects.create_user(username="cancel_student", password="password123")
         self.other_student = User.objects.create_user(username="cancel_other_student", password="password123")
         self.plan = SubscriptionPlan.objects.create(
@@ -196,9 +198,203 @@ class CancelSubscriptionAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
+class AdminImmediateCancellationTests(APITestCase):
+    """
+    Phase 4.8 -- the one admin gap CancelSubscriptionView above never
+    closed: an admin/superuser cancelling ANY user's subscription RIGHT
+    NOW (immediate access cutoff), not deferred to cycle end. Mirrors
+    CancelSubscriptionAPITests' exact conventions (@patch('orders.views.client'),
+    mock_client.subscription.cancel.return_value, force_authenticate) so the
+    two test classes read as siblings, not a different style.
+    """
+    def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
+        self.admin = User.objects.create_user(username="admin_cancel_staff", password="password123", is_staff=True)
+        self.superuser = User.objects.create_superuser(username="admin_cancel_super", password="password123")
+        self.student = User.objects.create_user(username="admin_cancel_student", password="password123")
+        self.other_student = User.objects.create_user(username="admin_cancel_other_student", password="password123")
+        self.plan = SubscriptionPlan.objects.create(
+            name="Admin Cancel Test Plan", billing_interval="MONTHLY", price="999.00", razorpay_plan_id="plan_admin_cancel_1",
+        )
+        self.course = Course.objects.create(title="Admin Cancel Access Course", description="x", price=1, is_published=True)
+        self.plan.courses.add(self.course)
+        self.subscription = Subscription.objects.create(
+            user=self.student, plan=self.plan, status=Subscription.Status.ACTIVE,
+            razorpay_subscription_id="sub_admin_cancel_test_1",
+            current_period_start=timezone.now() - timedelta(days=10),
+            current_period_end=timezone.now() + timedelta(days=20),
+        )
+        self.url = reverse('subscription-admin-cancel-immediate', kwargs={'pk': self.subscription.pk})
+
+    # 1. Staff admin can immediately cancel any user's subscription.
+    @patch('orders.views.client')
+    def test_staff_admin_can_cancel_immediately(self, mock_client):
+        mock_client.subscription.cancel.return_value = {"id": "sub_admin_cancel_test_1", "status": "active"}
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    # 1b. Superuser can too (IsSuperAdminOrAdmin covers both).
+    @patch('orders.views.client')
+    def test_superuser_can_cancel_immediately(self, mock_client):
+        mock_client.subscription.cancel.return_value = {"id": "sub_admin_cancel_test_1", "status": "active"}
+        self.client.force_authenticate(user=self.superuser)
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    # 2. Calls the correct, EXPLICIT immediate Razorpay operation --
+    # cancel_at_cycle_end=0, never the student-cancel path's =1.
+    @patch('orders.views.client')
+    def test_cancellation_calls_razorpay_immediately(self, mock_client):
+        mock_client.subscription.cancel.return_value = {"id": "sub_admin_cancel_test_1", "status": "active"}
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.url)
+        mock_client.subscription.cancel.assert_called_once_with("sub_admin_cancel_test_1", {"cancel_at_cycle_end": 0})
+
+    # 3. access_until is set to (approximately) now -- access is cut off
+    # immediately, with no dependency on a webhook arriving. status is
+    # deliberately NOT flipped to CANCELLED locally -- that stays the
+    # subscription.cancelled webhook's job, exactly like the student path.
+    @patch('orders.views.client')
+    def test_cancellation_sets_access_until_to_now_and_preserves_status(self, mock_client):
+        mock_client.subscription.cancel.return_value = {"id": "sub_admin_cancel_test_1", "status": "active"}
+        before = timezone.now()
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.url)
+        after = timezone.now()
+        self.subscription.refresh_from_db()
+        self.assertIsNotNone(self.subscription.access_until)
+        self.assertGreaterEqual(self.subscription.access_until, before)
+        self.assertLessEqual(self.subscription.access_until, after)
+        self.assertIsNotNone(self.subscription.cancelled_at)
+        self.assertEqual(self.subscription.status, Subscription.Status.ACTIVE)
+
+    # 4. Existing access service immediately denies subscription-based
+    # access -- zero changes needed to courses/services/access.py for this
+    # to be true.
+    @patch('orders.views.client')
+    def test_access_denied_immediately_after_admin_cancellation(self, mock_client):
+        mock_client.subscription.cancel.return_value = {"id": "sub_admin_cancel_test_1", "status": "active"}
+        self.assertTrue(user_has_course_access(self.student, self.course))
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.url)
+        self.assertFalse(user_has_course_access(self.student, self.course))
+
+    # 5. Permanent Enrollment (independent of the subscription) is
+    # untouched by an admin's immediate cancellation.
+    @patch('orders.views.client')
+    def test_permanent_enrollment_unaffected_by_admin_cancellation(self, mock_client):
+        mock_client.subscription.cancel.return_value = {"id": "sub_admin_cancel_test_1", "status": "active"}
+        Enrollment.objects.create(user=self.student, course=self.course)
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.url)
+        self.assertTrue(Enrollment.objects.filter(user=self.student, course=self.course).exists())
+        self.assertTrue(user_has_course_access(self.student, self.course))  # via Enrollment, independent of the now-cut-off subscription
+
+    # 6. A plain (non-admin) student cannot reach this endpoint at all --
+    # not even for their own subscription.
+    @patch('orders.views.client')
+    def test_regular_student_cannot_use_admin_endpoint(self, mock_client):
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        mock_client.subscription.cancel.assert_not_called()
+        self.subscription.refresh_from_db()
+        self.assertIsNone(self.subscription.access_until)
+
+    def test_unauthenticated_cannot_use_admin_endpoint(self):
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    # 7. Cross-user safety: cancelling one subscription never touches
+    # another user's, even another ACTIVE one for the same plan.
+    @patch('orders.views.client')
+    def test_cancelling_one_subscription_does_not_affect_another(self, mock_client):
+        other_subscription = Subscription.objects.create(
+            user=self.other_student, plan=self.plan, status=Subscription.Status.ACTIVE,
+            razorpay_subscription_id="sub_admin_cancel_untouched_1",
+            current_period_start=timezone.now() - timedelta(days=10),
+            current_period_end=timezone.now() + timedelta(days=20),
+        )
+        mock_client.subscription.cancel.return_value = {"id": "sub_admin_cancel_test_1", "status": "active"}
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.url)
+        other_subscription.refresh_from_db()
+        self.assertIsNone(other_subscription.access_until)
+        self.assertTrue(user_has_course_access(self.other_student, self.course))
+
+    # 8. Idempotent: a second call is a safe no-op, never a second
+    # Razorpay call.
+    @patch('orders.views.client')
+    def test_duplicate_admin_cancellation_is_idempotent(self, mock_client):
+        mock_client.subscription.cancel.return_value = {"id": "sub_admin_cancel_test_1", "status": "active"}
+        self.client.force_authenticate(user=self.admin)
+        first = self.client.post(self.url)
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        mock_client.subscription.cancel.reset_mock()
+
+        second = self.client.post(self.url)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        mock_client.subscription.cancel.assert_not_called()  # no second Razorpay call
+
+    # 9. Already-terminal subscription: idempotent no-op, never calls
+    # Razorpay (mirrors CancelSubscriptionAPITests.test_cannot_cancel_already_terminal_subscription).
+    @patch('orders.views.client')
+    def test_already_terminal_subscription_is_idempotent_noop(self, mock_client):
+        self.subscription.status = Subscription.Status.CANCELLED
+        self.subscription.save()
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_client.subscription.cancel.assert_not_called()
+
+    # 10. A Razorpay failure never marks the local subscription cut off.
+    @patch('orders.views.client')
+    def test_razorpay_failure_does_not_cut_off_access_locally(self, mock_client):
+        mock_client.subscription.cancel.side_effect = Exception("Razorpay unavailable")
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+        self.subscription.refresh_from_db()
+        self.assertIsNone(self.subscription.access_until)
+        self.assertIsNone(self.subscription.cancelled_at)
+
+    # 11. Preserves webhook reconciliation/state-machine behavior: a
+    # subscription.cancelled webhook arriving AFTER an admin's immediate
+    # cancellation still applies normally and finalizes status=CANCELLED --
+    # the admin action never forks or blocks the existing state machine.
+    @patch('orders.views.client')
+    def test_webhook_still_finalizes_status_after_admin_cancellation(self, mock_client):
+        mock_client.subscription.cancel.return_value = {"id": "sub_admin_cancel_test_1", "status": "active"}
+        self.client.force_authenticate(user=self.admin)
+        self.client.post(self.url)
+        self.subscription.refresh_from_db()
+        preserved_cancelled_at = self.subscription.cancelled_at
+
+        with override_settings(RAZORPAY_WEBHOOK_SECRET=WEBHOOK_TEST_SECRET):
+            payload = {
+                "event": "subscription.cancelled",
+                "payload": {"subscription": {"entity": subscription_entity(
+                    sub_id="sub_admin_cancel_test_1", status_value="cancelled", ended_at=1735689600,
+                )}},
+            }
+            body, signature = sign_webhook_payload(payload)
+            response = self.client.post(
+                reverse('razorpay-webhook'), data=body, content_type='application/json',
+                HTTP_X_RAZORPAY_SIGNATURE=signature, HTTP_X_RAZORPAY_EVENT_ID="evt_admin_cancel_confirm_1",
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.subscription.refresh_from_db()
+        self.assertEqual(self.subscription.status, Subscription.Status.CANCELLED)
+        # cancelled_at was already set by the admin action and must not be
+        # overwritten by the webhook's own "only ever set once" guard.
+        self.assertEqual(self.subscription.cancelled_at, preserved_cancelled_at)
+
+
 @override_settings(RAZORPAY_WEBHOOK_SECRET=WEBHOOK_TEST_SECRET)
 class GracePeriodWebhookTests(APITestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self._grace_apply_async_patcher = patch('orders.tasks.notify_subscription_grace_period_expired.apply_async')
         self.mock_apply_async = self._grace_apply_async_patcher.start()
         self.addCleanup(self._grace_apply_async_patcher.stop)

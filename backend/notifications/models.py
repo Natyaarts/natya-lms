@@ -10,6 +10,7 @@ class NotificationType(models.TextChoices):
     COURSE_COMPLETION = 'COURSE_COMPLETION', 'Course Completion'
     CERTIFICATE = 'CERTIFICATE', 'Certificate'
     LIVE_CLASS = 'LIVE_CLASS', 'Live Class'
+    ASSIGNMENT = 'ASSIGNMENT', 'Assignment'
 
 class Notification(models.Model):
     recipient = models.ForeignKey(
@@ -42,6 +43,44 @@ class Notification(models.Model):
 
     def __str__(self):
         return f"{self.recipient.username} - {self.title} ({self.get_notification_type_display()})"
+
+
+class DeviceToken(models.Model):
+    """
+    Phase 4.10: minimum viable groundwork for push notifications --
+    REGISTRATION ONLY. Deliberately does NOT wire any actual push
+    delivery (an Expo push API call) into NotificationService.create_notification
+    yet -- that function is the single most reused call path in this app
+    (orders/finance/courses/users all call it), and threading a network
+    call plus per-token error/expiry handling through it safely is a
+    separate, larger, more carefully-tested phase of its own, not a
+    "small, safe" addition. This model + DeviceTokenView exist so that
+    phase, whenever it happens, has real, already-collected tokens to
+    send to. Nothing about the existing in-app Notification/
+    NotificationViewSet list/read/read-all behavior is touched by this.
+
+    `token` (not `user`) is the unique key: the same physical device's
+    Expo push token can legitimately move to a different user (logout,
+    different student logs in on the same device) -- re-registering that
+    token reassigns ownership via update_or_create rather than creating
+    an orphaned second row for the old user.
+    """
+    class Platform(models.TextChoices):
+        IOS = 'IOS', 'iOS'
+        ANDROID = 'ANDROID', 'Android'
+
+    user = models.ForeignKey(User, related_name='device_tokens', on_delete=models.CASCADE)
+    token = models.CharField(max_length=255, unique=True, db_index=True)
+    platform = models.CharField(max_length=10, choices=Platform.choices)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return f"{self.user.username} - {self.platform} - {self.token[:24]}..."
 
 
 class Announcement(models.Model):

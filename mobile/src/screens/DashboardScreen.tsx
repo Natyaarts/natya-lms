@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, Image, ActivityIndicator, SafeAreaView, RefreshControl } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import client from '../api/client';
+import { registerForPushNotificationsAsync, unregisterForPushNotificationsAsync } from '../api/pushNotifications';
 
 export default function DashboardScreen({ navigation }: any) {
   const [enrolledCourses, setEnrolledCourses] = useState<any[]>([]);
@@ -22,6 +23,15 @@ export default function DashboardScreen({ navigation }: any) {
 
   useEffect(() => {
     fetchDashboardData();
+    // Phase 4.10: this is the one screen every authenticated session
+    // always passes through first (cold start already logged in, fresh
+    // OTP/Google login, or right after onboarding all land on MainTabs,
+    // whose first tab is this screen) -- registering here once, rather
+    // than duplicating the call in LoginScreen/OnboardingScreen/App.tsx,
+    // covers every path with a single call site. Registration itself is
+    // an idempotent upsert (see DeviceTokenView) and never blocks this
+    // screen -- it fails silently if permission is denied or offline.
+    registerForPushNotificationsAsync();
   }, []);
 
   const onRefresh = useCallback(() => {
@@ -30,6 +40,7 @@ export default function DashboardScreen({ navigation }: any) {
   }, []);
 
   const handleLogout = async () => {
+    await unregisterForPushNotificationsAsync();
     await AsyncStorage.removeItem('access_token');
     await AsyncStorage.removeItem('refresh_token');
     navigation.replace('Login');
@@ -54,8 +65,21 @@ export default function DashboardScreen({ navigation }: any) {
           <Text style={styles.courseTitle}>{item.title}</Text>
           <View style={styles.courseMetaContainer}>
             <Text style={styles.courseModules}>{item.modules?.length || 0} Modules</Text>
-            <Text style={styles.enrolledBadge}>Enrolled</Text>
+            {item.is_completed ? (
+              <Text style={styles.completedBadge}>🎓 Completed</Text>
+            ) : (
+              <Text style={styles.enrolledBadge}>Enrolled</Text>
+            )}
           </View>
+          {/* Phase 4.9: same authoritative field the web dashboard reads
+              (Phase 4.5's completion_percentage, not the legacy lesson-only
+              progress_percentage) -- null while locked/anonymous, in which
+              case no bar is shown at all rather than a misleading 0%. */}
+          {typeof item.completion_percentage === 'number' && (
+            <View style={styles.progressBarTrack}>
+              <View style={[styles.progressBarFill, { width: `${item.completion_percentage}%` }]} />
+            </View>
+          )}
         </View>
       </TouchableOpacity>
     );
@@ -131,6 +155,9 @@ const styles = StyleSheet.create({
   courseMetaContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   courseModules: { color: '#a1a1aa', fontSize: 14, backgroundColor: '#18181b', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
   enrolledBadge: { color: '#22c55e', fontSize: 14, fontWeight: 'bold' },
+  completedBadge: { color: '#facc15', fontSize: 14, fontWeight: 'bold' },
+  progressBarTrack: { height: 6, backgroundColor: '#18181b', borderRadius: 3, marginTop: 12, overflow: 'hidden' },
+  progressBarFill: { height: '100%', backgroundColor: '#facc15', borderRadius: 3 },
   
   // Empty State
   emptyContainer: { padding: 24, alignItems: 'center', marginTop: 20 },

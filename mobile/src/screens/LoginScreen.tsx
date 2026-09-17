@@ -85,12 +85,31 @@ export default function LoginScreen({ navigation }: any) {
 
             <TouchableOpacity style={styles.secondaryButton} onPress={async () => {
               try {
-                // Ensure Google Sign-In is configured
-                // Requires configuring Web Client ID in Google Cloud Console
+                // Production Environment Verification follow-up. Reads the
+                // real Google Cloud "Web application" OAuth client ID from
+                // an env var instead of a hardcoded placeholder --
+                // EXPO_PUBLIC_* is Expo's own established convention for
+                // build-time public config (already used the same way for
+                // Sentry, see src/api/sentry.ts), set in EAS build
+                // profiles/`.env`, never committed as a literal value here.
+                // This MUST be the SAME client ID as the backend's
+                // GOOGLE_OAUTH_CLIENT_ID (or GOOGLE_MOBILE_CLIENT_ID) env
+                // var -- see that setting's own comment in
+                // backend/core/settings.py for why reusing one Web-
+                // application client for both surfaces is Google's own
+                // supported pattern. Never fabricate a value here: a
+                // missing/wrong client ID doesn't fail loudly, it just
+                // makes every sign-in attempt fail against Google with a
+                // generic error -- so this checks for it explicitly and
+                // shows a clear message instead. OTP remains this app's
+                // primary, fully-working authentication method regardless.
+                const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+                if (!webClientId) {
+                  Alert.alert('Google Sign-In unavailable', 'This build is not configured for Google Sign-In yet. Please use phone/OTP login instead.');
+                  return;
+                }
                 const { GoogleSignin, statusCodes } = require('@react-native-google-signin/google-signin');
-                GoogleSignin.configure({
-                  webClientId: 'YOUR_WEB_CLIENT_ID_HERE.apps.googleusercontent.com', // TODO: REPLACE THIS
-                });
+                GoogleSignin.configure({ webClientId });
                 await GoogleSignin.hasPlayServices();
                 const userInfo = await GoogleSignin.signIn();
                 const idToken = userInfo.data?.idToken;

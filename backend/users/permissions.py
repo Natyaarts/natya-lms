@@ -46,6 +46,21 @@ class IsMentor(permissions.BasePermission):
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated and getattr(request.user, 'is_mentor', False))
 
+class IsTeacherOrMentor(permissions.BasePermission):
+    """
+    Phase 3.5.3. Allows access to teachers or mentors -- both are eligible
+    to have their own CourseInstructor-attributed earnings (finance
+    my-earnings). A plain student is explicitly denied here rather than
+    just happening to see an empty list, matching the approved spec's
+    "Student: no ledger access" requirement as a real permission boundary,
+    not an incidental one.
+    """
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated and
+            (getattr(request.user, 'is_teacher', False) or getattr(request.user, 'is_mentor', False))
+        )
+
 class IsSuperAdminOrTeacher(permissions.BasePermission):
     """
     Allows access to superusers or teachers.

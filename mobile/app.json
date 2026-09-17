@@ -2,7 +2,7 @@
   "expo": {
     "name": "Natya Arts",
     "slug": "mobile",
-    "version": "1.0.1",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -16,7 +16,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.natyaarts.academy",
-      "versionCode": 3,
+      "versionCode": 5,
       "blockedPermissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO"
@@ -28,7 +28,9 @@
     "plugins": [
       "expo-status-bar",
       "expo-video",
-      "@react-native-google-signin/google-signin"
+      "@react-native-google-signin/google-signin",
+      "expo-document-picker",
+      "expo-notifications"
     ],
     "extra": {
       "eas": {

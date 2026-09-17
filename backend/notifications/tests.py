@@ -8,7 +8,7 @@ from datetime import timedelta
 from courses.models import Course, Enrollment, Module, VideoLesson, LessonProgress
 from orders.models import Purchase
 from django.db import IntegrityError
-from .models import Notification, Announcement, NotificationType
+from .models import Notification, Announcement, NotificationType, DeviceToken
 from .services import NotificationService
 
 User = get_user_model()
@@ -738,3 +738,76 @@ class NotificationIntegrationTests(APITestCase):
             with self.captureOnCommitCallbacks(execute=True):
                 enrollment = Enrollment.objects.create(user=self.student, course=self.course)
             self.assertEqual(enrollment.user, self.student)
+
+
+class DeviceTokenAPITests(APITestCase):
+    """
+    Phase 4.10: registration-only push-token endpoint. Deliberately does
+    NOT test any actual push delivery -- there is none yet (see
+    DeviceToken's own model docstring for why that's a separate phase).
+    """
+    def setUp(self):
+        self.student = User.objects.create_user(username="devtoken_student", password="password123")
+        self.other_student = User.objects.create_user(username="devtoken_other", password="password123")
+        self.url = reverse('device-token')
+
+    def test_unauthenticated_cannot_register(self):
+        response = self.client.post(self.url, {"token": "ExponentPushToken[abc]", "platform": "ANDROID"})
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_register_creates_device_token(self):
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(self.url, {"token": "ExponentPushToken[abc]", "platform": "ANDROID"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        token = DeviceToken.objects.get(token="ExponentPushToken[abc]")
+        self.assertEqual(token.user, self.student)
+        self.assertEqual(token.platform, "ANDROID")
+        self.assertTrue(token.is_active)
+
+    def test_missing_token_rejected(self):
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(self.url, {"platform": "ANDROID"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_invalid_platform_rejected(self):
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(self.url, {"token": "ExponentPushToken[abc]", "platform": "WINDOWS_PHONE"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(DeviceToken.objects.exists())
+
+    def test_reregistering_same_token_updates_not_duplicates(self):
+        self.client.force_authenticate(user=self.student)
+        self.client.post(self.url, {"token": "ExponentPushToken[abc]", "platform": "ANDROID"})
+        self.client.post(self.url, {"token": "ExponentPushToken[abc]", "platform": "ANDROID"})
+        self.assertEqual(DeviceToken.objects.filter(token="ExponentPushToken[abc]").count(), 1)
+
+    def test_token_moving_to_a_different_user_reassigns_ownership(self):
+        # Same physical device, a different student logs in -- the token
+        # is reassigned, not duplicated (see DeviceToken's own docstring).
+        self.client.force_authenticate(user=self.student)
+        self.client.post(self.url, {"token": "ExponentPushToken[shared]", "platform": "ANDROID"})
+
+        self.client.force_authenticate(user=self.other_student)
+        self.client.post(self.url, {"token": "ExponentPushToken[shared]", "platform": "ANDROID"})
+
+        self.assertEqual(DeviceToken.objects.filter(token="ExponentPushToken[shared]").count(), 1)
+        token = DeviceToken.objects.get(token="ExponentPushToken[shared]")
+        self.assertEqual(token.user, self.other_student)
+
+    def test_delete_deactivates_own_token(self):
+        self.client.force_authenticate(user=self.student)
+        self.client.post(self.url, {"token": "ExponentPushToken[abc]", "platform": "ANDROID"})
+        response = self.client.delete(self.url, {"token": "ExponentPushToken[abc]"}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        token = DeviceToken.objects.get(token="ExponentPushToken[abc]")
+        self.assertFalse(token.is_active)
+
+    def test_cannot_deactivate_another_users_token(self):
+        self.client.force_authenticate(user=self.student)
+        self.client.post(self.url, {"token": "ExponentPushToken[abc]", "platform": "ANDROID"})
+
+        self.client.force_authenticate(user=self.other_student)
+        self.client.delete(self.url, {"token": "ExponentPushToken[abc]"}, format='json')
+
+        token = DeviceToken.objects.get(token="ExponentPushToken[abc]")
+        self.assertTrue(token.is_active)  # untouched -- silently scoped away, not an error

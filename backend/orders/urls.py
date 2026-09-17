@@ -4,6 +4,7 @@ from .views import (
     CreateOrderView, VerifyPaymentView, AdminPurchaseViewSet, RazorpayWebhookView,
     BundleViewSet, OrderViewSet, CreateSubscriptionView, VerifySubscriptionPaymentView,
     SubscriptionMeView, CancelSubscriptionView, SubscriptionPlanViewSet, SubscriptionPaymentHistoryView,
+    AdminSubscriptionViewSet, MyPurchaseListView,
 )
 
 router = DefaultRouter()
@@ -14,10 +15,17 @@ router.register(r'orders', OrderViewSet, basename='order')
 # distinct path segment ('subscription-plans') from the plain
 # 'subscriptions/*' APIView paths below, so there is no route collision.
 router.register(r'subscription-plans', SubscriptionPlanViewSet, basename='subscription-plan')
+# Phase 4.8: admin-only, single-action (cancel-immediate) -- distinct path
+# segment ('subscriptions-admin') from the student-facing 'subscriptions/*'
+# APIView paths below, same reasoning as subscription-plans above. No
+# list/retrieve registered by this ViewSet (see its own docstring), so this
+# adds exactly one route: POST subscriptions-admin/<id>/cancel-immediate/.
+router.register(r'subscriptions-admin', AdminSubscriptionViewSet, basename='subscription-admin')
 
 urlpatterns = [
     path('create-order/', CreateOrderView.as_view(), name='create-order'),
     path('verify-payment/', VerifyPaymentView.as_view(), name='verify-payment'),
+    path('my-purchases/', MyPurchaseListView.as_view(), name='my-purchases'),
     path('webhook/razorpay/', RazorpayWebhookView.as_view(), name='razorpay-webhook'),
     # Phase 3.4.2/3.4.5/3.4.6: intentionally plain APIView paths (not
     # router-registered ViewSet actions) -- mirrors create-order/

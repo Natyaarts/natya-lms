@@ -10,12 +10,26 @@ class Purchase(models.Model):
     # Confirmed via a repo-wide search before adding this that PENDING,
     # SUCCESS and FAILED are the only three values ever read or written
     # anywhere (production code or tests) -- this is a validation-only
-    # tightening, not a behavior or data change. REFUNDED is deliberately
-    # NOT added here yet; that belongs to the Phase 3.7 Refunds sub-phase.
+    # tightening, not a behavior or data change.
+    #
+    # Phase 3.5.6 (the "Phase 3.7 Refunds sub-phase" this comment used to
+    # forward-reference, under its since-renumbered name): REFUNDED added,
+    # additively, exactly as this comment always anticipated. Set ONLY by
+    # finance/services.py's refund success path, ONLY once a purchase's
+    # cumulative successful Refund amount reaches its full `amount` (a
+    # partial refund leaves status at SUCCESS -- "successfully paid, and
+    # partially refunded" is still accurately "SUCCESS" from the checkout
+    # flow's own point of view; REFUNDED specifically means "nothing left
+    # to refund"). No other code path ever sets this value. Deliberately
+    # NOT added to Order.Status in this same phase -- see finance/services.py's
+    # refund module docstring for why Purchase/SubscriptionPayment (both
+    # already had this exact value pre-reserved) and Order (which never
+    # did) are treated differently here, on purpose, not as an oversight.
     class Status(models.TextChoices):
         PENDING = 'PENDING', 'Pending'
         SUCCESS = 'SUCCESS', 'Success'
         FAILED = 'FAILED', 'Failed'
+        REFUNDED = 'REFUNDED', 'Refunded'
 
     user = models.ForeignKey(User, related_name='purchases', on_delete=models.CASCADE)
     course = models.ForeignKey(Course, related_name='purchases', on_delete=models.CASCADE)

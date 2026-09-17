@@ -30,14 +30,39 @@ export default function SubscriptionCheckoutButton({ planId, planName, price }: 
 
   const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+  // CSRF hardening fix: CreateSubscriptionView/VerifySubscriptionPaymentView
+  // now enforce CSRF for cookie-authenticated (browser) requests -- see
+  // backend/orders/views.py's CSRFEnforcedJWTCookieAuthentication. Same
+  // pattern as CheckoutButton.tsx's own copy of this helper.
+  const getCsrfToken = () => {
+    let csrfToken = "";
+    if (typeof document !== 'undefined' && document.cookie) {
+      const cookies = document.cookie.split(';');
+      for (let i = 0; i < cookies.length; i++) {
+        const cookie = cookies[i].trim();
+        if (cookie.startsWith('csrftoken=')) {
+          csrfToken = decodeURIComponent(cookie.substring('csrftoken='.length));
+          break;
+        }
+      }
+    }
+    return csrfToken;
+  };
+
+  const ensureCsrfCookie = async () => {
+    if (getCsrfToken()) return;
+    await fetch(`${API}/api/users/me/`, { credentials: "include" });
+  };
+
   const handleSubscribe = async () => {
     setLoading(true);
     setError("");
     try {
+      await ensureCsrfCookie();
       const res = await fetch(`${API}/api/orders/subscriptions/create/`, {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-CSRFToken": getCsrfToken() },
         body: JSON.stringify({ plan_id: planId }),
       });
       const data = await res.json();
@@ -57,7 +82,7 @@ export default function SubscriptionCheckoutButton({ planId, planName, price }: 
           const verifyRes = await fetch(`${API}/api/orders/subscriptions/verify/`, {
             method: "POST",
             credentials: "include",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", "X-CSRFToken": getCsrfToken() },
             body: JSON.stringify({
               razorpay_payment_id: response.razorpay_payment_id,
               razorpay_subscription_id: response.razorpay_subscription_id,

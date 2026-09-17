@@ -16,12 +16,14 @@ from django.db.models import ProtectedError
 
 from courses.models import Course
 from orders.models import SubscriptionPlan, Subscription, SubscriptionPayment
+from django.core.cache import cache
 
 User = get_user_model()
 
 
 class SubscriptionPlanModelTests(TestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.course1 = Course.objects.create(title="Kathak Level 1", description="x", price=1000, is_published=True)
         self.course2 = Course.objects.create(title="Kathak Level 2", description="x", price=1200, is_published=True)
 
@@ -117,6 +119,7 @@ class SubscriptionPlanModelTests(TestCase):
 
 class SubscriptionModelTests(TestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.student = User.objects.create_user(username="sub_student", password="password123")
         self.other_student = User.objects.create_user(username="sub_other_student", password="password123")
         self.plan = SubscriptionPlan.objects.create(name="Test Plan", billing_interval="MONTHLY", price="999.00")
@@ -235,6 +238,7 @@ class SubscriptionModelTests(TestCase):
 
 class SubscriptionPaymentModelTests(TestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.student = User.objects.create_user(username="payment_student", password="password123")
         self.plan = SubscriptionPlan.objects.create(name="Payment Test Plan", billing_interval="MONTHLY", price="750.00")
         self.subscription = Subscription.objects.create(

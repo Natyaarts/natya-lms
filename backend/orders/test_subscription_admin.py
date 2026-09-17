@@ -15,6 +15,7 @@ from django.urls import reverse
 
 from courses.models import Course
 from orders.models import Subscription, SubscriptionPlan, SubscriptionPayment
+from django.core.cache import cache
 
 User = get_user_model()
 
@@ -23,6 +24,7 @@ class SubscriptionAdminAccessTests(TestCase):
     """Who can reach the Django admin at all for these three models."""
 
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.superuser = User.objects.create_superuser(username="admin_super", password="password123", email="super@x.com")
         self.plain_user = User.objects.create_user(username="admin_plain", password="password123")
         self.plan = SubscriptionPlan.objects.create(
@@ -56,6 +58,7 @@ class SubscriptionAdminAccessTests(TestCase):
 
 class SubscriptionPlanAdminTests(TestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.superuser = User.objects.create_superuser(username="planadmin_super", password="password123", email="super2@x.com")
         self.client.force_login(self.superuser)
         self.course = Course.objects.create(title="Plan Admin Course", description="x", price=100, is_published=True)
@@ -107,6 +110,7 @@ class SubscriptionPlanAdminTests(TestCase):
 
 class SubscriptionAdminTests(TestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.superuser = User.objects.create_superuser(username="subadmin_super", password="password123", email="super3@x.com")
         self.client.force_login(self.superuser)
         self.student = User.objects.create_user(username="subadmin_student", password="password123")
@@ -181,6 +185,7 @@ class SubscriptionAdminTests(TestCase):
 
 class SubscriptionPaymentAdminTests(TestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.superuser = User.objects.create_superuser(username="payadmin_super", password="password123", email="super4@x.com")
         self.client.force_login(self.superuser)
         self.student = User.objects.create_user(username="payadmin_student", password="password123")
@@ -247,6 +252,7 @@ class SubscriptionAdminNoSecretsExposedTests(TestCase):
     (API/webhook keys) must never appear anywhere."""
 
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.superuser = User.objects.create_superuser(username="secrets_super", password="password123", email="super5@x.com")
         self.client.force_login(self.superuser)
         self.student = User.objects.create_user(username="secrets_student", password="password123")

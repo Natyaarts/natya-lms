@@ -18,12 +18,14 @@ from rest_framework.test import APITestCase
 
 from courses.models import Course
 from orders.models import Subscription, SubscriptionPlan, SubscriptionPayment
+from django.core.cache import cache
 
 User = get_user_model()
 
 
 class SubscriptionPlanPublicAPITests(APITestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.course = Course.objects.create(title="Plan API Course", description="x", price=100, is_published=True)
         self.active_plan = SubscriptionPlan.objects.create(
             name="Active Plan", billing_interval="MONTHLY", price="999.00",
@@ -104,6 +106,7 @@ class SubscriptionPlanPublicAPITests(APITestCase):
 
 class MySubscriptionAPITests(APITestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.student = User.objects.create_user(username="mysub_api_student", password="password123")
         self.other_student = User.objects.create_user(username="mysub_api_other", password="password123")
         self.plan = SubscriptionPlan.objects.create(
@@ -165,6 +168,7 @@ class MySubscriptionAPITests(APITestCase):
 
 class SubscriptionPaymentHistoryAPITests(APITestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.student = User.objects.create_user(username="payhist_student", password="password123")
         self.other_student = User.objects.create_user(username="payhist_other", password="password123")
         self.plan = SubscriptionPlan.objects.create(

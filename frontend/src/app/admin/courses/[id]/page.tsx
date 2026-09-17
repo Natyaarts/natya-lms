@@ -1493,6 +1493,31 @@ export default function CourseManager() {
                           </motion.form>
                         )}
                       </AnimatePresence>
+
+                      {/* Phase 4.7: read-only assignments list -- authoring an
+                          Assignment is a Django-admin job (no create/edit API
+                          exists), so this is purely a "jump to the grading
+                          queue" surface for whichever published assignments
+                          already exist in this module. */}
+                      {module.assignments && module.assignments.length > 0 && (
+                        <div className="mt-4 pt-4 border-t border-white/5 space-y-2">
+                          <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Assignments</h4>
+                          {module.assignments.map((assignment: any) => (
+                            <div key={assignment.id} className="flex items-center justify-between bg-zinc-900/50 border border-white/5 p-3 rounded-xl">
+                              <div className="min-w-0">
+                                <div className="text-sm font-medium text-white truncate">{assignment.title}</div>
+                                <div className="text-[11px] text-zinc-500">Max marks: {assignment.max_marks}</div>
+                              </div>
+                              <Link
+                                href={`/admin/assignments/${assignment.id}`}
+                                className="shrink-0 text-xs font-bold px-3 py-1.5 bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] rounded-xl transition-colors"
+                              >
+                                View Submissions
+                              </Link>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))

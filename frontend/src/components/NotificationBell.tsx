@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import Link from "next/link";
 import { Bell, Loader2, Check, ExternalLink } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -387,6 +388,14 @@ export default function NotificationBell() {
                 ))
               )}
             </div>
+
+            <Link
+              href="/notifications"
+              onClick={() => setIsOpen(false)}
+              className="p-3 text-center text-xs font-semibold text-zinc-400 hover:text-[#facc15] hover:bg-white/5 border-t border-white/5 transition-colors shrink-0 cursor-pointer"
+            >
+              View all notifications
+            </Link>
           </motion.div>
         )}
       </AnimatePresence>

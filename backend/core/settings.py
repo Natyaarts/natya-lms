@@ -11,6 +11,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import logging
 import os
 import ssl
 from pathlib import Path
@@ -80,6 +81,7 @@ INSTALLED_APPS = [
     'orders',
     'cms',
     'notifications',
+    'finance',
     
     # Auth
     'rest_framework.authtoken',
@@ -90,6 +92,12 @@ INSTALLED_APPS = [
     'allauth.socialaccount',
     'allauth.socialaccount.providers.google',
     'dj_rest_auth.registration',
+    # Phase 3.9: enables refresh-token rotation + blacklisting (see
+    # SIMPLE_JWT below) -- ships as part of the already-installed
+    # djangorestframework-simplejwt package, not a new dependency. Brings
+    # its own bundled migrations; `python manage.py migrate` must be run
+    # after this deploy (see the Phase 3.9 report's env/deploy notes).
+    'rest_framework_simplejwt.token_blacklist',
 ]
 
 SITE_ID = 1
@@ -97,7 +105,110 @@ SITE_ID = 1
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'dj_rest_auth.jwt_auth.JWTCookieAuthentication',
-    )
+    ),
+    # General API rate limiting gap fix (final release audit). Before this,
+    # DEFAULT_THROTTLE_CLASSES was never set at all -- DRF's own default is
+    # an empty list, so throttling only ever happened on the handful of
+    # views that explicitly set throttle_classes (login/OTP/certificate-
+    # verify). Every other endpoint, including every payment/order/
+    # subscription/refund/assessment mutation, was completely unthrottled.
+    #
+    # AnonRateThrottle/UserRateThrottle (DRF's own built-in classes, scopes
+    # 'anon'/'user' below) now provide a general baseline for every view
+    # that doesn't set its own throttle_classes -- deliberately generous
+    # (see the rates below) so normal GET-heavy LMS browsing and chatty-
+    # but-legitimate authenticated usage (video-progress pings, notification
+    # polling, etc.) is never affected; the goal is bounding scripted abuse,
+    # not throttling real usage. Setting throttle_classes on a SPECIFIC
+    # view (as this phase does for the sensitive mutation endpoints below)
+    # REPLACES this default for that view, not adds to it -- which is fine
+    # here, since every one of those dedicated scopes is already far
+    # tighter than the general baseline would ever trigger first.
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    # Production Environment Verification gap fix: NUM_PROXIES was never
+    # set, so DRF's BaseThrottle.get_ident() (used by every IP-keyed
+    # throttle here, and by the anonymous half of Anon/UserRateThrottle
+    # above) fell through to `xff.split()` on the RAW X-Forwarded-For
+    # header whenever one was present, with no trusted-hop trimming --
+    # NOT a safe fallback to REMOTE_ADDR. Behind this app's actual
+    # topology (a single ELB/ALB in front of the EC2 instance(s), no
+    # CloudFront/CDN hop in front of that -- confirmed by the ELB-only
+    # language in SECURE_PROXY_SSL_HEADER's own comment below and no
+    # CDN reference anywhere in this codebase), an ALB appends the real
+    # client IP as the LAST entry of X-Forwarded-For rather than
+    # replacing the header, so a client sending its own fabricated
+    # leading entry (`X-Forwarded-For: 1.2.3.4`) reaches this app as
+    # `1.2.3.4, <real-client-ip>` -- and with NUM_PROXIES unset, DRF used
+    # the entire string as the throttle identity, letting an attacker get
+    # a fresh cache key on every request just by varying that leading
+    # value. This silently defeated every per-IP throttle in this file
+    # (OTP request/verify, login, password reset, certificate
+    # verification) and the anonymous baseline itself. Setting
+    # NUM_PROXIES=1 makes DRF pick the correct trusted-hop entry (one hop
+    # in from the right) instead of trusting the client-supplied prefix.
+    'NUM_PROXIES': int(os.environ.get('DRF_NUM_PROXIES', '1')),
+    # Rates are per-IP for anonymous callers and per-authenticated-user
+    # (request.user.pk, never a client-supplied id) for authenticated ones
+    # -- DRF's own built-in behavior for these two classes. Backed by
+    # CACHES below (Redis in production), not Django's default
+    # LocMemCache, because this process runs as multiple gunicorn workers/
+    # EB instances -- an in-process-memory cache would give each worker
+    # its own independent counter, making every configured rate far
+    # weaker in practice than it looks on paper.
+    'DEFAULT_THROTTLE_RATES': {
+        # General baseline -- see DEFAULT_THROTTLE_CLASSES comment above.
+        'anon': '100/min',
+        'user': '300/min',
+        'otp_request': '5/hour',
+        'otp_verify': '20/hour',
+        # General API rate limiting gap fix: the request-a-reset-email step
+        # is the exact same abuse shape as otp_request (an attacker could
+        # otherwise email-bomb a victim's inbox with reset links) --
+        # deliberately the same rate for the same reason. The
+        # confirm/change steps are left to the general 'anon'/'user'
+        # baseline above: confirm requires a valid emailed token already,
+        # and change requires being authenticated, so neither has
+        # otp_request's "cheap to spam a stranger" risk shape.
+        'password_reset': '5/hour',
+        # Phase 4.6: public, unauthenticated certificate-verification
+        # lookup -- generous enough for a genuine verifier checking a
+        # handful of certificates, tight enough to make scanning for
+        # valid verification_ids impractical.
+        'certificate_verify': '30/hour',
+        # Final release-blocker fix: password-based login (superuser/staff/
+        # teacher/mentor -- POST api/auth/login/, see ThrottledLoginView in
+        # users/views.py) had no throttle at all. Deliberately tighter than
+        # otp_verify's 20/hour -- a compromised admin/staff password grants
+        # far more than defeating one OTP, and unlike OTPVerification there
+        # is no second, model-level attempt-counter layer behind this one
+        # -- but not as tight as otp_request, since a legitimate person
+        # mistyping their password a handful of times in an hour must
+        # never be the thing that trips this. Same per-IP, Redis-backed
+        # SimpleRateThrottle mechanism as the rates above -- a rolling
+        # window, never a permanent lock; it opens back up as old attempts
+        # age out, it doesn't need to be manually cleared for a genuine
+        # user to get back in.
+        'login': '10/hour',
+        # General API rate limiting gap fix -- sensitive/high-cost mutation
+        # endpoints, each keyed per-authenticated-user (see the throttle
+        # classes themselves: plain UserRateThrottle subclasses, scope
+        # only). Rates are deliberately generous enough to cover a
+        # legitimate retry-after-failure pattern (Razorpay checkout
+        # failures/network hiccups are a real, expected occurrence this
+        # must not penalize) while still bounding scripted abuse far below
+        # what the general 'user' baseline alone would ever catch.
+        'order_create': '20/hour',
+        'payment_verify': '30/hour',
+        'subscription_create': '10/hour',
+        'subscription_verify': '20/hour',
+        'refund_create': '30/hour',
+        'assessment_start': '30/hour',
+        'assessment_submit': '30/hour',
+        'assignment_submit': '20/hour',
+    },
 }
 
 REST_AUTH = {
@@ -136,6 +247,54 @@ ACCOUNT_EMAIL_VERIFICATION = 'none'
 ACCOUNT_AUTHENTICATION_METHOD = 'username_email'
 ACCOUNT_EMAIL_REQUIRED = True
 SOCIALACCOUNT_LOGIN_ON_GET = True
+
+# Google OAuth (web login via django-allauth) -- Production Environment
+# Verification follow-up. Previously there was no SOCIALACCOUNT_PROVIDERS
+# entry at all, meaning allauth's Google provider had no client
+# credentials configured anywhere except a throwaway local script
+# (setup_google.py) that wrote LITERAL PLACEHOLDER STRINGS
+# ('YOUR_GOOGLE_CLIENT_ID'/'YOUR_GOOGLE_CLIENT_SECRET') into a DB-backed
+# SocialApp row -- never a real credential, and never something a fresh
+# EB environment/redeploy would pick up automatically.
+#
+# allauth supports two ways to configure a provider's app credentials:
+# a DB-backed SocialApp row (via Django admin), or settings-based
+# configuration via SOCIALACCOUNT_PROVIDERS[provider]['APP'] (allauth's
+# own DefaultSocialAccountAdapter.list_apps() blends both sources).
+# Settings-based is the safer, deployment-friendly choice here: it's
+# env-var-driven like every other credential in this file (SECRET_KEY,
+# AWS, Razorpay, Sentry, ...), needs no manual Django-admin step after a
+# fresh deploy/environment recreation, and can never silently regress to
+# a stale/placeholder DB row.
+#
+# GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET must be a "Web
+# application" type OAuth 2.0 client from Google Cloud Console, with
+# f'{FRONTEND API host}/accounts/google/login/callback/' registered as an
+# Authorized redirect URI. Deliberately NOT a hard-fail-at-boot
+# requirement (unlike SECRET_KEY/ALLOWED_HOSTS/S3/Celery/Razorpay): web
+# Google login is one optional sign-in method among several (OTP is the
+# primary, already-working method per MobileGoogleLoginView's own
+# precedent below) -- if unset, SOCIALACCOUNT_PROVIDERS['google'] simply
+# has no 'APP' entry, allauth falls through to checking the DB SocialApp
+# table exactly as it did before this change (harmless no-op), and every
+# other route keeps working. If a stale/placeholder DB SocialApp row
+# exists from the old setup_google.py script, allauth would otherwise see
+# TWO apps for 'google' (DB + settings) and raise MultipleObjectsReturned
+# at login time -- see the rewritten setup_google.py, which now removes
+# any such row instead of creating one.
+GOOGLE_OAUTH_CLIENT_ID = os.environ.get('GOOGLE_OAUTH_CLIENT_ID', '')
+GOOGLE_OAUTH_CLIENT_SECRET = os.environ.get('GOOGLE_OAUTH_CLIENT_SECRET', '')
+if GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET:
+    SOCIALACCOUNT_PROVIDERS = {
+        'google': {
+            'APP': {
+                'client_id': GOOGLE_OAUTH_CLIENT_ID,
+                'secret': GOOGLE_OAUTH_CLIENT_SECRET,
+                'key': '',
+            },
+            'SCOPE': ['profile', 'email'],
+        }
+    }
 
 # Post-social-login redirect target. Must never resolve to localhost in
 # production regardless of whether FRONTEND_URL is explicitly set.
@@ -193,9 +352,31 @@ TEMPLATES = [
 ]
 
 from datetime import timedelta
+# Phase 3.9: previously BOTH access and refresh tokens lived 30 days, with
+# no blacklist app installed -- a leaked access token stayed valid for a
+# month with no revocation path at all. ACCESS_TOKEN_LIFETIME is now short
+# (a leaked access token is only useful for a day); REFRESH_TOKEN_LIFETIME
+# is UNCHANGED at 30 days (preserves the existing "stay logged in" UX --
+# users authenticate via OTP/Google, not a password, so frequent re-auth
+# would be a real UX regression, not just a preference).
+#
+# ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_ROTATION: every time a refresh
+# token is actually used to mint a new access token, it is rotated (a new
+# refresh token is issued) and the OLD one is blacklisted -- a stolen,
+# already-used refresh token can't be replayed. This requires the
+# 'rest_framework_simplejwt.token_blacklist' app above.
+#
+# Backward compatibility: this changes nothing about ALREADY-ISSUED
+# tokens -- a JWT's expiry is baked into its own `exp` claim at the moment
+# it was minted, so existing production sessions simply keep working
+# under the settings that were in effect when they were issued, and
+# naturally age out on their own original schedule. Only NEWLY issued
+# tokens (from this deploy onward) get the shorter access-token lifetime.
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=30),
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
 }
 
 WSGI_APPLICATION = 'core.wsgi.application'
@@ -207,6 +388,17 @@ WSGI_APPLICATION = 'core.wsgi.application'
 import dj_database_url
 import os
 
+# Production Environment Verification gap fix: this branch was previously
+# keyed only on 'RDS_DB_NAME' in os.environ, with no DEBUG-gated hard-fail
+# unlike SECRET_KEY/ALLOWED_HOSTS above -- if EB's RDS link were ever
+# missing (broken association, env var not propagated, a new environment
+# created without it) AND DATABASE_URL was also unset, dj_database_url's
+# own `default=` kwarg would silently return a SQLite config instead of
+# erroring, and the app would boot normally against a local SQLite file
+# instead of the real production database. Mirrors the same
+# "if not DEBUG: raise ImproperlyConfigured" pattern used for every other
+# must-be-set-in-production value in this file.
+#
 # If AWS RDS is linked to Elastic Beanstalk, it provides these variables:
 if 'RDS_DB_NAME' in os.environ:
     DATABASES = {
@@ -217,15 +409,37 @@ if 'RDS_DB_NAME' in os.environ:
             'PASSWORD': os.environ['RDS_PASSWORD'],
             'HOST': os.environ['RDS_HOSTNAME'],
             'PORT': os.environ['RDS_PORT'],
+            'CONN_MAX_AGE': 600,
+            'CONN_HEALTH_CHECKS': True,
+            'OPTIONS': {'sslmode': 'require'},
         }
     }
-else:
-    # Fallback to DATABASE_URL or SQLite for local development
+elif DEBUG:
+    # Local development only: DATABASE_URL if set, else SQLite.
     DATABASES = {
         'default': dj_database_url.config(
             default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
             conn_max_age=600,
             conn_health_checks=True,
+        )
+    }
+else:
+    # Production with no RDS link: DATABASE_URL must be set explicitly (a
+    # manually-configured Postgres host outside EB's own RDS integration).
+    # No SQLite default here -- refusing to silently fall back to it.
+    _database_url = os.environ.get('DATABASE_URL')
+    if not _database_url:
+        raise ImproperlyConfigured(
+            "Neither RDS_DB_NAME nor DATABASE_URL is set in production -- refusing to silently "
+            "fall back to SQLite. Set one of them (RDS_DB_NAME is provided automatically when "
+            "an RDS instance is linked to this Elastic Beanstalk environment)."
+        )
+    DATABASES = {
+        'default': dj_database_url.config(
+            env='DATABASE_URL',
+            conn_max_age=600,
+            conn_health_checks=True,
+            ssl_require=True,
         )
     }
 
@@ -316,8 +530,24 @@ else:
 INTERAKT_TEMPLATE_NAME = os.getenv('INTERAKT_TEMPLATE_NAME', 'login_otp_v1')
 
 # Razorpay Settings
-RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID', '')
-RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET', '')
+# Production Environment Verification gap fix: unlike SECRET_KEY/
+# ALLOWED_HOSTS/S3/Celery/INTERAKT_SECRET_KEY above, these two had no
+# DEBUG-gated hard-fail at all -- a missing key would silently boot the
+# whole app (this IS already-running production payment infrastructure,
+# not a brand-new optional feature like RAZORPAY_WEBHOOK_SECRET just
+# below, whose own unguarded-by-design rationale is documented there and
+# does not apply here) and only fail confusingly at actual checkout/
+# payment-verification time instead of at startup.
+if DEBUG:
+    RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID', '')
+    RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET', '')
+else:
+    RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID')
+    RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET')
+    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
+        raise ImproperlyConfigured(
+            "RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET environment variables must be set in production."
+        )
 
 # Phase 3.2: a separate secret from RAZORPAY_KEY_SECRET, configured in the
 # Razorpay dashboard specifically for webhook signature verification --
@@ -364,6 +594,258 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
+# Phase 3.9: Django cache backend, needed to make DRF throttling (OTP
+# endpoints, REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'] above) actually
+# effective -- without an explicit CACHES setting, Django defaults to
+# LocMemCache, which is per-process. In PRODUCTION this app runs as
+# multiple gunicorn workers (and potentially multiple EB instances), so a
+# per-process cache would give every worker its own independent throttle
+# counter, silently multiplying the effective rate limit by however many
+# workers exist -- so production reuses the SAME Redis already required
+# for Celery (CELERY_BROKER_URL is guaranteed set there -- see the
+# ImproperlyConfigured check above) via Django's own built-in RedisCache
+# backend (stdlib since Django 4.0, no new dependency: `redis` is already
+# a direct requirement).
+#
+# Local dev/tests (DEBUG=True) deliberately stay on LocMemCache instead --
+# confirmed this environment has no Redis actually running locally, and
+# this project's entire test suite has never previously required a live
+# Redis connection (Celery calls are mocked in tests, never made for
+# real). Requiring Redis just to exercise a throttled view in a unit test
+# would be a new, unrelated-to-the-test infrastructure dependency this
+# codebase has deliberately avoided everywhere else.
+CACHES = {
+    'default': (
+        {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}
+        if DEBUG else
+        {'BACKEND': 'django.core.cache.backends.redis.RedisCache', 'LOCATION': CELERY_BROKER_URL}
+    )
+}
+
 # AI Translation Credentials
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 GOOGLE_API_KEY = os.environ.get('GOOGLE_API_KEY', '')
+
+# ---------------------------------------------------------------------------
+# Phase 3.9: Critical Defect & Security Remediation
+# ---------------------------------------------------------------------------
+
+# Real email OTP delivery via AWS SES (users/email_utils.py) -- previously
+# this path only printed to the server log and never actually sent
+# anything. Reuses the SAME AWS credentials already configured for S3
+# above (the IAM user/role must additionally have ses:SendEmail permission
+# -- see the Phase 3.9 report's "production configuration required"
+# section). DEFAULT_FROM_EMAIL must be an address/domain verified in SES,
+# or SES will reject every send.
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'no-reply@natyaarts.com')
+AWS_SES_REGION_NAME = os.environ.get('AWS_SES_REGION_NAME', AWS_S3_REGION_NAME or 'ap-south-1')
+
+# Mobile Google Sign-In: the OAuth client ID(s) Google may issue the ID
+# token FOR. Originally MobileGoogleLoginView called
+# id_token.verify_oauth2_token() with no `audience` argument at all --
+# meaning it accepted a validly-signed Google ID token from ANY Google
+# OAuth client, not just this app's (fixed by adding a single-audience
+# check). Google's own backend-verification guidance recommends accepting
+# a LIST of acceptable client IDs, since one logical app legitimately has
+# several platform-specific OAuth clients in the same Cloud project --
+# each producing tokens whose `aud` claim is that specific client's ID:
+#   - GOOGLE_MOBILE_CLIENT_ID: kept for backward compatibility with
+#     whatever's already set in EB today.
+#   - GOOGLE_OAUTH_CLIENT_ID: the same "Web application" client configured
+#     above for allauth's web login -- @react-native-google-signin/
+#     google-signin's `webClientId` (see mobile/src/screens/
+#     LoginScreen.tsx) is documented to take a Web-application-type client
+#     ID, and this project's mobile screen already assumes it's the SAME
+#     value as the backend's mobile client id (see that file's own
+#     comment) -- reusing one client for both surfaces is Google's own
+#     supported pattern, not a shortcut.
+#   - GOOGLE_ANDROID_CLIENT_ID: optional, for an Android-type OAuth client
+#     registered against this app's production package
+#     (com.natyaarts.academy) + release-keystore SHA-1 fingerprint, only
+#     needed if a future native-Android code path ever issues a token
+#     whose audience is the Android client itself rather than the Web
+#     client above.
+# All three are optional individually; MobileGoogleLoginView builds and
+# dedupes the acceptable-audiences list itself (see
+# users.views.google_oauth_audiences()) rather than this file precomputing
+# it into one fixed list -- a plain module-level list here would be
+# computed once at process start and would NOT respond to Django's
+# override_settings() test helper patching these individual variables,
+# silently breaking testability. Degrades to 503 (see that view) only if
+# the resulting list is entirely empty, exactly the same graceful-
+# degradation precedent RAZORPAY_WEBHOOK_SECRET already established for a
+# not-yet-fully-configured feature -- never crashes the whole app at boot.
+GOOGLE_MOBILE_CLIENT_ID = os.environ.get('GOOGLE_MOBILE_CLIENT_ID', '')
+GOOGLE_ANDROID_CLIENT_ID = os.environ.get('GOOGLE_ANDROID_CLIENT_ID', '')
+
+# Structured logging. Previously there was NO LOGGING setting anywhere in
+# this file -- every logger.error(...)/logger.info(...) call already
+# scattered across the codebase (notifications/services.py,
+# courses/tasks.py, finance/services.py, etc.) fell back to Django's
+# undocumented default config (WARNING+ to stderr, no formatting). This
+# makes that explicit and structured (single-line, greppable,
+# timestamp+level+logger+message) without introducing a new dependency --
+# EB already captures stdout/stderr into its own log files (confirmed:
+# this repo's own log/web.stdout.log), so writing to the console handler
+# is what actually reaches those logs; no separate file handler is added
+# here to avoid fighting EB's own log rotation.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'structured': {
+            'format': '%(asctime)s %(levelname)s %(name)s %(message)s',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'structured',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'django.request': {
+            # Full tracebacks for unhandled 500s -- these were previously
+            # only visible via Django's default (unconfigured) behavior.
+            'handlers': ['console'],
+            'level': 'ERROR',
+            'propagate': False,
+        },
+    },
+}
+
+# Security headers. SECURE_CONTENT_TYPE_NOSNIFF and X_FRAME_OPTIONS='DENY'
+# are already Django's own defaults (via SecurityMiddleware/
+# XFrameOptionsMiddleware, both already in MIDDLEWARE above) -- restated
+# explicitly here for visibility, not because they were missing.
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
+
+# SECURE_SSL_REDIRECT / HSTS: only enabled in production (DEBUG=False).
+# SECURE_PROXY_SSL_HEADER (already set above) means Django can tell HTTPS
+# apart from HTTP even though the load balancer terminates TLS before the
+# app server ever sees the connection.
+#
+# SECURE_REDIRECT_EXEMPT explicitly excludes the bare root health-check
+# path (core/urls.py's health_check view, `path('', health_check)`) from
+# the HTTPS redirect. This is deliberate, not an oversight: Elastic
+# Beanstalk's own load-balancer health check may hit the instance directly
+# over plain HTTP on the internal network without ever setting
+# X-Forwarded-Proto -- redirecting THAT request would make EB see a 301
+# instead of a 200 and could mark the whole environment unhealthy. Every
+# other path still gets the redirect.
+#
+# HSTS is set to a conservative 1 day (not the more aggressive 1-year/
+# includeSubDomains/preload combination) as a safe initial rollout value --
+# increase it once this has run in production without incident. Preload
+# in particular is a one-way door (once a domain is on browsers' HSTS
+# preload list, getting it removed is slow and manual), so it is
+# deliberately NOT enabled here without an explicit, separate decision.
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SECURE_REDIRECT_EXEMPT = [r'^$']
+    SECURE_HSTS_SECONDS = 86400
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = False
+    SECURE_HSTS_PRELOAD = False
+
+# ---------------------------------------------------------------------------
+# Production error tracking (Sentry) -- final release audit gap fix.
+#
+# Deliberately NOT following this file's usual "raise ImproperlyConfigured
+# if unset in production" pattern (unlike CELERY_BROKER_URL/ALLOWED_HOSTS/
+# etc. above) -- a missing SENTRY_DSN should mean "error tracking is off",
+# never "refuse to boot". Local development needs no DSN at all (sentry_sdk
+# is simply never initialized), and the DSN itself is not a secret in the
+# same sense as a webhook/API secret (it's designed to be embeddable in
+# client code), but it's still only ever read from the environment --
+# never hardcoded here.
+#
+# integrations=[DjangoIntegration(), CeleryIntegration(...)] is the ENTIRE
+# capture mechanism: both auto-instrument at the framework/task-runner
+# level (unhandled Django view exceptions, unhandled Celery task
+# exceptions) with no new middleware, no DRF EXCEPTION_HANDLER override,
+# and no change to any API response shape -- confirmed against this
+# project's existing LOGGING config and Celery setup, neither of which is
+# touched. CeleryIntegration does not send an event for a task that calls
+# self.retry(...) (e.g. notifications/tasks.py's own bounded-retry push
+# delivery task) -- only for a task that fails permanently -- matching
+# "do not report expected/retryable conditions as fatal errors" without
+# any custom code needed for that distinction.
+#
+# traces_sample_rate defaults to 0.0 (performance tracing OFF) -- a
+# conservative error-only configuration, exactly as directed; raise it via
+# SENTRY_TRACES_SAMPLE_RATE only with a deliberate, separate decision.
+#
+# send_default_pii=False plus a custom EventScrubber (extending Sentry's
+# own substantial DEFAULT_DENYLIST -- already covers password/secret/
+# token/auth/cookie/session/csrf* by exact key match) with this project's
+# own additional sensitive field names (OTPs, JWTs, Razorpay secrets/
+# signatures) is the privacy layer Step 6 requires; before_send is a
+# third, final defensive strip of the two headers that must never appear
+# in an event under any circumstance.
+SENTRY_DSN = os.environ.get('SENTRY_DSN')
+SENTRY_ENVIRONMENT = os.environ.get('SENTRY_ENVIRONMENT') or ('development' if DEBUG else 'production')
+# CI/deploy-time value (e.g. a git SHA) -- optional, never invented here.
+SENTRY_RELEASE = os.environ.get('SENTRY_RELEASE')
+
+if SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
+    from sentry_sdk.scrubber import EventScrubber, DEFAULT_DENYLIST
+
+    _SENTRY_EXTRA_DENYLIST = [
+        'access_token', 'refresh_token', 'id_token', 'jwt',
+        'otp', 'otp_code',
+        'razorpay_signature', 'razorpay_key_secret', 'razorpay_webhook_secret',
+        'phone_number', 'parent_phone',
+    ]
+
+    def _sentry_before_send(event, hint):
+        # Final, explicit defensive strip -- redundant with the scrubber
+        # above for the common case, but guarantees these two headers
+        # specifically can never reach Sentry even if some future event
+        # shape puts them somewhere the scrubber's key-based denylist
+        # doesn't reach (e.g. a raw header string rather than a dict).
+        request = event.get('request')
+        if isinstance(request, dict):
+            headers = request.get('headers')
+            if isinstance(headers, dict):
+                for header_name in list(headers.keys()):
+                    if header_name.lower() in ('authorization', 'cookie', 'x-csrftoken'):
+                        headers[header_name] = '[Filtered]'
+        return event
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=SENTRY_ENVIRONMENT,
+        release=SENTRY_RELEASE,
+        integrations=[
+            DjangoIntegration(),
+            CeleryIntegration(monitor_beat_tasks=False),  # this project has no Celery Beat schedule
+            LoggingIntegration(level=logging.INFO, event_level=logging.ERROR),
+        ],
+        # Conservative, error-monitoring-only configuration -- no
+        # performance tracing/session replay unless explicitly raised via
+        # env var, with a deliberate, separate decision later.
+        traces_sample_rate=float(os.environ.get('SENTRY_TRACES_SAMPLE_RATE', '0.0')),
+        send_default_pii=False,
+        # recursive=True is NOT the sentry-sdk default (it defaults to
+        # False, scrubbing only top-level keys) -- explicitly enabled so a
+        # sensitive key nested inside a request body, a webhook payload
+        # local variable, or any other nested dict/list (e.g. a Razorpay
+        # webhook's payload['payment']['entity']['method']-shaped data)
+        # is still caught, not just a top-level match.
+        event_scrubber=EventScrubber(denylist=DEFAULT_DENYLIST + _SENTRY_EXTRA_DENYLIST, recursive=True),
+        before_send=_sentry_before_send,
+    )

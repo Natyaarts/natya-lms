@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
-from .models import Course, Module, VideoLesson, TranslatedAudio, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, CourseInstructor
+from .models import Course, Module, VideoLesson, TranslatedAudio, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, CourseInstructor, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswerOptionSnapshot, Certificate, Assignment, AssignmentSubmission
 from .languages import get_language_name
 
 User = get_user_model()
@@ -106,6 +106,59 @@ class VideoLessonSerializer(serializers.ModelSerializer):
         model = VideoLesson
         fields = ['id', 'title', 'description', 'transcript', 'timed_transcript', 'video_file', 'order', 'module', 'translated_audios']
 
+def _serialize_assessment_summary_for_student(assessment, attempts):
+    """
+    Phase 4.3. Safe assessment summary for the module learning-discovery
+    list -- title/question_count/time_limit/passing_percentage plus this
+    ONE student's own status, derived only from `attempts` (already
+    scoped to `student=request.user` by the caller, one query total for
+    the whole request -- see CourseViewSet.get_serializer_context). Never
+    touches Question/QuestionOption, so there is nothing here that could
+    leak is_correct even by accident.
+
+    Status is read-only/display-only: an IN_PROGRESS attempt whose time
+    limit has technically elapsed is still shown as IN_PROGRESS here
+    (this is a plain GET on a shared course-detail endpoint, so it never
+    writes anything) -- the authoritative expiry check and status flip to
+    TIMED_OUT happens exactly once, when the student actually opens
+    GET .../assessment-attempts/<id>/ (see _expire_if_overdue in
+    courses/views.py), the only source of truth for "is this attempt
+    still actually active."
+    """
+    active = next((a for a in attempts if a.status == AssessmentAttempt.Status.IN_PROGRESS), None)
+    passed_attempt = next((a for a in attempts if a.status == AssessmentAttempt.Status.SUBMITTED and a.passed), None)
+    attempts_used = len(attempts)
+
+    if active is not None:
+        student_status = "IN_PROGRESS"
+        cta_attempt_id = active.id
+    elif passed_attempt is not None:
+        student_status = "PASSED"
+        cta_attempt_id = passed_attempt.id
+    elif attempts_used >= assessment.max_attempts:
+        student_status = "MAX_ATTEMPTS_REACHED"
+        cta_attempt_id = attempts[0].id if attempts else None  # most recent -- default ordering is -started_at
+    elif attempts_used > 0:
+        student_status = "FAILED"
+        cta_attempt_id = None
+    else:
+        student_status = "NOT_STARTED"
+        cta_attempt_id = None
+
+    return {
+        "id": assessment.id,
+        "title": assessment.title,
+        "question_count": assessment.question_count,
+        "time_limit_minutes": assessment.time_limit_minutes,
+        "passing_percentage": assessment.passing_percentage,
+        "max_attempts": assessment.max_attempts,
+        "status": student_status,
+        "attempts_used": attempts_used,
+        "attempts_remaining": max(assessment.max_attempts - attempts_used, 0),
+        "attempt_id": cta_attempt_id,
+    }
+
+
 class ModuleSerializer(serializers.ModelSerializer):
     """
     Course-content security follow-up (post-3.4.4): this is where locked
@@ -122,10 +175,58 @@ class ModuleSerializer(serializers.ModelSerializer):
     `course_content_full_access_ids`/`bypass_content_lock`).
     """
     lessons = VideoLessonSerializer(many=True, read_only=True)
+    assessments = serializers.SerializerMethodField()
+    assignments = serializers.SerializerMethodField()
 
     class Meta:
         model = Module
-        fields = ['id', 'title', 'order', 'lessons', 'course']
+        fields = ['id', 'title', 'order', 'lessons', 'course', 'assessments', 'assignments']
+
+    def get_assignments(self, obj):
+        """
+        Phase 4.7: published assignments for this module, with per-student
+        submission status -- exact same pattern as get_assessments (same
+        access flag, same "never touch the DB when there's nothing to
+        show", same "unpublished never appears regardless of role").
+        Deliberately does NOT feed into completion.py -- assignments are
+        not part of Phase 4.5 module/course completion in this phase.
+        """
+        if not self._has_full_content_access(obj):
+            return []
+
+        assignments = obj.assignments.filter(is_published=True).order_by('order')
+        submissions_by_assignment = self.context.get('student_submissions_by_assignment_id', {})
+        return [
+            _serialize_assignment_summary_for_student(a, submissions_by_assignment.get(a.id, []))
+            for a in assignments
+        ]
+
+    def get_assessments(self, obj):
+        """
+        Phase 4.3: published assessments for this module, with per-student
+        status -- reuses the exact same `_has_full_content_access` flag
+        this serializer already computes for lesson locking (course
+        access OR instructor content-view access), so assessment
+        visibility can never disagree with lesson visibility for the same
+        module. Unauthenticated/no-access requests get `[]` with zero
+        extra queries (the DB is never touched when there's nothing to
+        show); is_published=False assessments never appear here at all,
+        regardless of role -- this is the student learning view, not the
+        admin authoring surface.
+        """
+        if not self._has_full_content_access(obj):
+            return []
+
+        from django.db.models import Count
+        assessments = obj.assessments.filter(is_published=True).annotate(
+            question_count=Count('questions')
+        ).order_by('order')
+
+        attempts_by_assessment = self.context.get('student_attempts_by_assessment_id', {})
+        return [
+            _serialize_assessment_summary_for_student(a, attempts_by_assessment.get(a.id, []))
+            for a in assessments
+        ]
 
     def _has_full_content_access(self, obj):
         if self.context.get('bypass_content_lock'):
@@ -141,8 +242,14 @@ class ModuleSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         has_access = self._has_full_content_access(instance)
+        completed_lesson_ids = self.context.get('completed_lesson_ids', set())
         for lesson_data in data['lessons']:
             lesson_data['is_locked'] = not has_access
+            # Phase 4.5: a completion FACT about this user's own history,
+            # not paid content -- shown regardless of has_access (matches
+            # the existing "outline visible" half of the lock contract,
+            # extended to completion state; see the Phase 4.5 report).
+            lesson_data['is_completed'] = lesson_data['id'] in completed_lesson_ids
             if not has_access:
                 # video_file/transcript/timed_transcript/translated_audios
                 # (and each translated_audios entry's own audio_file) are
@@ -158,14 +265,85 @@ class ModuleSerializer(serializers.ModelSerializer):
                 lesson_data['timed_transcript'] = None
                 lesson_data['video_file'] = None
                 lesson_data['translated_audios'] = []
+
+        # Phase 4.5: module completion, derived from the lesson/assessment
+        # data already built above -- zero extra queries (see
+        # courses/services/completion.py's own docstring). A locked
+        # module gets None for all four fields, never a computed number --
+        # assessments are already hidden ([]) when locked (Phase 4.3), so
+        # computing "100%" from lessons alone here would be actively
+        # wrong, not just imprecise; None means "not applicable," matching
+        # this codebase's own established convention (see
+        # CourseSerializer.progress_percentage's identical choice for
+        # anonymous requests).
+        from .services.completion import compute_module_completion, LOCKED_COMPLETION
+        if has_access:
+            data.update(compute_module_completion(data['lessons'], data['assessments']))
+        else:
+            data.update(LOCKED_COMPLETION)
         return data
 
 class CourseSerializer(serializers.ModelSerializer):
     modules = ModuleSerializer(many=True, read_only=True)
+    progress_percentage = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
-        fields = ['id', 'title', 'description', 'price', 'thumbnail', 'is_published', 'created_at', 'course_type', 'modules']
+        fields = ['id', 'title', 'description', 'price', 'thumbnail', 'is_published', 'created_at', 'course_type', 'modules', 'progress_percentage']
+
+    def get_progress_percentage(self, obj):
+        """
+        Phase 3.9: real, server-computed course-level completion --
+        previously the student dashboard hardcoded "0% Completed" and a
+        static 5% progress bar for every course, never derived from
+        LessonProgress at all. Computed as
+        (this user's completed VideoLessons in this course) /
+        (total VideoLessons in this course), matching exactly how
+        LessonProgress/VideoLessonViewSet.progress already defines
+        "completed" per lesson -- never re-deriving or guessing a
+        different completion rule.
+
+        Anonymous/unauthenticated requests (e.g. the public course catalog,
+        which reuses this same serializer) get None rather than 0 -- "0%"
+        would misleadingly imply a real, checked position; None means
+        "not applicable, no user to compute this for", which the frontend
+        must not render as a percentage.
+        """
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated:
+            return None
+
+        total_lessons = VideoLesson.objects.filter(module__course=obj).count()
+        if total_lessons == 0:
+            return 0
+
+        completed_lessons = LessonProgress.objects.filter(
+            user=user, lesson__module__course=obj, completed=True,
+        ).count()
+        return round((completed_lessons / total_lessons) * 100)
+
+    def to_representation(self, instance):
+        """
+        Phase 4.5: course-level completion, derived from the already-
+        serialized modules above -- zero extra queries. Deliberately
+        separate from `progress_percentage` (Phase 3.9, lesson-only,
+        still used by the dashboard card badge and left completely
+        unchanged) -- this is the module-completion-based metric Phase
+        4.5 introduces, under its own field names, extending rather than
+        replacing the existing one. If any module came back locked (None
+        -- module-level access is course-wide, so either all of a
+        course's modules are locked or none are), the course-level fields
+        are None too, for the same "never fabricate a number" reason.
+        """
+        data = super().to_representation(instance)
+        from .services.completion import compute_course_completion, LOCKED_COURSE_COMPLETION
+        modules_data = data.get('modules', [])
+        if modules_data and any(m.get('is_completed') is None for m in modules_data):
+            data.update(LOCKED_COURSE_COMPLETION)
+        else:
+            data.update(compute_course_completion(modules_data))
+        return data
 
 from .models import Enrollment
 
@@ -523,3 +701,231 @@ class AttendanceSerializer(serializers.ModelSerializer):
             if not LiveBatchStudent.objects.filter(batch=live_class.batch, student=value).exists():
                 raise serializers.ValidationError("This student is not assigned to this class's batch.")
         return value
+
+
+# =============================================================================
+# Phase 4.2: learner-facing assessment serializers.
+#
+# Every serializer below is a deliberate field WHITELIST (explicit
+# `fields = [...]`), never `fields = '__all__'` -- so a field added to
+# Question/QuestionOption in a later phase can't leak to a learner just
+# because nobody remembered to exclude it. is_correct never appears here.
+# =============================================================================
+
+class SafeQuestionOptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QuestionOption
+        fields = ['id', 'option_text', 'order']
+
+
+class SafeQuestionSerializer(serializers.ModelSerializer):
+    options = SafeQuestionOptionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Question
+        fields = ['id', 'question_text', 'question_type', 'order', 'marks', 'is_required', 'options']
+
+
+class SafeAssessmentSerializer(serializers.ModelSerializer):
+    """Assessment metadata safe to show a student before/while attempting
+    it -- passing_percentage/max_attempts/time_limit_minutes are the
+    syllabus, not the answer key, so they're fine to expose."""
+    class Meta:
+        model = Assessment
+        fields = ['id', 'title', 'description', 'instructions', 'passing_percentage', 'max_attempts', 'time_limit_minutes']
+
+
+class AssessmentAttemptListSerializer(serializers.ModelSerializer):
+    """For GET /assessment-attempts/my/ -- attempt history, no question data."""
+    assessment_id = serializers.IntegerField(source='assessment.id', read_only=True)
+    assessment_title = serializers.CharField(source='assessment.title', read_only=True)
+    can_review = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AssessmentAttempt
+        fields = [
+            'id', 'assessment_id', 'assessment_title', 'attempt_number', 'status',
+            'started_at', 'submitted_at', 'score', 'percentage', 'passed', 'can_review',
+        ]
+
+    def get_can_review(self, obj):
+        # Phase 4.4: matches _serialize_finished_attempt's own gate in
+        # courses/views.py -- a SUBMITTED or TIMED_OUT attempt can be
+        # reviewed (GET .../<id>/ already returns the review payload for
+        # both), an IN_PROGRESS one cannot.
+        return obj.status in (AssessmentAttempt.Status.SUBMITTED, AssessmentAttempt.Status.TIMED_OUT)
+
+
+class ReviewQuestionOptionSerializer(serializers.ModelSerializer):
+    """
+    Phase 4.4 CORRECTION. ONLY ever used for a SUBMITTED attempt's review
+    (never for an IN_PROGRESS one -- SafeQuestionOptionSerializer, which
+    has no correctness field at all, is used there). Built over
+    AssessmentAnswerOptionSnapshot, NOT the live QuestionOption --
+    `option_text`/`order` are this snapshot row's own frozen columns
+    (copied from the option at submission time, so a later edit to
+    QuestionOption.option_text can't change what a student's historical
+    review shows), and `is_correct_answer` is sourced from the snapshot's
+    frozen `was_correct`, never from live QuestionOption.is_correct. `id`
+    is the underlying option's real id (via `option_id`) purely so the
+    frontend can match this row against `selected_option_ids` -- no other
+    field here is ever read from the live `option` relation.
+    """
+    id = serializers.IntegerField(source='option_id', read_only=True)
+    is_correct_answer = serializers.BooleanField(source='was_correct', read_only=True)
+
+    class Meta:
+        model = AssessmentAnswerOptionSnapshot
+        fields = ['id', 'option_text', 'order', 'is_correct_answer']
+
+
+class CertificateSerializer(serializers.ModelSerializer):
+    """
+    Phase 4.6. Owner-facing -- returned only from endpoints already
+    scoped to `student=request.user` (see CertificateViewSet). Explicit
+    whitelist, matching every other learner-facing serializer in this
+    module: course_id/course_title are included for convenience (avoids
+    a second round-trip to resolve which course this certificate is
+    for), but nothing assessment-derived (no score/marks/percentage --
+    Phase 4.6 Section 6 explicitly prohibits inventing those on a
+    certificate) is ever included here.
+    """
+    course_id = serializers.IntegerField(source='course.id', read_only=True)
+
+    class Meta:
+        model = Certificate
+        fields = [
+            'id', 'course_id', 'verification_id',
+            'learner_name_snapshot', 'course_title_snapshot', 'issued_at',
+        ]
+        read_only_fields = fields
+
+
+class AdminCertificateSerializer(CertificateSerializer):
+    """
+    Admin Dashboard Completion gap fix. CertificateViewSet has no
+    admin-wide list/retrieve (every action is hard-scoped to
+    student=request.user) -- this is the admin-facing surface, mirroring
+    finance/serializers.py's AdminInvoiceSerializer(MyInvoiceSerializer)
+    exact shape: extends the owner-facing serializer unchanged, adding
+    only WHOSE certificate this is (the entire point of admin
+    inspection), still nothing assessment-derived.
+    """
+    student = serializers.SerializerMethodField()
+
+    class Meta(CertificateSerializer.Meta):
+        fields = CertificateSerializer.Meta.fields + ['student']
+        read_only_fields = fields
+
+    def get_student(self, obj):
+        return {'id': obj.student_id, 'username': obj.student.username}
+
+
+class PublicCertificateVerificationSerializer(serializers.ModelSerializer):
+    """
+    Phase 4.6. The PUBLIC, unauthenticated verification response --
+    deliberately a much narrower whitelist than CertificateSerializer:
+    no `id` (the internal DB pk), no `course_id`, no way to reach the
+    owning student's account at all. Only what's needed to establish
+    "yes, this is a real, valid certificate, issued to this name for
+    this course, on this date" -- exactly Phase 4.6 Section 9's list,
+    nothing more.
+    """
+    class Meta:
+        model = Certificate
+        fields = ['verification_id', 'learner_name_snapshot', 'course_title_snapshot', 'issued_at']
+        read_only_fields = fields
+
+
+# =============================================================================
+# Phase 4.7: Assignments & Grading.
+# =============================================================================
+
+def _serialize_assignment_summary_for_student(assignment, submissions):
+    """
+    Mirrors _serialize_assessment_summary_for_student's exact shape and
+    reasoning: a safe per-assignment summary derived only from THIS
+    student's own submissions (already scoped to student=request.user by
+    the caller -- see CourseViewSet.get_serializer_context), one query
+    total for the whole request. `submissions` is this student's own
+    AssignmentSubmission rows for this assignment, any order.
+    """
+    latest = max(submissions, key=lambda s: s.attempt_number) if submissions else None
+    return {
+        "id": assignment.id,
+        "title": assignment.title,
+        "max_marks": assignment.max_marks,
+        "status": latest.status if latest else "NOT_SUBMITTED",
+        "attempt_number": latest.attempt_number if latest else None,
+        "submission_id": latest.id if latest else None,
+        "marks_awarded": latest.marks_awarded if latest else None,
+        "feedback": latest.feedback if (latest and latest.status != AssignmentSubmission.Status.SUBMITTED) else "",
+    }
+
+
+class AssignmentSerializer(serializers.ModelSerializer):
+    """Safe fields only -- used for the learner-facing detail/submit
+    screen. Matches SafeAssessmentSerializer's exact whitelist philosophy."""
+    class Meta:
+        model = Assignment
+        fields = ['id', 'title', 'description', 'max_marks', 'order']
+        read_only_fields = fields
+
+
+class AdminAssignmentSerializer(serializers.ModelSerializer):
+    """
+    Admin Dashboard Completion gap fix. AssignmentViewSet has no
+    list/create/update/destroy at all (student-facing retrieve/submit
+    only, per this model's own established design -- authoring stays
+    Django-admin-only, mirroring Assessment) -- there was no way for an
+    admin/teacher to see "every assignment across every course" or spot
+    which ones have ungraded submissions waiting, without already
+    knowing a specific assignment_id to query AssignmentSubmissionViewSet.
+    by_assignment. This is purely a read-only aggregate view over
+    already-existing data -- course/module context plus a submission
+    count annotated in the view's queryset (never computed here), no new
+    grading logic, no change to how grading itself works.
+    """
+    course_id = serializers.IntegerField(source='module.course.id', read_only=True)
+    course_title = serializers.CharField(source='module.course.title', read_only=True)
+    module_id = serializers.IntegerField(source='module.id', read_only=True)
+    module_title = serializers.CharField(source='module.title', read_only=True)
+    pending_submission_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Assignment
+        fields = [
+            'id', 'title', 'course_id', 'course_title', 'module_id', 'module_title',
+            'max_marks', 'order', 'is_published', 'pending_submission_count',
+        ]
+        read_only_fields = fields
+
+
+class AssignmentSubmissionSerializer(serializers.ModelSerializer):
+    """
+    Used for both the student's own view of their submission(s) and the
+    teacher/admin grading queue -- exposing the student's own name/email
+    back to themselves is not a security concern (CourseInstructorSerializer's
+    get_user_name is the exact same pattern), and a teacher legitimately
+    needs to know WHOSE submission they're grading. Ownership/authorization
+    itself is enforced entirely at the view/queryset layer, never here.
+    """
+    student_name = serializers.SerializerMethodField()
+    student_email = serializers.EmailField(source='student.email', read_only=True)
+    assignment_title = serializers.CharField(source='assignment.title', read_only=True)
+    max_marks = serializers.DecimalField(source='assignment.max_marks', max_digits=6, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = AssignmentSubmission
+        fields = [
+            'id', 'assignment', 'assignment_title', 'max_marks',
+            'student', 'student_name', 'student_email',
+            'attempt_number', 'status', 'content', 'submitted_file',
+            'marks_awarded', 'feedback', 'graded_by', 'graded_at',
+            'submitted_at', 'updated_at',
+        ]
+        read_only_fields = fields
+
+    def get_student_name(self, obj):
+        name = f"{obj.student.first_name} {obj.student.last_name}".strip()
+        return name or obj.student.username

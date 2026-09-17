@@ -1,5 +1,9 @@
+import logging
+
 from django.db import IntegrityError, transaction
 from .models import Notification
+
+logger = logging.getLogger(__name__)
 
 class NotificationService:
     @staticmethod
@@ -23,6 +27,7 @@ class NotificationService:
                         action_url=action_url,
                         idempotency_key=idempotency_key
                     )
+                NotificationService._schedule_push_delivery(notification)
                 return notification, True
             except IntegrityError as e:
                 # IntegrityError was raised. Let's check if the idempotency_key already exists.
@@ -40,7 +45,41 @@ class NotificationService:
                 notification_type=notification_type,
                 action_url=action_url
             )
+            NotificationService._schedule_push_delivery(notification)
             return notification, True
+
+    @staticmethod
+    def _schedule_push_delivery(notification):
+        """
+        Push delivery gap fix. Enqueues the Celery push-delivery task for
+        this notification -- ONLY called for a genuinely newly-created
+        row (never for an idempotent duplicate hit, which represents an
+        already-notified event and must never re-push).
+
+        Deferred via transaction.on_commit so the Celery worker never
+        races ahead of the Notification row actually being committed and
+        visible (works correctly whether or not the caller wrapped this
+        in its own transaction.atomic() -- if there is none, on_commit
+        fires immediately, which is exactly Django's documented
+        behavior). Both the registration of the callback AND the body of
+        the callback itself are wrapped in try/except: creating a
+        Notification must never fail, and never raise back into the
+        caller's request/task, merely because push delivery (or even
+        enqueueing it) fails -- Celery/Redis being unreachable must be no
+        different from Expo itself being unreachable, from the point of
+        view of "did the Notification get created."
+        """
+        def _enqueue():
+            try:
+                from .tasks import send_push_notification_for_notification
+                send_push_notification_for_notification.delay(notification.id)
+            except Exception:
+                logger.exception(f"Push delivery: failed to enqueue Celery task for notification {notification.id}")
+
+        try:
+            transaction.on_commit(_enqueue)
+        except Exception:
+            logger.exception(f"Push delivery: failed to register on_commit callback for notification {notification.id}")
 
     @staticmethod
     def trigger_payment_success(purchase, previous_status):

@@ -32,15 +32,47 @@ export default function CheckoutButton({ courseId, price }: CheckoutButtonProps)
     checkEnrollment();
   }, [courseId]);
 
+  // CSRF hardening fix: CreateOrderView/VerifyPaymentView now enforce CSRF
+  // for cookie-authenticated (browser) requests -- see
+  // backend/orders/views.py's CSRFEnforcedJWTCookieAuthentication. Same
+  // read-the-cookie-send-as-header pattern already used elsewhere in this
+  // frontend (e.g. courses/[id]/learn/page.tsx's own getCsrfToken).
+  const getCsrfToken = () => {
+    let csrfToken = "";
+    if (typeof document !== 'undefined' && document.cookie) {
+      const cookies = document.cookie.split(';');
+      for (let i = 0; i < cookies.length; i++) {
+        const cookie = cookies[i].trim();
+        if (cookie.startsWith('csrftoken=')) {
+          csrfToken = decodeURIComponent(cookie.substring('csrftoken='.length));
+          break;
+        }
+      }
+    }
+    return csrfToken;
+  };
+
+  // The csrftoken cookie is only ever set as a side effect of GET
+  // api/users/me/ (see backend/users/views.py's CurrentUserView,
+  // @ensure_csrf_cookie) -- guarantee it exists before the POST below
+  // needs to echo it back, rather than assuming some earlier page in this
+  // session already triggered it.
+  const ensureCsrfCookie = async () => {
+    if (getCsrfToken()) return;
+    await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/me/`, { credentials: "include" });
+  };
+
   const handlePayment = async () => {
     setLoading(true);
     try {
+      await ensureCsrfCookie();
       // 1. Create order on the backend
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/orders/create-order/`, {
         method: "POST",
         credentials: "include", // Send auth cookies
         headers: {
           "Content-Type": "application/json",
+          "X-CSRFToken": getCsrfToken(),
         },
         body: JSON.stringify({ course_id: courseId }),
       });
@@ -68,6 +100,7 @@ export default function CheckoutButton({ courseId, price }: CheckoutButtonProps)
             credentials: "include",
             headers: {
               "Content-Type": "application/json",
+              "X-CSRFToken": getCsrfToken(),
             },
             body: JSON.stringify({
               razorpay_payment_id: response.razorpay_payment_id,
