@@ -160,13 +160,14 @@ class CourseViewSet(viewsets.ModelViewSet):
             context['student_submissions_by_assignment_id'] = {}
         return context
 
-    @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def my_courses(self, request):
-        # Fallback for local testing if cookie is blocked
+        # RBAC fix: this previously allowed AllowAny and silently fell back
+        # to get_user_model().objects.first() for anonymous requests, which
+        # returned a real (usually the earliest-created) user's accessible
+        # courses and progress to anyone with no authentication at all.
+        # Authentication is now required; there is no fallback user.
         user = request.user
-        if user.is_anonymous:
-            from django.contrib.auth import get_user_model
-            user = get_user_model().objects.first()
 
         # Phase 3.4.4: was Enrollment-only; now also includes courses
         # granted by a currently-valid Subscription, via the same

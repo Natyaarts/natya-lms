@@ -272,6 +272,71 @@ class RoleChangeAuditLogTests(APITestCase):
         self.assertFalse(admin_instance.has_delete_permission(None))
 
 
+class CustomUserAdminPrivilegeEscalationTests(TestCase):
+    """
+    RBAC audit fix: Django's built-in admin previously let any is_staff
+    user reach is_staff/is_superuser via the User changelist's bulk-edit
+    grid (list_editable) and the object change form, with no equivalent to
+    AdminUserSerializer.validate()'s "only a Super Admin can grant Super
+    Admin or Admin (staff) status" guard on the DRF side. is_staff/
+    is_superuser are now excluded from list_editable, and
+    get_readonly_fields locks them for anyone but a superuser.
+    """
+
+    def setUp(self):
+        from django.contrib.admin.sites import AdminSite
+        from django.test import RequestFactory
+        from .admin import CustomUserAdmin
+        self.admin_instance = CustomUserAdmin(User, AdminSite())
+        self.factory = RequestFactory()
+        self.superuser = User.objects.create_superuser(username='cua_super', password='pw')
+        self.staff_admin = User.objects.create_user(username='cua_staff', password='pw', is_staff=True)
+        self.target = User.objects.create_user(username='cua_target', password='pw', is_teacher=True)
+
+    def _request_as(self, user):
+        request = self.factory.get('/admin/users/user/')
+        request.user = user
+        return request
+
+    def test_is_staff_and_is_superuser_not_bulk_editable(self):
+        self.assertNotIn('is_staff', self.admin_instance.list_editable)
+        self.assertNotIn('is_superuser', self.admin_instance.list_editable)
+
+    def test_legitimate_lms_roles_remain_bulk_editable(self):
+        self.assertIn('is_student', self.admin_instance.list_editable)
+        self.assertIn('is_teacher', self.admin_instance.list_editable)
+
+    def test_non_superuser_admin_cannot_edit_staff_or_superuser_fields(self):
+        readonly = self.admin_instance.get_readonly_fields(self._request_as(self.staff_admin))
+        self.assertIn('is_staff', readonly)
+        self.assertIn('is_superuser', readonly)
+
+    def test_non_superuser_admin_lms_role_fields_remain_editable(self):
+        readonly = self.admin_instance.get_readonly_fields(self._request_as(self.staff_admin))
+        self.assertNotIn('is_student', readonly)
+        self.assertNotIn('is_teacher', readonly)
+
+    def test_superuser_retains_full_ability_to_edit_staff_and_superuser_fields(self):
+        readonly = self.admin_instance.get_readonly_fields(self._request_as(self.superuser))
+        self.assertNotIn('is_staff', readonly)
+        self.assertNotIn('is_superuser', readonly)
+
+    def test_change_form_excludes_staff_and_superuser_fields_for_non_superuser(self):
+        # Exercises the real Django admin form-generation path (get_form
+        # internally calls get_readonly_fields and drops those fields from
+        # the form entirely) -- not just the readonly_fields list in
+        # isolation, so a POSTed is_staff/is_superuser value from a
+        # non-superuser Admin has no field to bind to at all.
+        form_class = self.admin_instance.get_form(self._request_as(self.staff_admin), self.target)
+        self.assertNotIn('is_staff', form_class.base_fields)
+        self.assertNotIn('is_superuser', form_class.base_fields)
+
+    def test_change_form_includes_staff_and_superuser_fields_for_superuser(self):
+        form_class = self.admin_instance.get_form(self._request_as(self.superuser), self.target)
+        self.assertIn('is_staff', form_class.base_fields)
+        self.assertIn('is_superuser', form_class.base_fields)
+
+
 class GoogleMobileLoginAudienceTests(APITestCase):
     """
     Production Environment Verification follow-up. MobileGoogleLoginView

@@ -83,6 +83,38 @@ class CourseProgressPercentageTests(APITestCase):
         self.assertEqual(other_data['progress_percentage'], 0)
 
 
+class MyCoursesAuthenticationSecurityTests(APITestCase):
+    """
+    RBAC audit fix: CourseViewSet.my_courses previously allowed AllowAny
+    and, for an anonymous caller, silently substituted
+    get_user_model().objects.first() as the acting user -- disclosing a
+    real (usually the earliest-created) account's accessible courses and
+    per-course progress to anyone with no authentication at all. The
+    endpoint is now IsAuthenticated with no anonymous fallback.
+    """
+
+    def setUp(self):
+        self.student_a = User.objects.create_user(username='mycourses_student_a', password='pw')
+        self.student_b = User.objects.create_user(username='mycourses_student_b', password='pw')
+        self.course_a = Course.objects.create(title='Student A Course', price=100, is_published=True)
+        self.course_b = Course.objects.create(title='Student B Course', price=100, is_published=True)
+        from .models import Enrollment
+        Enrollment.objects.create(user=self.student_a, course=self.course_a)
+        Enrollment.objects.create(user=self.student_b, course=self.course_b)
+
+    def test_unauthenticated_request_is_rejected(self):
+        response = self.client.get(reverse('course-my-courses'))
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_authenticated_student_cannot_see_another_students_courses(self):
+        self.client.force_authenticate(self.student_a)
+        response = self.client.get(reverse('course-my-courses'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        returned_ids = {c['id'] for c in response.data}
+        self.assertIn(self.course_a.id, returned_ids)
+        self.assertNotIn(self.course_b.id, returned_ids)
+
+
 class CourseInstructorAuditLogTests(APITestCase):
     def setUp(self):
         self.admin = User.objects.create_superuser(username='ci_audit_admin', password='pw')
