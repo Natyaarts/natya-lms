@@ -28,6 +28,11 @@ interface CustomVideoPlayerProps {
   // Changes whenever the active lesson changes, so the player can reset
   // language selection and stop any alternate audio from the old lesson.
   lessonKey?: string | number;
+  // Phase 4.9: fired on every timeUpdate tick with the current playback
+  // position and known duration -- lets the screen that owns this player
+  // save lesson-completion progress without this component needing to
+  // know anything about lessons/courses/the API itself.
+  onProgress?: (currentTime: number, duration: number) => void;
 }
 
 // How far the alternate audio track is allowed to drift from the video
@@ -35,7 +40,7 @@ interface CustomVideoPlayerProps {
 // too aggressively causes audible stutter.
 const SYNC_DRIFT_TOLERANCE = 0.3;
 
-export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey }: CustomVideoPlayerProps) {
+export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey, onProgress }: CustomVideoPlayerProps) {
   const [showControls, setShowControls] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -90,6 +95,7 @@ export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey 
     if (activeAudioCode !== 'en' && Math.abs(altPlayer.currentTime - payload.currentTime) > SYNC_DRIFT_TOLERANCE) {
       altPlayer.currentTime = payload.currentTime;
     }
+    onProgress?.(payload.currentTime, duration);
   });
 
   // Track playing state and mirror play/pause onto the alternate audio track.

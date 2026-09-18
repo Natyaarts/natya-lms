@@ -18,3 +18,13 @@ static/
 # Stray extracted deployment artifacts -- never part of the real app source.
 test_zip_extract/
 *-release.zip
+deploy-manual.zip
+
+# Local tooling / pulled EB server logs / Expo bundle-log exports -- none
+# of these are application source, and EB/Expo logs specifically can
+# contain runtime request details that don't belong in version control.
+.claude/
+BundleLogs-*/
+BundleLogs-*.zip
+Newlog/
+log/

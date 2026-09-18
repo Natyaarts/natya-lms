@@ -88,13 +88,14 @@ class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
     student_name = serializers.SerializerMethodField()
     student_email = serializers.EmailField(source='user.email', read_only=True)
+    has_invoice = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
         fields = [
             'id', 'order_number', 'student_name', 'student_email', 'status',
             'subtotal', 'discount_amount', 'total_amount', 'currency',
-            'razorpay_order_id', 'items', 'created_at', 'updated_at'
+            'razorpay_order_id', 'items', 'has_invoice', 'created_at', 'updated_at'
         ]
         read_only_fields = fields
 
@@ -102,6 +103,52 @@ class OrderSerializer(serializers.ModelSerializer):
         if obj.user.first_name or obj.user.last_name:
             return f"{obj.user.first_name} {obj.user.last_name}".strip()
         return obj.user.username
+
+    def get_has_invoice(self, obj):
+        # Mobile purchase-history gap fix: purely observational -- reads
+        # the real FK relationship finance.Invoice.order already has
+        # (related_name='invoices'), never duplicates invoice generation
+        # or business logic. Lets a client offer a "View Invoice" action
+        # without needing a numeric invoice id (my-invoices/ has no
+        # order_id/purchase_id filter to jump to a specific one anyway --
+        # this only answers "does one exist", nothing more).
+        #
+        # bool(obj.invoices.all()), not .exists() -- the view's queryset
+        # prefetch_related('invoices')s this relation; .all() reuses that
+        # cached result (no extra query per row), while .exists() would
+        # always issue a fresh query and silently defeat the prefetch.
+        return bool(obj.invoices.all())
+
+
+class MyPurchaseSerializer(serializers.ModelSerializer):
+    """
+    Mobile purchase-history gap fix. The legacy single-course Purchase
+    flow (CreateOrderView/VerifyPaymentView/fulfill_purchase -- still the
+    active path behind every "Buy This Course" checkout, distinct from
+    the newer multi-item Order flow OrderSerializer above already covers)
+    has never had a student-facing list/detail endpoint at all -- only
+    AdminPurchaseSerializer (admin-only, purchases-admin/) exists. This
+    mirrors that serializer's shape for the student's OWN purchases, minus
+    razorpay_order_id/razorpay_payment_id and the redundant student_name/
+    student_email (same "no customer identity restated, no raw gateway id
+    exposed" convention MyInvoiceSerializer/MyRefundSerializer already
+    established for every other customer-facing finance/order serializer
+    in this codebase). No currency field -- the Purchase model has never
+    had one (amount is implicitly INR via course.price, same as
+    everywhere else Purchase is already serialized).
+    """
+    course_title = serializers.CharField(source='course.title', read_only=True)
+    has_invoice = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Purchase
+        fields = ['id', 'course', 'course_title', 'amount', 'status', 'has_invoice', 'created_at', 'updated_at']
+        read_only_fields = fields
+
+    def get_has_invoice(self, obj):
+        # Same prefetch_related('invoices') + bool(.all()) reasoning as
+        # OrderSerializer.get_has_invoice above.
+        return bool(obj.invoices.all())
 
 
 class SubscriptionPlanSummarySerializer(serializers.ModelSerializer):
@@ -149,6 +196,28 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         # way (Subscription.access_until/current_period_end themselves),
         # not this display-only helper.
         return obj.access_until or obj.current_period_end
+
+
+class AdminSubscriptionSerializer(SubscriptionSerializer):
+    """
+    Admin Dashboard Completion gap fix. AdminSubscriptionViewSet had only
+    one action (cancel-immediate) and no list/retrieve at all -- this is
+    the admin-facing surface, mirroring finance/serializers.py's
+    AdminInvoiceSerializer(MyInvoiceSerializer)/AdminRefundSerializer
+    exact shape: extends the owner-facing serializer unchanged, adding
+    only WHOSE subscription this is (the entire point of admin
+    inspection) -- still never exposes razorpay_subscription_id/
+    razorpay_plan_id, matching SubscriptionSerializer's own stated reason
+    for omitting them.
+    """
+    user = serializers.SerializerMethodField()
+
+    class Meta(SubscriptionSerializer.Meta):
+        fields = SubscriptionSerializer.Meta.fields + ['user']
+        read_only_fields = fields
+
+    def get_user(self, obj):
+        return {'id': obj.user_id, 'username': obj.user.username}
 
 
 class SubscriptionPlanCourseSerializer(serializers.ModelSerializer):

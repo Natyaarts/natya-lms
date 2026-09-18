@@ -112,15 +112,62 @@ class CourseViewSet(viewsets.ModelViewSet):
             context['course_content_full_access_ids'] = (
                 accessible_course_ids_for_user(user) | instructor_course_ids_for_user(user)
             )
+
+        # Phase 4.3: same "compute once per request" precedent as the two
+        # context keys above -- ModuleSerializer.get_assessments needs this
+        # user's own attempts to show per-assessment status, and fetching
+        # ALL of it here in one query (there's no realistic number of
+        # attempts a single student accrues that makes this expensive) means
+        # the cost is O(1) regardless of how many courses/modules/
+        # assessments end up in the response, never one query per
+        # assessment. Anonymous requests skip this entirely -- there is
+        # nothing to look up and no reason to touch the DB for them.
+        if user.is_authenticated:
+            from collections import defaultdict
+            from .models import AssessmentAttempt
+            attempts_by_assessment = defaultdict(list)
+            for attempt in AssessmentAttempt.objects.filter(student=user):
+                attempts_by_assessment[attempt.assessment_id].append(attempt)
+            context['student_attempts_by_assessment_id'] = attempts_by_assessment
+        else:
+            context['student_attempts_by_assessment_id'] = {}
+
+        # Phase 4.5: same "compute once per request" precedent as the two
+        # context keys above -- module/course completion (see
+        # courses/services/completion.py) needs to know which of THIS
+        # user's lessons are complete, and one query for the whole
+        # request (regardless of how many courses/modules/lessons appear
+        # in the response) is the only way to avoid a query per lesson.
+        if user.is_authenticated:
+            from .models import LessonProgress
+            context['completed_lesson_ids'] = set(
+                LessonProgress.objects.filter(user=user, completed=True).values_list('lesson_id', flat=True)
+            )
+        else:
+            context['completed_lesson_ids'] = set()
+
+        # Phase 4.7: same "compute once per request" precedent as the
+        # three context keys above -- ModuleSerializer.get_assignments
+        # needs this user's own submissions to show per-assignment status.
+        if user.is_authenticated:
+            from collections import defaultdict
+            from .models import AssignmentSubmission
+            submissions_by_assignment = defaultdict(list)
+            for submission in AssignmentSubmission.objects.filter(student=user):
+                submissions_by_assignment[submission.assignment_id].append(submission)
+            context['student_submissions_by_assignment_id'] = submissions_by_assignment
+        else:
+            context['student_submissions_by_assignment_id'] = {}
         return context
 
-    @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def my_courses(self, request):
-        # Fallback for local testing if cookie is blocked
+        # RBAC fix: this previously allowed AllowAny and silently fell back
+        # to get_user_model().objects.first() for anonymous requests, which
+        # returned a real (usually the earliest-created) user's accessible
+        # courses and progress to anyone with no authentication at all.
+        # Authentication is now required; there is no fallback user.
         user = request.user
-        if user.is_anonymous:
-            from django.contrib.auth import get_user_model
-            user = get_user_model().objects.first()
 
         # Phase 3.4.4: was Enrollment-only; now also includes courses
         # granted by a currently-valid Subscription, via the same
@@ -171,6 +218,18 @@ class CourseViewSet(viewsets.ModelViewSet):
                 CourseInstructor.objects.filter(course=course, is_primary=True).update(is_primary=False)
             instance = serializer.save(course=course)
 
+        # Phase 3.9: audit trail for course-instructor assignment (affects
+        # both access and, via is_primary/commission_rate, revenue
+        # attribution -- see finance/services.py). Never blocks the
+        # assignment itself if logging somehow fails (AdminAuditLog.record
+        # never raises).
+        from users.models import AdminAuditLog
+        AdminAuditLog.record(
+            actor=request.user, action='COURSE_INSTRUCTOR_ASSIGNED', target_type='CourseInstructor', target_id=instance.id,
+            description=f"Assigned {instance.user.username} as {instance.role} on course #{course.id} ({course.title}).",
+            metadata={'course_id': course.id, 'user_id': instance.user_id, 'role': instance.role, 'is_primary': instance.is_primary},
+        )
+
         return Response(CourseInstructorSerializer(instance).data, status=drf_status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['delete'], url_path=r'instructors/(?P<instructor_id>[^/.]+)')
@@ -185,7 +244,17 @@ class CourseViewSet(viewsets.ModelViewSet):
             ci = CourseInstructor.objects.get(pk=instructor_id, course=course)
         except (CourseInstructor.DoesNotExist, ValueError):
             return Response({"error": "Instructor assignment not found for this course."}, status=drf_status.HTTP_404_NOT_FOUND)
+
+        removed_user_id, removed_role = ci.user_id, ci.role
         ci.delete()
+
+        from users.models import AdminAuditLog
+        AdminAuditLog.record(
+            actor=request.user, action='COURSE_INSTRUCTOR_REMOVED', target_type='CourseInstructor', target_id=instructor_id,
+            description=f"Removed instructor assignment (user #{removed_user_id}, role={removed_role}) from course #{course.id} ({course.title}).",
+            metadata={'course_id': course.id, 'user_id': removed_user_id, 'role': removed_role},
+        )
+
         return Response(status=drf_status.HTTP_204_NO_CONTENT)
 
 class ModuleViewSet(viewsets.ModelViewSet):
@@ -522,8 +591,411 @@ class VideoLessonViewSet(viewsets.ModelViewSet):
                         progress_obj.completed = False
 
             progress_obj.save()
+
+            # Phase 4.6: eager certificate-issuance trigger -- fires
+            # after the save above has committed (LessonProgress isn't
+            # wrapped in an explicit transaction.atomic() here, so this
+            # read of the just-saved row is never "in-flight" data).
+            # Swallows its own errors entirely (see
+            # maybe_issue_certificate_and_notify's own docstring) --
+            # never breaks this response. A lazy fallback
+            # (CertificateViewSet.by_course) still covers any missed case.
+            if progress_obj.completed:
+                from .services.certificates import maybe_issue_certificate_and_notify
+                maybe_issue_certificate_and_notify(lesson.module.course, user)
+
             serializer = LessonProgressSerializer(progress_obj)
             return Response(serializer.data)
+
+
+# =============================================================================
+# Phase 4.2: learner-facing assessment attempt/scoring endpoints.
+#
+# Course-access is checked via the SAME centralized
+# courses.services.access.user_has_course_access used by `progress` above
+# -- no separate/duplicate access system. Ownership of an attempt is
+# enforced by scoping every queryset to `student=request.user` (so a
+# non-owned attempt id 404s exactly like a non-existent one, matching
+# this codebase's established "Subscription not found"-style precedent
+# in orders/views.py rather than a 403 that would confirm the id exists).
+# =============================================================================
+
+from decimal import Decimal
+
+from django.db import transaction
+from django.db.models import Prefetch
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from rest_framework import mixins
+from rest_framework.pagination import PageNumberPagination
+
+from .models import Assessment, AssessmentAttempt, AssessmentAnswerOption
+from .serializers import (
+    SafeAssessmentSerializer, SafeQuestionSerializer, SafeQuestionOptionSerializer, AssessmentAttemptListSerializer,
+    ReviewQuestionOptionSerializer,
+)
+from .services.access import user_has_course_access
+from .services.assessment_scoring import AnswerValidationError, score_attempt, validate_and_normalize_answers
+
+
+def _attempt_deadline(attempt):
+    """None if the assessment has no time limit."""
+    minutes = attempt.assessment.time_limit_minutes
+    if minutes is None:
+        return None
+    from datetime import timedelta
+    return attempt.started_at + timedelta(minutes=minutes)
+
+
+def _expire_if_overdue(attempt):
+    """
+    Lazy expiry check -- there is no background job flipping IN_PROGRESS
+    attempts to TIMED_OUT the instant their deadline passes; instead,
+    every read/write path that touches an attempt calls this first, so an
+    overdue attempt is always corrected before it's acted on. Returns the
+    (possibly updated) attempt.
+    """
+    if attempt.status != AssessmentAttempt.Status.IN_PROGRESS:
+        return attempt
+    deadline = _attempt_deadline(attempt)
+    if deadline is not None and timezone.now() > deadline:
+        attempt.status = AssessmentAttempt.Status.TIMED_OUT
+        attempt.save(update_fields=['status', 'updated_at'])
+    return attempt
+
+
+def _serialize_in_progress_attempt(attempt):
+    questions = attempt.assessment.questions.prefetch_related('options').all()
+    return {
+        "attempt_id": attempt.id,
+        "attempt_number": attempt.attempt_number,
+        "status": attempt.status,
+        "started_at": attempt.started_at,
+        "deadline": _attempt_deadline(attempt),
+        "assessment": SafeAssessmentSerializer(attempt.assessment).data,
+        "questions": SafeQuestionSerializer(questions, many=True).data,
+    }
+
+
+def _build_review_questions(attempt):
+    """
+    Phase 4.4 + CORRECTION. The per-question review list for a
+    SUBMITTED/TIMED_OUT attempt.
+
+    question_text/question_type/order/explanation are live -- descriptive
+    facts about the question, never part of the frozen result (unchanged
+    from the original Phase 4.4 design; the CORRECTION did not touch
+    these, only marks/option-correctness/option-text, per the audit).
+
+    For a question that WAS answered (has an AssessmentAnswer row --
+    every question in the assessment at submission time, for a SUBMITTED
+    attempt): "marks" is the answer's frozen `marks_possible`, and
+    "options" comes from that answer's AssessmentAnswerOptionSnapshot
+    rows -- frozen option_text/order/was_correct, never the live
+    QuestionOption. This is what makes the review immune to a later
+    admin editing Question.marks, QuestionOption.is_correct, or
+    QuestionOption.option_text (see the Phase 4.4 CORRECTION report).
+
+    A TIMED_OUT attempt has NO AssessmentAnswer rows at all (nothing was
+    ever submitted under this project's final-submission-only design) --
+    there is no historical snapshot to show, so these questions fall back
+    to the CURRENT live question/options with NO correctness reveal
+    (SafeQuestionOptionSerializer's shape -- no is_correct_answer key at
+    all), never deriving anything from live QuestionOption.is_correct.
+    This is a deliberate behavior change from the original Phase 4.4
+    design (which showed live is_correct_answer for a timed-out review);
+    the CORRECTION's "never show live correctness in review" rule applies
+    here too, and a timed-out attempt simply has nothing frozen to show.
+
+    Fixed query count regardless of question count (5, 20, or 50
+    questions): one for the assessment's questions, one for their
+    options (both via prefetch_related, used only for the TIMED_OUT
+    fallback and marks display), one for this attempt's answers, one for
+    those answers' selected-option links, one for those answers' option
+    snapshots -- never one query per question.
+    """
+    questions = attempt.assessment.questions.prefetch_related('options').all()
+    answers = attempt.answers.prefetch_related(
+        Prefetch('option_links', queryset=AssessmentAnswerOption.objects.select_related('option')),
+        'option_snapshots',
+    )
+    answers_by_question_id = {a.question_id: a for a in answers}
+
+    review = []
+    for question in questions:
+        answer = answers_by_question_id.get(question.id)
+        if answer is not None:
+            selected_option_ids = [link.option_id for link in answer.option_links.all()]
+            options_data = ReviewQuestionOptionSerializer(answer.option_snapshots.all(), many=True).data
+            marks_shown = answer.marks_possible
+            answered_correctly = answer.is_correct
+            marks_awarded = answer.marks_awarded
+        else:
+            # TIMED_OUT, never scored -- no snapshot exists; show the
+            # live question with NO correctness reveal at all.
+            selected_option_ids = []
+            options_data = SafeQuestionOptionSerializer(question.options.all(), many=True).data
+            marks_shown = question.marks
+            answered_correctly = False
+            marks_awarded = Decimal("0.00")
+
+        review.append({
+            "id": question.id,
+            "question_text": question.question_text,
+            "question_type": question.question_type,
+            "order": question.order,
+            "marks": marks_shown,
+            "explanation": question.explanation,
+            "options": options_data,
+            "selected_option_ids": selected_option_ids,
+            "answered_correctly": answered_correctly,
+            "marks_awarded": marks_awarded,
+        })
+    return review, answers_by_question_id
+
+
+def _serialize_finished_attempt(attempt, include_review=True):
+    """
+    Phase 4.4: extended with the assessment summary, frozen total_marks,
+    and (by default) the full per-question review -- see
+    _build_review_questions for why this is safe to include unconditionally
+    here: this function is only ever called for a SUBMITTED or TIMED_OUT
+    attempt (never IN_PROGRESS -- that path uses
+    _serialize_in_progress_attempt, which has no correctness data at
+    all), so "answer keys must never be exposed before submission" is
+    enforced by WHICH function gets called, not by a flag on this one.
+    `include_review=False` exists only for the `submit` response, which
+    doesn't need to re-fetch what it just built in the same request.
+    """
+    data = {
+        "attempt_id": attempt.id,
+        "attempt_number": attempt.attempt_number,
+        "status": attempt.status,
+        "started_at": attempt.started_at,
+        "submitted_at": attempt.submitted_at,
+        "assessment": SafeAssessmentSerializer(attempt.assessment).data,
+        "score": attempt.score,
+        "percentage": attempt.percentage,
+        "passed": attempt.passed,
+        "total_marks": attempt.total_marks,
+    }
+    if not include_review:
+        return data
+
+    review, answers_by_question_id = _build_review_questions(attempt)
+    data["questions"] = review
+    # Frozen for a SUBMITTED attempt (one AssessmentAnswer row exists per
+    # question that existed in the assessment at submission time, and
+    # PROTECT means that row can never silently disappear); a TIMED_OUT
+    # attempt has none, so this falls back to the assessment's CURRENT
+    # question count -- purely informational, since nothing was ever
+    # actually scored for a timed-out attempt.
+    data["question_count"] = len(answers_by_question_id) or attempt.assessment.questions.count()
+    data["correct_count"] = sum(1 for a in answers_by_question_id.values() if a.is_correct)
+    return data
+
+
+class AssessmentViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """
+    No list on purpose -- there is no generic "browse assessments" API in
+    this phase (Django admin remains the authoring surface, per Phase
+    4.1). `retrieve` DOES exist, added specifically because the frontend
+    "start assessment" screen (Phase 4.2's own explicit product
+    requirement) needs to show title/instructions/passing_percentage/
+    max_attempts/time_limit_minutes BEFORE the student commits to
+    starting -- and `start` can't serve that purpose itself, since
+    calling it creates the attempt and starts the time-limit clock. This
+    is intentionally the same SafeAssessmentSerializer data `start`
+    already returns, with zero side effects, and the exact same
+    access/published checks -- not a general-purpose browsing endpoint.
+    """
+    queryset = Assessment.objects.all()
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_throttles(self):
+        # General API rate limiting gap fix -- only `start` gets the
+        # dedicated scope; `retrieve` (the preview screen, read-only) stays
+        # on the general 'user' baseline.
+        if self.action == 'start':
+            return [AssessmentStartRateThrottle()]
+        return super().get_throttles()
+
+    def retrieve(self, request, pk=None):
+        assessment, error_response = self._get_accessible_published_assessment(request, pk)
+        if error_response:
+            return error_response
+
+        existing = list(AssessmentAttempt.objects.filter(assessment=assessment, student=request.user))
+        active = next((a for a in existing if a.status == AssessmentAttempt.Status.IN_PROGRESS), None)
+        if active is not None:
+            active = _expire_if_overdue(active)
+            if active.status != AssessmentAttempt.Status.IN_PROGRESS:
+                active = None
+
+        data = SafeAssessmentSerializer(assessment).data
+        data["question_count"] = assessment.questions.count()
+        data["attempts_used"] = len(existing)
+        data["attempts_remaining"] = max(assessment.max_attempts - len(existing), 0)
+        data["active_attempt_id"] = active.id if active else None
+        data["can_start"] = active is not None or len(existing) < assessment.max_attempts
+        return Response(data)
+
+    def _get_accessible_published_assessment(self, request, pk):
+        """Shared by retrieve/start: 404 for unpublished/nonexistent (never
+        confirms existence), 403 for published-but-no-course-access."""
+        try:
+            assessment = Assessment.objects.select_related('module__course').get(pk=pk)
+        except Assessment.DoesNotExist:
+            return None, Response({"error": "Assessment not found."}, status=drf_status.HTTP_404_NOT_FOUND)
+
+        user = request.user
+        if not assessment.is_published and not user.is_superuser:
+            return None, Response({"error": "Assessment not found."}, status=drf_status.HTTP_404_NOT_FOUND)
+
+        course = assessment.module.course
+        if not user_has_course_access(user, course) and not user.is_superuser:
+            return None, Response({"error": "You do not have access to this course."}, status=drf_status.HTTP_403_FORBIDDEN)
+
+        return assessment, None
+
+    @action(detail=True, methods=['post'], url_path='start')
+    def start(self, request, pk=None):
+        assessment, error_response = self._get_accessible_published_assessment(request, pk)
+        if error_response:
+            return error_response
+        user = request.user
+
+        if not assessment.questions.exists():
+            return Response({"error": "This assessment has no questions yet."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            # Lock any existing rows for this (student, assessment) pair
+            # before counting/creating, so two concurrent `start` calls
+            # can't both compute the same attempt_number or both slip
+            # past a max_attempts check that's about to be exceeded --
+            # the UniqueConstraints on the model are the final backstop.
+            existing = list(
+                AssessmentAttempt.objects.select_for_update().filter(assessment=assessment, student=user)
+            )
+
+            active = next((a for a in existing if a.status == AssessmentAttempt.Status.IN_PROGRESS), None)
+            if active is not None:
+                active = _expire_if_overdue(active)
+                if active.status == AssessmentAttempt.Status.IN_PROGRESS:
+                    return Response(_serialize_in_progress_attempt(active), status=drf_status.HTTP_200_OK)
+                # else: it just expired -- fall through and (if attempts remain) start a new one.
+                existing = list(
+                    AssessmentAttempt.objects.select_for_update().filter(assessment=assessment, student=user)
+                )
+
+            if len(existing) >= assessment.max_attempts:
+                return Response(
+                    {"error": f"Maximum attempts ({assessment.max_attempts}) reached for this assessment."},
+                    status=drf_status.HTTP_403_FORBIDDEN,
+                )
+
+            attempt = AssessmentAttempt.objects.create(
+                assessment=assessment, student=user, attempt_number=len(existing) + 1,
+            )
+
+        return Response(_serialize_in_progress_attempt(attempt), status=drf_status.HTTP_201_CREATED)
+
+
+class AssessmentAttemptViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """
+    retrieve: GET /assessment-attempts/<id>/ -- owner only.
+    submit:   POST /assessment-attempts/<id>/submit/
+    my:       GET /assessment-attempts/my/ -- this student's own history.
+
+    No list/create/update/destroy -- attempts are only ever created via
+    AssessmentViewSet.start and finalized via `submit`.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_throttles(self):
+        # General API rate limiting gap fix -- only `submit` gets the
+        # dedicated scope; `retrieve`/`my` (read-only) stay on the general
+        # 'user' baseline.
+        if self.action == 'submit':
+            return [AssessmentSubmitRateThrottle()]
+        return super().get_throttles()
+
+    def get_queryset(self):
+        # Ownership boundary: every lookup is pre-scoped to the
+        # requesting user, so a non-owned id 404s like a nonexistent one.
+        return AssessmentAttempt.objects.filter(student=self.request.user).select_related('assessment')
+
+    def retrieve(self, request, pk=None):
+        attempt = self.get_object()
+        attempt = _expire_if_overdue(attempt)
+        if attempt.status == AssessmentAttempt.Status.IN_PROGRESS:
+            return Response(_serialize_in_progress_attempt(attempt))
+        return Response(_serialize_finished_attempt(attempt))
+
+    @action(detail=True, methods=['post'], url_path='submit')
+    def submit(self, request, pk=None):
+        with transaction.atomic():
+            attempt = get_object_or_404(
+                AssessmentAttempt.objects.select_for_update().filter(student=request.user), pk=pk
+            )
+            attempt = _expire_if_overdue(attempt)
+
+            if attempt.status == AssessmentAttempt.Status.TIMED_OUT:
+                return Response(
+                    {"error": "This attempt has expired and cannot be submitted.", "status": attempt.status},
+                    status=drf_status.HTTP_400_BAD_REQUEST,
+                )
+            if attempt.status != AssessmentAttempt.Status.IN_PROGRESS:
+                # Duplicate submission -- idempotent/safe rejection, not
+                # a re-score. The first submission's result stands.
+                return Response(
+                    {"error": "This attempt has already been submitted.", "status": attempt.status},
+                    status=drf_status.HTTP_409_CONFLICT,
+                )
+
+            try:
+                normalized, questions_by_id = validate_and_normalize_answers(attempt.assessment, request.data.get('answers', []))
+            except AnswerValidationError as e:
+                return Response({"error": str(e)}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+            score_attempt(attempt, normalized, questions=questions_by_id.values())
+            attempt.status = AssessmentAttempt.Status.SUBMITTED
+            attempt.submitted_at = timezone.now()
+            attempt.save()
+
+        # Phase 4.6: eager certificate-issuance trigger -- deliberately
+        # OUTSIDE the `with transaction.atomic():` block above, so it only
+        # ever runs after this attempt's passing result has actually
+        # committed (Phase 4.6 Section 16's explicit "avoid race
+        # conditions... before the transaction commits"). Never breaks
+        # this response; see maybe_issue_certificate_and_notify's own
+        # docstring.
+        if attempt.passed:
+            from .services.certificates import maybe_issue_certificate_and_notify
+            maybe_issue_certificate_and_notify(attempt.assessment.module.course, request.user)
+
+        return Response(_serialize_finished_attempt(attempt))
+
+    @action(detail=False, methods=['get'], url_path='my')
+    def my(self, request):
+        queryset = self.get_queryset().order_by('-started_at')
+        assessment_id = request.query_params.get('assessment_id')
+        if assessment_id is not None:
+            try:
+                queryset = queryset.filter(assessment_id=int(assessment_id))
+            except (TypeError, ValueError):
+                return Response({"error": "assessment_id must be an integer."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        paginator = AssessmentAttemptResultsSetPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        serializer = AssessmentAttemptListSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class AssessmentAttemptResultsSetPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 100
 
 
 from rest_framework import viewsets
@@ -1210,3 +1682,388 @@ class TeacherAvailabilityViewSet(viewsets.ModelViewSet):
         if not (request_user.is_superuser or request_user.is_staff) and instance.user != request_user:
             raise DRFPermissionDenied("You can only delete your own availability.")
         instance.delete()
+
+
+# =============================================================================
+# Phase 4.6: Course Completion Certificates.
+# =============================================================================
+
+from .models import Certificate
+from .serializers import AdminCertificateSerializer, CertificateSerializer, PublicCertificateVerificationSerializer
+from .services.certificates import get_or_create_certificate
+from .throttles import (
+    CertificateVerificationThrottle, AssessmentStartRateThrottle,
+    AssessmentSubmitRateThrottle, AssignmentSubmitRateThrottle,
+)
+
+
+class CertificateViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """
+    Learner-facing certificate access, plus one public/unauthenticated
+    verification action. No `create`/`update`/`destroy` -- a certificate
+    is only ever produced by services.certificates.get_or_create_certificate
+    (called from `by_course` below, or eagerly from
+    VideoLessonViewSet.progress/AssessmentAttemptViewSet.submit), never
+    directly POSTed by a client.
+
+    list/retrieve are both scoped to `student=request.user` -- the exact
+    same ownership convention every other learner-facing viewset in this
+    module already uses (a non-owned id 404s, matching the established
+    "don't confirm existence" precedent), so this never needs to check
+    `request.user` against `instance.student` by hand.
+    """
+    serializer_class = CertificateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Certificate.objects.filter(student=self.request.user).select_related('course')
+
+    @action(detail=False, methods=['get'], url_path=r'course/(?P<course_id>[^/.]+)')
+    def by_course(self, request, course_id=None):
+        """
+        GET /api/courses/certificates/course/<course_id>/ -- the lazy-
+        generation entry point (Phase 4.6 Section 5's "generated when the
+        learner explicitly requests it"), and the self-healing fallback
+        for the two eager trigger points. Eligibility is re-checked here
+        every time via get_or_create_certificate -- never trusts that a
+        certificate row existing means the course is STILL complete
+        (it always is, since nothing in this codebase ever un-completes a
+        lesson/attempt, but this function still never assumes it).
+        """
+        course = get_object_or_404(Course, pk=course_id)
+        certificate, _created = get_or_create_certificate(course, request.user)
+        if certificate is None:
+            return Response(
+                {"error": "This course is not yet complete. Finish all lessons and pass all required assessments to earn a certificate."},
+                status=drf_status.HTTP_404_NOT_FOUND,
+            )
+        return Response(CertificateSerializer(certificate).data)
+
+    @action(detail=False, methods=['get'], url_path=r'verify/(?P<verification_id>[^/.]+)', permission_classes=[permissions.AllowAny], throttle_classes=[CertificateVerificationThrottle])
+    def verify(self, request, verification_id=None):
+        """
+        GET /api/courses/certificates/verify/<verification_id>/ -- public,
+        unauthenticated, throttled. Returns only
+        PublicCertificateVerificationSerializer's narrow whitelist (no
+        internal id, no student/course FK, no way to reach the owning
+        account) -- see that serializer's own docstring. A nonexistent or
+        malformed id gets the exact same 404 either way, so this endpoint
+        can never be used to distinguish "wrong format" from "right
+        format, no such certificate" while probing.
+        """
+        try:
+            certificate = Certificate.objects.get(verification_id=verification_id)
+        except Certificate.DoesNotExist:
+            return Response({"valid": False, "error": "No certificate found for this verification ID."}, status=drf_status.HTTP_404_NOT_FOUND)
+        data = PublicCertificateVerificationSerializer(certificate).data
+        data['valid'] = True
+        return Response(data)
+
+
+from rest_framework import generics
+
+
+class CertificateResultsSetPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class AdminCertificateListView(generics.ListAPIView):
+    """
+    Admin Dashboard Completion gap fix. GET /api/courses/admin/certificates/
+    -- admin-only, platform-wide list of every issued certificate.
+    CertificateViewSet's own list/retrieve are both hard-scoped to
+    student=request.user with no admin bypass (unlike e.g. OrderViewSet,
+    which does have an "if staff: return all" branch) -- this genuinely
+    did not exist before. Read-only by construction (ListAPIView, no
+    create/update/destroy anywhere) -- a certificate is only ever
+    produced by get_or_create_certificate, never by an admin action, and
+    that is unchanged here. Filterable by student_id/course_id, the same
+    explicit query-param whitelisting convention every other admin list
+    endpoint in this codebase already uses (AdminLedgerEntryListView,
+    AdminInvoiceListView, etc.) -- never a raw filter-string passthrough.
+    """
+    serializer_class = AdminCertificateSerializer
+    permission_classes = [IsSuperAdminOrAdmin]
+    pagination_class = CertificateResultsSetPagination
+
+    def get_queryset(self):
+        qs = Certificate.objects.select_related('student', 'course').order_by('-issued_at')
+        params = self.request.query_params
+
+        student_id = params.get('student_id')
+        if student_id:
+            qs = qs.filter(student_id=student_id)
+
+        course_id = params.get('course_id')
+        if course_id:
+            qs = qs.filter(course_id=course_id)
+
+        return qs
+
+
+# =============================================================================
+# Phase 4.7: Assignments & Grading.
+#
+# Deliberately NOT wired into courses/services/completion.py -- explicit
+# product decision, assignments do not affect Phase 4.5 module/course
+# completion or Phase 4.6 certificates in this phase.
+# =============================================================================
+
+from .models import Assignment, AssignmentSubmission
+from .serializers import AdminAssignmentSerializer, AssignmentSerializer, AssignmentSubmissionSerializer
+from .services.assignments import GradingValidationError, SubmissionNotAllowedError, create_submission, grade_submission, return_for_revision
+from .validators import ALLOWED_SUBMISSION_FILE_EXTENSIONS
+
+
+class IsSuperAdminOrAssignmentCourseInstructor(permissions.BasePermission):
+    """
+    Grading/return-for-revision authorization. Mirrors
+    IsSuperAdminOrCourseInstructorOrReadOnly's exact WRITE_ROLES check
+    (reused directly, not duplicated) -- just resolves the course via
+    `submission.assignment.module.course` (one hop further than that
+    class's generic obj.course/obj.module.course resolution, since the
+    object here is a SUBMISSION, not the Assignment/Course itself).
+    """
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated)
+
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+        if user.is_superuser or user.is_staff:
+            return True
+        course = obj.assignment.module.course
+        return CourseInstructor.objects.filter(
+            course=course, user=user, role__in=IsSuperAdminOrCourseInstructorOrReadOnly.WRITE_ROLES,
+        ).exists()
+
+
+class AssignmentViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """
+    No list/create/update/destroy via API -- authoring an Assignment is a
+    Django-admin job (matching Assessment/Question's own Phase 4.1
+    precedent: no API existed for creating those either). `retrieve` is
+    the student-facing assignment detail/submit screen's data source,
+    with the exact same access/published checks AssessmentViewSet.retrieve
+    already uses.
+    """
+    queryset = Assignment.objects.all()
+    serializer_class = AssignmentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_throttles(self):
+        # General API rate limiting gap fix -- only `submit` gets the
+        # dedicated scope; retrieve/my/grade/return-for-revision (reads,
+        # or already separately permission-gated to instructors) stay on
+        # the general 'user' baseline.
+        if self.action == 'submit':
+            return [AssignmentSubmitRateThrottle()]
+        return super().get_throttles()
+
+    def _get_accessible_published_assignment(self, request, pk):
+        try:
+            assignment = Assignment.objects.select_related('module__course').get(pk=pk)
+        except Assignment.DoesNotExist:
+            return None, Response({"error": "Assignment not found."}, status=drf_status.HTTP_404_NOT_FOUND)
+
+        user = request.user
+        if not assignment.is_published and not user.is_superuser:
+            return None, Response({"error": "Assignment not found."}, status=drf_status.HTTP_404_NOT_FOUND)
+
+        course = assignment.module.course
+        if not user_has_course_access(user, course) and not user.is_superuser:
+            return None, Response({"error": "You do not have access to this course."}, status=drf_status.HTTP_403_FORBIDDEN)
+
+        return assignment, None
+
+    def retrieve(self, request, pk=None):
+        assignment, error_response = self._get_accessible_published_assignment(request, pk)
+        if error_response:
+            return error_response
+        return Response(AssignmentSerializer(assignment).data)
+
+    @action(detail=True, methods=['post'], url_path='submit')
+    def submit(self, request, pk=None):
+        """
+        POST /api/courses/assignments/<id>/submit/ -- creates the next
+        submission attempt (first submission, or a resubmission after
+        RETURNED_FOR_REVISION). Never trusts a client-supplied student
+        id -- always request.user. File upload via multipart 'file',
+        text via 'content'; at least one is required.
+        """
+        assignment, error_response = self._get_accessible_published_assignment(request, pk)
+        if error_response:
+            return error_response
+
+        content = request.data.get('content', '') or ''
+        submitted_file = request.FILES.get('file')
+        if not content.strip() and not submitted_file:
+            return Response({"error": "Provide submission text or a file."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        try:
+            submission = create_submission(assignment, request.user, content, submitted_file)
+        except SubmissionNotAllowedError as e:
+            return Response({"error": str(e)}, status=drf_status.HTTP_409_CONFLICT)
+        except Exception as e:
+            # File validators (FileExtensionValidator/validate_submission_file_size)
+            # raise django.core.exceptions.ValidationError on invalid files.
+            from django.core.exceptions import ValidationError as DjangoValidationError
+            if isinstance(e, DjangoValidationError):
+                return Response({"error": "; ".join(e.messages) if hasattr(e, 'messages') else str(e)}, status=drf_status.HTTP_400_BAD_REQUEST)
+            raise
+
+        return Response(AssignmentSubmissionSerializer(submission).data, status=drf_status.HTTP_201_CREATED)
+
+
+class AdminAssignmentResultsSetPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class AdminAssignmentListView(generics.ListAPIView):
+    """
+    Admin Dashboard Completion gap fix. GET /api/courses/admin/assignments/
+    -- admin-only, platform-wide list of every Assignment (across every
+    course/module), each annotated with how many of its submissions are
+    still SUBMITTED (awaiting grading) -- so an admin/teacher can see
+    where grading is backed up without already knowing an assignment_id.
+    Authoring (create/update/publish) is unchanged and stays Django-admin
+    -only; this is read-only, and the actual grading action remains
+    exactly where it already was (AssignmentSubmissionViewSet.grade/
+    return-for-revision, still gated by IsSuperAdminOrAssignmentCourseInstructor)
+    -- this view only helps an admin FIND which assignment to open next.
+    Filterable by course_id, and by needs_grading=true to show only
+    assignments with at least one pending submission.
+    """
+    serializer_class = AdminAssignmentSerializer
+    permission_classes = [IsSuperAdminOrAdmin]
+    pagination_class = AdminAssignmentResultsSetPagination
+
+    def get_queryset(self):
+        from django.db.models import Count, Q
+        qs = (
+            Assignment.objects.select_related('module', 'module__course')
+            .annotate(pending_submission_count=Count(
+                'submissions', filter=Q(submissions__status=AssignmentSubmission.Status.SUBMITTED),
+            ))
+            .order_by('-id')
+        )
+        params = self.request.query_params
+
+        course_id = params.get('course_id')
+        if course_id:
+            qs = qs.filter(module__course_id=course_id)
+
+        if params.get('needs_grading') == 'true':
+            qs = qs.filter(pending_submission_count__gt=0)
+
+        return qs
+
+
+class AssignmentSubmissionResultsSetPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class AssignmentSubmissionViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """
+    retrieve: GET /assignment-submissions/<id>/ -- owner (student) or the
+    course's own instructor/admin (see get_object override).
+    my: GET /assignment-submissions/my/?assignment_id=<id> -- this
+    student's own submission history.
+    by_assignment: GET /assignment-submissions/assignment/<id>/ -- the
+    teacher/admin grading queue for one assignment (every student's
+    latest-and-historical submissions).
+    grade / return_for_revision: POST actions, instructor/admin only.
+
+    No create/list/update/destroy -- submissions are only ever created
+    via AssignmentViewSet.submit and finalized via grade/return_for_revision.
+    """
+    serializer_class = AssignmentSubmissionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return AssignmentSubmission.objects.select_related('student', 'assignment__module__course', 'graded_by')
+
+    def get_object(self):
+        """
+        Owner-or-instructor object lookup -- a plain get_queryset()
+        scoped to student=request.user (like every other learner
+        endpoint in this module) would 404 a submission for the
+        instructor trying to grade it, so this checks both: the owning
+        student, OR IsSuperAdminOrAssignmentCourseInstructor. Either way
+        a non-owned, non-gradable-by-this-user submission 404s -- never
+        a 403 that would confirm it exists.
+        """
+        submission = get_object_or_404(self.get_queryset(), pk=self.kwargs['pk'])
+        user = self.request.user
+        is_owner = submission.student_id == user.id
+        is_grader = IsSuperAdminOrAssignmentCourseInstructor().has_object_permission(self.request, self, submission)
+        if not (is_owner or is_grader):
+            from django.http import Http404
+            raise Http404
+        return submission
+
+    @action(detail=False, methods=['get'], url_path='my')
+    def my(self, request):
+        queryset = self.get_queryset().filter(student=request.user).order_by('-submitted_at')
+        assignment_id = request.query_params.get('assignment_id')
+        if assignment_id is not None:
+            try:
+                queryset = queryset.filter(assignment_id=int(assignment_id))
+            except (TypeError, ValueError):
+                return Response({"error": "assignment_id must be an integer."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        paginator = AssignmentSubmissionResultsSetPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        serializer = AssignmentSubmissionSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path=r'assignment/(?P<assignment_id>[^/.]+)')
+    def by_assignment(self, request, assignment_id=None):
+        """Teacher/admin grading queue -- every submission (every
+        student, every attempt) for one assignment, newest first."""
+        assignment = get_object_or_404(Assignment.objects.select_related('module__course'), pk=assignment_id)
+        course = assignment.module.course
+        user = request.user
+        if not (user.is_superuser or user.is_staff or CourseInstructor.objects.filter(
+            course=course, user=user, role__in=IsSuperAdminOrCourseInstructorOrReadOnly.WRITE_ROLES,
+        ).exists()):
+            return Response({"error": "You do not have permission to view submissions for this assignment."}, status=drf_status.HTTP_403_FORBIDDEN)
+
+        queryset = self.get_queryset().filter(assignment=assignment).order_by('-submitted_at')
+        paginator = AssignmentSubmissionResultsSetPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        serializer = AssignmentSubmissionSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='grade', permission_classes=[IsSuperAdminOrAssignmentCourseInstructor])
+    def grade(self, request, pk=None):
+        submission = get_object_or_404(self.get_queryset(), pk=pk)
+        self.check_object_permissions(request, submission)
+
+        if submission.status != AssignmentSubmission.Status.SUBMITTED:
+            return Response({"error": f"Only a SUBMITTED submission can be graded (current status: {submission.status})."}, status=drf_status.HTTP_409_CONFLICT)
+
+        marks_awarded = request.data.get('marks_awarded')
+        feedback = request.data.get('feedback', '')
+        try:
+            grade_submission(submission, request.user, marks_awarded, feedback)
+        except GradingValidationError as e:
+            return Response({"error": str(e)}, status=drf_status.HTTP_400_BAD_REQUEST)
+        return Response(AssignmentSubmissionSerializer(submission).data)
+
+    @action(detail=True, methods=['post'], url_path='return-for-revision', url_name='return-for-revision', permission_classes=[IsSuperAdminOrAssignmentCourseInstructor])
+    def return_for_revision_action(self, request, pk=None):
+        submission = get_object_or_404(self.get_queryset(), pk=pk)
+        self.check_object_permissions(request, submission)
+
+        if submission.status != AssignmentSubmission.Status.SUBMITTED:
+            return Response({"error": f"Only a SUBMITTED submission can be returned for revision (current status: {submission.status})."}, status=drf_status.HTTP_409_CONFLICT)
+
+        feedback = request.data.get('feedback', '')
+        return_for_revision(submission, request.user, feedback)
+        return Response(AssignmentSubmissionSerializer(submission).data)

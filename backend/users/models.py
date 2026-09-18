@@ -1,6 +1,9 @@
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
+from django.core.validators import FileExtensionValidator
 from django.db import models
+
+from .validators import ALLOWED_PROFILE_IMAGE_EXTENSIONS, validate_profile_image_size
 
 class User(AbstractUser):
     # Roles
@@ -107,7 +110,18 @@ class TeacherProfile(models.Model):
         settings.AUTH_USER_MODEL, related_name='teacher_profile', on_delete=models.CASCADE
     )
     bio = models.TextField(blank=True)
-    profile_image = models.ImageField(upload_to='profiles/teachers/', blank=True, null=True)
+    # Phase 3.9: previously an unvalidated ImageField -- an admin/teacher
+    # could upload an arbitrarily large file, or (Pillow permitting) an
+    # unexpected image format. FileExtensionValidator whitelists the
+    # extension; validate_profile_image_size caps the upload at 5MB (see
+    # users/validators.py). Existing already-stored images are entirely
+    # unaffected -- validators only run on a NEW upload going through a
+    # form/serializer's full_clean(), never retroactively against rows
+    # already in the database.
+    profile_image = models.ImageField(
+        upload_to='profiles/teachers/', blank=True, null=True,
+        validators=[FileExtensionValidator(allowed_extensions=ALLOWED_PROFILE_IMAGE_EXTENSIONS), validate_profile_image_size],
+    )
     specialization = models.CharField(max_length=255, blank=True)
     qualifications = models.TextField(blank=True)
     experience_years = models.PositiveIntegerField(null=True, blank=True)
@@ -139,7 +153,11 @@ class MentorProfile(models.Model):
         settings.AUTH_USER_MODEL, related_name='mentor_profile', on_delete=models.CASCADE
     )
     bio = models.TextField(blank=True)
-    profile_image = models.ImageField(upload_to='profiles/mentors/', blank=True, null=True)
+    # Phase 3.9: see TeacherProfile.profile_image's identical comment above.
+    profile_image = models.ImageField(
+        upload_to='profiles/mentors/', blank=True, null=True,
+        validators=[FileExtensionValidator(allowed_extensions=ALLOWED_PROFILE_IMAGE_EXTENSIONS), validate_profile_image_size],
+    )
     specialization = models.CharField(max_length=255, blank=True)
     qualifications = models.TextField(blank=True)
     experience_years = models.PositiveIntegerField(null=True, blank=True)
@@ -163,6 +181,79 @@ class OTPVerification(models.Model):
     otp = models.CharField(max_length=6)
     created_at = models.DateTimeField(auto_now_add=True)
     is_verified = models.BooleanField(default=False)
+    # Phase 3.9: brute-force protection. Incremented on every WRONG
+    # verification attempt against this specific OTP record (see
+    # VerifyOTPView) -- once it reaches MAX_VERIFY_ATTEMPTS, this record
+    # can never be verified again (even with the correct code), forcing a
+    # fresh OTP request instead of allowing unlimited guesses of a 6-digit
+    # code within its validity window.
+    attempts = models.PositiveSmallIntegerField(default=0)
+
+    MAX_VERIFY_ATTEMPTS = 5
 
     def __str__(self):
         return f"{self.identifier} - {self.otp}"
+
+
+class AdminAuditLog(models.Model):
+    """
+    Phase 3.9. A minimal, append-only audit trail for security-sensitive
+    admin actions -- privilege/role changes, course-instructor assignment,
+    refund actions, and other important admin-financial actions. Lives in
+    `users` (already the app that owns roles/permissions) rather than a
+    new dedicated app, to avoid introducing a seventh Django app for a
+    single small model.
+
+    Deliberately minimal: this is NOT a general-purpose activity feed and
+    does not attempt to log every request. Callers explicitly call
+    AdminAuditLog.record(...) at the specific action points listed in the
+    Phase 3.9 report. `metadata` must never contain a secret/credential/
+    raw payment-processor payload -- only already-non-sensitive
+    identifiers and before/after values of the kind already shown
+    elsewhere in this app's own admin/API responses.
+
+    Read-only via Django admin (see users/admin.py) for the same reason
+    every financial-record admin in this codebase is read-only: a
+    hand-edited or hand-deleted audit row would defeat its own purpose.
+    """
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name='admin_audit_logs', on_delete=models.SET_NULL,
+        null=True, blank=True, help_text="Who performed the action. Null only if the actor's account was later deleted.",
+    )
+    action = models.CharField(max_length=100, db_index=True, help_text="Short machine-readable action code, e.g. ROLE_CHANGE, COURSE_INSTRUCTOR_ASSIGNED.")
+    target_type = models.CharField(max_length=100, blank=True, help_text="e.g. 'User', 'CourseInstructor', 'Refund', 'Payout'.")
+    target_id = models.CharField(max_length=64, blank=True)
+    description = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True, help_text="Non-sensitive structured detail only -- never a secret/credential/raw payment payload.")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['target_type', 'target_id']),
+        ]
+
+    def __str__(self):
+        return f"[{self.created_at:%Y-%m-%d %H:%M}] {self.action} by {self.actor_id} on {self.target_type}#{self.target_id}"
+
+    @classmethod
+    def record(cls, *, actor, action, target_type='', target_id='', description='', metadata=None):
+        """
+        The single write path for this model -- every audit-log call site
+        in the codebase goes through this, never a direct .objects.create().
+        Never raises back to its caller: an audit-logging failure must
+        never block or roll back the real action it's recording (the same
+        "observability must never break the thing it observes" principle
+        already established for NotificationService/finance ledger
+        creation elsewhere in this codebase).
+        """
+        import logging
+        logger = logging.getLogger('users.audit')
+        try:
+            return cls.objects.create(
+                actor=actor, action=action, target_type=target_type, target_id=str(target_id),
+                description=description, metadata=metadata or {},
+            )
+        except Exception:
+            logger.error("AdminAuditLog.record failed for action=%s target=%s#%s", action, target_type, target_id, exc_info=True)
+            return None

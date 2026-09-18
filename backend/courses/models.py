@@ -1,7 +1,13 @@
+import uuid
+from decimal import Decimal
+
 from django.db import models
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import FileExtensionValidator, MinValueValidator, MaxValueValidator
 from users.models import User
+
+from .validators import ALLOWED_SUBMISSION_FILE_EXTENSIONS, validate_submission_file_size
 
 class Course(models.Model):
     class CourseType(models.TextChoices):
@@ -80,6 +86,16 @@ class CourseInstructor(models.Model):
     user = models.ForeignKey(User, related_name='course_instructor_roles', on_delete=models.CASCADE)
     role = models.CharField(max_length=20, choices=InstructorRole.choices, default=InstructorRole.TEACHER)
     is_primary = models.BooleanField(default=False, help_text="Primary instructor for revenue/payout attribution (future use).")
+    # Phase 3.5.2: percentage commission override for this specific
+    # instructor/course, e.g. 30.00 = 30%. null = no rate configured yet --
+    # the finance ledger (finance/services.py) treats a null rate as a
+    # safe no-op (no LedgerEntry created), never a guessed/hardcoded
+    # default, since no platform-wide default commission rate has been
+    # decided (see the Phase 3.5.1 audit's Risks section). Admin-editable
+    # via CourseInstructorAdmin -- this is a configuration input, not a
+    # financial transaction record, so it does not get the read-only
+    # treatment LedgerEntry/Payout get.
+    commission_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -510,3 +526,529 @@ class Attendance(models.Model):
 
     def __str__(self):
         return f"{self.student.username} - {self.live_class.title} ({self.status})"
+
+
+# =============================================================================
+# Phase 4.1: Assessment Engine Foundation
+#
+# Models only -- deliberately NOT the full quiz-taking flow. Hierarchy:
+#   Course -> Module -> Assessment -> Question -> QuestionOption
+#
+# Student attempts/answers/scoring belong to a later phase (see each
+# model's own docstring for why on_delete was chosen deliberately) --
+# nothing here stores a student's answer, and nothing here computes or
+# persists a score. is_correct on QuestionOption is intentionally the
+# only place "the right answer" lives, and it must never be serialized to
+# a learner-facing API (no such API exists yet in this phase).
+# =============================================================================
+
+class Assessment(models.Model):
+    """
+    One quiz/test attached to a single Module -- e.g. "Module 3 Quiz".
+    CASCADE from Module: an assessment has no meaning independent of its
+    module (same rationale as VideoLesson -> Module above); deleting a
+    module should delete the assessments defined under it.
+    """
+    module = models.ForeignKey(Module, related_name='assessments', on_delete=models.CASCADE)
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    instructions = models.TextField(blank=True, help_text="Shown to the student before they start the attempt.")
+    order = models.PositiveIntegerField(default=0, help_text="Display order among this module's assessments.")
+    is_published = models.BooleanField(default=False, db_index=True)
+
+    passing_percentage = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("40.00"),
+        validators=[MinValueValidator(Decimal("0.00")), MaxValueValidator(Decimal("100.00"))],
+        help_text="Minimum percentage of marks required to pass this assessment.",
+    )
+    max_attempts = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+        help_text="How many times a student may attempt this assessment.",
+    )
+    time_limit_minutes = models.PositiveIntegerField(
+        null=True, blank=True,
+        validators=[MinValueValidator(1)],
+        help_text="Leave blank for no time limit.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['module', 'order'], name='unique_module_assessment_order'),
+        ]
+        ordering = ['order']
+
+    def __str__(self):
+        return f"{self.module.course.title} - {self.module.title} - {self.title}"
+
+
+class Question(models.Model):
+    """
+    A single question belonging to one Assessment. CASCADE from Assessment
+    for the same reason Assessment cascades from Module -- a question has
+    no meaning independent of the assessment it was written for.
+
+    question_type only supports SINGLE_CHOICE and MULTIPLE_CHOICE for now
+    (per Phase 4.1 scope -- essay/free-text grading is explicitly out of
+    scope for this phase, so no ESSAY/SHORT_ANSWER choice is added yet:
+    adding the enum value without any way to grade it would be a
+    half-built, misleading option in every admin dropdown).
+    """
+    class QuestionType(models.TextChoices):
+        SINGLE_CHOICE = "SINGLE_CHOICE", "Single Choice"
+        MULTIPLE_CHOICE = "MULTIPLE_CHOICE", "Multiple Choice"
+
+    assessment = models.ForeignKey(Assessment, related_name='questions', on_delete=models.CASCADE)
+    question_text = models.TextField()
+    question_type = models.CharField(max_length=20, choices=QuestionType.choices, default=QuestionType.SINGLE_CHOICE)
+    order = models.PositiveIntegerField(default=0)
+    marks = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal("1.00"),
+        validators=[MinValueValidator(Decimal("0.01"))],
+        help_text="Marks awarded for answering this question correctly. Decimal, not float, to keep scoring exact.",
+    )
+    explanation = models.TextField(blank=True, help_text="Optional explanation shown to the student after the attempt is graded (a later phase).")
+    is_required = models.BooleanField(default=True, help_text="Whether the student must answer this question to submit the attempt.")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['assessment', 'order'], name='unique_assessment_question_order'),
+        ]
+        ordering = ['order']
+
+    def __str__(self):
+        return f"{self.assessment.title} - Q{self.order}: {self.question_text[:50]}"
+
+
+class QuestionOption(models.Model):
+    """
+    One answer choice for a Question. CASCADE from Question for the same
+    reason Question cascades from Assessment.
+
+    is_correct is the ONLY place the right answer is recorded. It must
+    stay admin-only (see courses/admin.py) and must never be included in
+    a learner-facing serializer -- Phase 4.2's safe serializers
+    (SafeQuestionOptionSerializer et al. in courses/serializers.py)
+    explicitly whitelist fields rather than excluding this one, so a
+    field added to this model in the future can't leak by omission.
+
+    Whether a SINGLE_CHOICE question has exactly one is_correct=True
+    option, and a MULTIPLE_CHOICE question has at least one, cannot be
+    expressed as a single-row database constraint (it depends on sibling
+    rows) -- it is enforced at the admin-form layer instead (see
+    QuestionOptionInlineFormSet in courses/admin.py), the only place that
+    currently mutates these rows.
+    """
+    question = models.ForeignKey(Question, related_name='options', on_delete=models.CASCADE)
+    option_text = models.TextField()
+    order = models.PositiveIntegerField(default=0)
+    is_correct = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['question', 'order'], name='unique_question_option_order'),
+        ]
+        ordering = ['order']
+
+    def __str__(self):
+        return f"{self.question} - Option {self.order}"
+
+
+# =============================================================================
+# Phase 4.2: Assessment Attempts & Scoring
+#
+# AssessmentAttempt / AssessmentAnswer / AssessmentAnswerOption.
+#
+# Historical-integrity strategy (see the Phase 4.2 report for the full
+# reasoning): the attempt's score/percentage/passed are computed ONCE at
+# submission time and stored on the row -- never recomputed from live
+# Question/QuestionOption data on read. That alone means a later admin
+# edit to a question's marks or an option's correctness can never change
+# an already-submitted result. What CAN'T be protected that way is
+# *deletion*: deleting a Question or QuestionOption that already has
+# recorded answers would silently destroy that part of the historical
+# record. So both `AssessmentAnswer.question` and
+# `AssessmentAnswerOption.option` use on_delete=PROTECT (the same
+# precedent this codebase already uses for Purchase/LedgerEntry/Refund
+# referencing Course/User/SubscriptionPlan) -- deleting a question or
+# option that a student has ever answered is a deliberate, blocked
+# action, not a silent one. `AssessmentAttempt.assessment` is PROTECT for
+# the same reason (an assessment with any attempts can't be deleted
+# out from under its own history; unpublishing it is the correct move
+# instead). No separate snapshot of question text/marks/correctness is
+# stored -- that would be over-engineering for what this phase actually
+# needs (see the report).
+# =============================================================================
+
+class AssessmentAttempt(models.Model):
+    """
+    One student's attempt at one Assessment. `student` cascades with the
+    User (matches LessonProgress.user's own precedent in this same app --
+    an attempt is per-user learning state, not a financial/audit record
+    that must outlive account deletion, unlike finance/orders' PROTECT-on-
+    User convention which exists for a different reason).
+    """
+    class Status(models.TextChoices):
+        IN_PROGRESS = "IN_PROGRESS", "In Progress"
+        SUBMITTED = "SUBMITTED", "Submitted"
+        TIMED_OUT = "TIMED_OUT", "Timed Out"
+
+    assessment = models.ForeignKey(Assessment, related_name='attempts', on_delete=models.PROTECT)
+    student = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='assessment_attempts', on_delete=models.CASCADE)
+
+    attempt_number = models.PositiveIntegerField(
+        help_text="1-based, deterministic per (student, assessment) -- see AssessmentViewSet.start for how this is assigned race-safely."
+    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.IN_PROGRESS, db_index=True)
+
+    started_at = models.DateTimeField(auto_now_add=True, help_text="The authoritative clock-start used for time_limit_minutes -- never trust a client-provided start time.")
+    submitted_at = models.DateTimeField(null=True, blank=True)
+
+    # Null until the attempt is actually scored (SUBMITTED or TIMED_OUT-
+    # with-a-scored-submission never happens under this phase's chosen
+    # design -- see the report's "answer saving" section -- so in
+    # practice a TIMED_OUT attempt keeps these null). Decimal, never
+    # float, for exact scoring arithmetic.
+    score = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    percentage = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    passed = models.BooleanField(null=True, blank=True)
+    # Phase 4.4: the sum of every question's `marks` AT SUBMISSION TIME --
+    # frozen for the exact same historical-integrity reason `score` is
+    # frozen. `score`/`percentage` alone are safe forever, but the result
+    # screen also needs to display "8 / 10" (score / max marks); computing
+    # that denominator fresh from LIVE Question.marks on every read would
+    # let a later admin edit to a question's marks silently change what
+    # "10" means for an already-submitted attempt, even though `score` and
+    # `percentage` themselves stayed correct. Null until scored, same as
+    # the three fields above.
+    total_marks = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            # Deterministic numbering per (student, assessment) -- the DB-level
+            # backstop behind AssessmentViewSet.start's select_for_update() locking.
+            models.UniqueConstraint(fields=['student', 'assessment', 'attempt_number'], name='unique_student_assessment_attempt_number'),
+            # At most one IN_PROGRESS attempt per (student, assessment) at a
+            # time -- a partial unique index (condition=...), enforced by
+            # the database itself, not just application code.
+            models.UniqueConstraint(
+                fields=['student', 'assessment'],
+                condition=models.Q(status='IN_PROGRESS'),
+                name='unique_active_attempt_per_student_assessment',
+            ),
+        ]
+        ordering = ['-started_at']
+
+    def __str__(self):
+        return f"{self.student.username} - {self.assessment.title} - attempt {self.attempt_number} ({self.status})"
+
+
+class AssessmentAnswer(models.Model):
+    """
+    One student's answer to one Question within one Attempt. `question` is
+    PROTECT (see module docstring above) -- an answer has no meaning
+    without its attempt (CASCADE), but the Question it references must
+    never be silently deleted out from under recorded answers.
+
+    Selected options are a genuine relational many-to-many (via the
+    explicit AssessmentAnswerOption through-model below), never a JSON
+    blob -- see that model's own docstring for why an explicit through
+    model rather than a plain ManyToManyField.
+    """
+    attempt = models.ForeignKey(AssessmentAttempt, related_name='answers', on_delete=models.CASCADE)
+    question = models.ForeignKey(Question, related_name='assessment_answers', on_delete=models.PROTECT)
+    selected_options = models.ManyToManyField(QuestionOption, through='AssessmentAnswerOption', related_name='selected_in_answers')
+
+    # Phase 4.4: frozen at scoring time by assessment_scoring.score_attempt
+    # -- NOT re-derived from live QuestionOption.is_correct on read. This
+    # is the one thing the Phase 4.2 report flagged as an open question
+    # ("no per-question snapshot... worth confirming matches product
+    # intent") and Phase 4.4 answers it: reviewing a submitted attempt
+    # needs to show "was your answer correct / how many marks did you
+    # get" per question, and without freezing it here, a later admin edit
+    # to a question's marks or an option's correctness would silently
+    # change what the review page shows for an already-graded attempt --
+    # even though the attempt's own aggregate score/percentage/passed
+    # were already safely frozen. This is the minimum addition that
+    # closes that gap: no scoring RULE changes, just persisting a value
+    # assessment_scoring.py already computes in its existing loop instead
+    # of discarding it. Deliberately NOT snapshotting which OPTIONS were
+    # correct at the time (that would mean tracking per-option historical
+    # correctness, not just per-answer) -- see the Phase 4.4 CORRECTION
+    # report for why that original trade-off turned out to be wrong, and
+    # AssessmentAnswerOptionSnapshot below for what replaced it.
+    is_correct = models.BooleanField(default=False)
+    marks_awarded = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+
+    # Phase 4.4 CORRECTION: frozen alongside is_correct/marks_awarded, for
+    # the same reason -- the review displays "marks_awarded / marks
+    # possible" (e.g. "1/1"), and without also freezing the denominator, a
+    # later admin edit to Question.marks would change what that "1" means
+    # for an already-graded answer even though marks_awarded itself never
+    # moves. This is the per-question twin of AssessmentAttempt.total_marks.
+    marks_possible = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['attempt', 'question'], name='unique_attempt_question_answer'),
+        ]
+
+    def __str__(self):
+        return f"{self.attempt} - {self.question}"
+
+
+class AssessmentAnswerOption(models.Model):
+    """
+    Explicit through-model for AssessmentAnswer.selected_options, rather
+    than a plain ManyToManyField, for one reason: a plain M2M gives Django
+    no way to set on_delete on the QuestionOption side of its implicit
+    through table (it's always an unconditional cascade-on-delete). Using
+    an explicit through model lets `option` be PROTECT instead, so
+    deleting an option a student actually selected is a blocked, deliberate
+    action (see the module docstring above) rather than a silent one.
+
+    Records ONLY which options this student picked -- a fact about the
+    submission, not about the question. It intentionally has no
+    correctness/text snapshot of its own; see AssessmentAnswerOptionSnapshot
+    for the (separate, complementary) historical record of what EVERY
+    option looked like at submission time.
+    """
+    answer = models.ForeignKey(AssessmentAnswer, related_name='option_links', on_delete=models.CASCADE)
+    option = models.ForeignKey(QuestionOption, related_name='answer_links', on_delete=models.PROTECT)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['answer', 'option'], name='unique_answer_option'),
+        ]
+
+    def __str__(self):
+        return f"{self.answer} -> {self.option}"
+
+
+class AssessmentAnswerOptionSnapshot(models.Model):
+    """
+    Phase 4.4 CORRECTION. The historical-integrity gap this closes: the
+    original Phase 4.4 review derived "which option was correct" from
+    LIVE QuestionOption.is_correct, so an admin flipping an option's
+    correctness (or editing its text) after a student was graded would
+    silently change what that student's review page shows -- even though
+    the frozen aggregate (score/percentage/passed/total_marks) and the
+    frozen per-answer fields (is_correct/marks_awarded/marks_possible)
+    never moved. That's a genuine contradiction: "you got this right"
+    (frozen, still true) next to "the correct answer was something else"
+    (live, now different).
+
+    One row per (answer, option) for EVERY option belonging to that
+    question -- not just the ones the student selected (that's what
+    AssessmentAnswerOption is for). `option_text`/`was_correct`/`order`
+    are copied from the live QuestionOption at the exact moment
+    assessment_scoring.score_attempt runs, and never touched again.
+    `option` itself stays a real FK (PROTECT, same reasoning as
+    AssessmentAnswerOption.option) purely for identity (matching a
+    snapshot row back to the option it describes, e.g. so the frontend
+    can highlight the one the student picked) -- every DISPLAYED fact
+    about the option comes from this row's own frozen columns, never
+    from `option.option_text`/`option.is_correct` directly.
+    """
+    answer = models.ForeignKey(AssessmentAnswer, related_name='option_snapshots', on_delete=models.CASCADE)
+    option = models.ForeignKey(QuestionOption, related_name='answer_option_snapshots', on_delete=models.PROTECT)
+    option_text = models.TextField()
+    was_correct = models.BooleanField()
+    order = models.PositiveIntegerField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['answer', 'option'], name='unique_answer_option_snapshot'),
+        ]
+        ordering = ['order']
+
+    def __str__(self):
+        return f"{self.answer} snapshot: {self.option_text}"
+
+
+# =============================================================================
+# Phase 4.6: Course Completion Certificates.
+#
+# Sits ON TOP of Phase 4.5 -- this model has NO completion logic of its
+# own. Eligibility is decided once, at generation time, by asking
+# CourseSerializer (the exact same authoritative source of truth the
+# learning page reads) -- see courses/services/certificates.py. Nothing
+# here ever recomputes or re-derives "is this course complete."
+# =============================================================================
+
+class Certificate(models.Model):
+    """
+    One issued certificate for one (student, course) pair. `course` is
+    PROTECT for the same historical-record reason `AssessmentAttempt.
+    assessment` is PROTECT (and the same reason this codebase already
+    uses PROTECT for Purchase/LedgerEntry/Refund -> Course/User/
+    SubscriptionPlan elsewhere): a course that has ever had a certificate
+    issued against it can't be deleted out from under that certificate's
+    history. `student` is CASCADE, matching AssessmentAttempt.student's
+    own precedent -- a certificate is this user's own record, not a
+    financial document that must outlive account deletion.
+
+    learner_name_snapshot/course_title_snapshot are frozen at issuance,
+    copied once and never re-read from the live User/Course rows -- a
+    later admin renaming the course, or the student changing their
+    display name, must not silently rewrite an already-issued
+    certificate's content. No assessment-derived data (scores, marks,
+    pass percentage) is stored or displayed here at all -- Phase 4.4's
+    historical snapshot machinery is for reviewing an attempt, not for
+    certificates, and Section 6 of the Phase 4.6 brief explicitly
+    prohibits inventing grades/scores/percentages on a certificate.
+
+    verification_id follows the EXACT existing precedent of Order.
+    order_number/Invoice.invoice_number (uuid4-based, generated once in
+    save(), backed by a DB unique constraint -- no coordination needed
+    between concurrent requests for "the next number").
+    """
+    student = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='certificates', on_delete=models.CASCADE)
+    course = models.ForeignKey(Course, related_name='certificates', on_delete=models.PROTECT)
+
+    verification_id = models.CharField(max_length=32, unique=True, editable=False)
+    learner_name_snapshot = models.CharField(max_length=255)
+    course_title_snapshot = models.CharField(max_length=255)
+
+    issued_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            # The DB-level backstop behind get_or_create_certificate's
+            # try/except IntegrityError idempotency handling (mirrors
+            # NotificationService.create_notification's own
+            # idempotency_key precedent) -- one certificate per student
+            # per course, full stop; no reissue mechanism in this phase.
+            models.UniqueConstraint(fields=['student', 'course'], name='unique_certificate_per_student_course'),
+        ]
+        ordering = ['-issued_at']
+
+    def save(self, *args, **kwargs):
+        # Mirrors Order.save()/Invoice.save()'s exact existing precedent.
+        # Only ever generated once: a re-save of an existing certificate
+        # never touches an already-set verification_id, matching
+        # "immutable after issuance."
+        if not self.verification_id:
+            self.verification_id = f"CERT-{uuid.uuid4().hex[:12].upper()}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.verification_id} - {self.learner_name_snapshot} - {self.course_title_snapshot}"
+
+
+# =============================================================================
+# Phase 4.7: Assignments & Grading.
+#
+# Deliberately NOT wired into courses/services/completion.py -- per
+# explicit product decision, assignments do not count toward Phase 4.5
+# module/course completion in this phase. Lessons + published
+# assessments remain the sole authoritative completion inputs; this
+# module contains zero calls into or changes to completion.py.
+# =============================================================================
+
+class Assignment(models.Model):
+    """
+    A module-scoped, teacher-graded piece of work -- structurally the
+    sibling of Assessment (same module/order/is_published shape), not
+    nested inside it. CASCADE from Module for the same reason Assessment
+    does: an assignment has no meaning independent of the module it was
+    written for.
+    """
+    module = models.ForeignKey(Module, related_name='assignments', on_delete=models.CASCADE)
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True, help_text="Instructions shown to the student before they submit.")
+    max_marks = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal("100.00"),
+        validators=[MinValueValidator(Decimal("0.01"))],
+        help_text="Maximum marks a graded submission can be awarded. Decimal, not float, matching Question.marks.",
+    )
+    order = models.PositiveIntegerField(default=0)
+    is_published = models.BooleanField(default=False, db_index=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['module', 'order'], name='unique_module_assignment_order'),
+        ]
+        ordering = ['order']
+
+    def __str__(self):
+        return f"{self.module.course.title} - {self.module.title} - {self.title}"
+
+
+class AssignmentSubmission(models.Model):
+    """
+    One submission ATTEMPT for one (student, assignment) pair -- mirrors
+    AssessmentAttempt's own "each attempt is its own immutable row,
+    attempt_number is 1-based and deterministic" design exactly, for the
+    same reason: grading history must survive a resubmission, not be
+    overwritten by it. `assignment` is PROTECT (same historical-record
+    reasoning as AssessmentAttempt.assessment); `student` is CASCADE
+    (same per-user-learning-state reasoning as AssessmentAttempt.student).
+    `graded_by` is SET_NULL -- matches Attendance.marked_by's exact
+    precedent: the grading teacher's own account lifecycle must never
+    delete the historical grade record itself.
+
+    Resubmission rule (enforced in courses/services/assignments.py, not
+    here): a new row may only be created when there is no existing row
+    for this (student, assignment) at all, OR the most recent row's
+    status is RETURNED_FOR_REVISION. The partial unique constraint below
+    is the DB-level backstop -- at most one PENDING (SUBMITTED) row per
+    (student, assignment) at a time, so two concurrent submit requests
+    can never both create one.
+    """
+    class Status(models.TextChoices):
+        SUBMITTED = "SUBMITTED", "Submitted"
+        GRADED = "GRADED", "Graded"
+        RETURNED_FOR_REVISION = "RETURNED_FOR_REVISION", "Returned for Revision"
+
+    assignment = models.ForeignKey(Assignment, related_name='submissions', on_delete=models.PROTECT)
+    student = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='assignment_submissions', on_delete=models.CASCADE)
+
+    attempt_number = models.PositiveIntegerField(
+        help_text="1-based, deterministic per (student, assignment) -- see AssignmentSubmissionViewSet.submit for race-safe assignment."
+    )
+    status = models.CharField(max_length=25, choices=Status.choices, default=Status.SUBMITTED, db_index=True)
+
+    content = models.TextField(blank=True, help_text="Optional text submission.")
+    submitted_file = models.FileField(
+        upload_to='assignments/submissions/', blank=True, null=True,
+        validators=[FileExtensionValidator(allowed_extensions=ALLOWED_SUBMISSION_FILE_EXTENSIONS), validate_submission_file_size],
+        help_text="Optional file submission.",
+    )
+
+    marks_awarded = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Null until graded. Must not exceed the assignment's max_marks -- enforced in the grading service, not here (a plain field validator can't see the related Assignment's own max_marks).",
+    )
+    feedback = models.TextField(blank=True)
+    graded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='graded_assignment_submissions',
+    )
+    graded_at = models.DateTimeField(null=True, blank=True)
+
+    submitted_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['student', 'assignment', 'attempt_number'], name='unique_student_assignment_attempt_number'),
+            models.UniqueConstraint(
+                fields=['student', 'assignment'],
+                condition=models.Q(status='SUBMITTED'),
+                name='unique_pending_submission_per_student_assignment',
+            ),
+        ]
+        ordering = ['-submitted_at']
+
+    def __str__(self):
+        return f"{self.student.username} - {self.assignment.title} - attempt {self.attempt_number} ({self.status})"

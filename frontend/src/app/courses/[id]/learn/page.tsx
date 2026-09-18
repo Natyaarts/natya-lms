@@ -1,13 +1,54 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Play, Pause, Volume2, VolumeX, Maximize, Minimize,
-  Settings, Check, ChevronLeft, Lock
+  Settings, Check, ChevronLeft, Lock, ClipboardList, Trophy, Clock,
+  FileText, RotateCcw
 } from "lucide-react";
+
+// Phase 4.3: assessment status -> badge label/color + CTA label/href,
+// reusing the exact status values ModuleSerializer.get_assessments
+// computes server-side (courses/serializers.py) -- never re-derived
+// client-side.
+function assessmentStatusMeta(assessment: any) {
+  // Phase 4.4, Section 15: CTA wording only -- the status VALUES and
+  // access rules are unchanged from Phase 4.3.
+  switch (assessment.status) {
+    case "IN_PROGRESS":
+      return { label: "In Progress", badgeClass: "bg-blue-500/15 text-blue-400", cta: "Continue Assessment", href: `/assessments/attempt/${assessment.attempt_id}` };
+    case "PASSED":
+      return { label: "Passed", badgeClass: "bg-green-500/15 text-green-400", cta: "View Result", href: `/assessments/attempt/${assessment.attempt_id}` };
+    case "FAILED":
+      return { label: "Failed", badgeClass: "bg-red-500/15 text-red-400", cta: "Retry Assessment", href: `/assessments/${assessment.id}` };
+    case "MAX_ATTEMPTS_REACHED":
+      return { label: "Max Attempts Reached", badgeClass: "bg-zinc-700/40 text-zinc-400", cta: "View Result", href: `/assessments/attempt/${assessment.attempt_id}` };
+    default:
+      return { label: "Not Started", badgeClass: "bg-zinc-700/40 text-zinc-400", cta: "Start Assessment", href: `/assessments/${assessment.id}` };
+  }
+}
+
+// Phase 4.7: assignment status -> badge label/color, reusing the exact
+// status values ModuleSerializer.get_assignments computes server-side
+// (courses/serializers.py's _serialize_assignment_summary_for_student)
+// -- never re-derived client-side. Every status routes to the same
+// detail/submit page; that page itself decides what to show (submit
+// form, submitted-awaiting-grading, grade+feedback, or resubmit form).
+function assignmentStatusMeta(assignment: any) {
+  switch (assignment.status) {
+    case "SUBMITTED":
+      return { label: "Submitted", badgeClass: "bg-blue-500/15 text-blue-400" };
+    case "GRADED":
+      return { label: "Graded", badgeClass: "bg-green-500/15 text-green-400" };
+    case "RETURNED_FOR_REVISION":
+      return { label: "Revision Requested", badgeClass: "bg-orange-500/15 text-orange-400" };
+    default:
+      return { label: "Not Submitted", badgeClass: "bg-zinc-700/40 text-zinc-400" };
+  }
+}
 
 // Canonical language list, kept in sync with backend/courses/languages.py.
 // Used to display a friendly name when a track's language_name isn't set
@@ -174,6 +215,27 @@ export default function CourseLearnPage() {
     }
   }, [savedProgressPosition, activeLanguage]);
 
+  // Phase 4.5: refreshes just the course/module completion numbers
+  // (re-fetches the same GET /api/courses/<id>/ the mount effect below
+  // uses) WITHOUT touching activeLesson -- reused after a lesson is
+  // marked complete or an assessment is submitted, per "progress should
+  // eventually reflect the new backend state without a full browser
+  // restart." No new data-fetching pattern: the exact same endpoint and
+  // fetch call as the initial load.
+  const refreshCourseProgress = useCallback(async () => {
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/${id}/`, {
+        credentials: "include",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCourse(data);
+      }
+    } catch (err) {
+      console.error("Failed to refresh course progress:", err);
+    }
+  }, [id]);
+
   useEffect(() => {
     const fetchCourse = async () => {
       try {
@@ -316,7 +378,7 @@ export default function CourseLearnPage() {
     if (activeLesson?.id && videoRef.current) {
       const duration = videoRef.current.duration;
       if (duration > 0) {
-        saveProgress(activeLesson.id, duration, duration, true);
+        saveProgress(activeLesson.id, duration, duration, true).then(refreshCourseProgress);
       }
     }
   };
@@ -490,6 +552,35 @@ export default function CourseLearnPage() {
               {flatLessons.length} lesson{flatLessons.length !== 1 ? 's' : ''}
             </p>
           )}
+          {/* Phase 4.5: real, backend-derived course completion -- null
+              (no course access, or anonymous) simply renders nothing,
+              never a fabricated 0%. */}
+          {typeof course.completion_percentage === "number" && (
+            <div className="mt-3">
+              <div className="flex items-center justify-between text-[11px] font-semibold mb-1">
+                <span className={course.is_completed ? "text-green-400" : "text-zinc-400"}>
+                  {course.is_completed ? "Course Completed" : "Course Progress"}
+                </span>
+                <span className="text-zinc-500">{course.completion_percentage}%</span>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${course.is_completed ? "bg-green-400" : "bg-[#facc15]"}`}
+                  style={{ width: `${course.completion_percentage}%` }}
+                />
+              </div>
+              {/* Phase 4.6: shown ONLY when the backend says this course
+                  is complete -- never computed/guessed client-side. */}
+              {course.is_completed && (
+                <Link
+                  href={`/certificates/${id}`}
+                  className="mt-3 flex items-center justify-center gap-2 w-full py-2 rounded-full bg-green-500/15 text-green-400 text-xs font-semibold hover:bg-green-500/25 transition-colors"
+                >
+                  🎓 View Your Certificate
+                </Link>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="overflow-y-auto flex-1 p-3 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
@@ -497,7 +588,14 @@ export default function CourseLearnPage() {
             <div key={module.id} className="mb-6">
               <h3 className="flex items-center gap-2 text-xs font-bold text-zinc-500 px-3 mb-3 uppercase tracking-widest">
                 <span className="w-1 h-3 bg-[#facc15]/40 rounded-full shrink-0" />
-                Module {idx + 1}: {module.title}
+                <span className="flex-1">Module {idx + 1}: {module.title}</span>
+                {typeof module.completion_percentage === "number" && (
+                  module.is_completed ? (
+                    <Check className="w-3.5 h-3.5 text-green-400 normal-case" />
+                  ) : (
+                    <span className="normal-case text-zinc-600">{module.completion_percentage}%</span>
+                  )
+                )}
               </h3>
               <div className="space-y-1">
                 {module.lessons?.map((lesson: any, lIdx: number) => {
@@ -513,13 +611,88 @@ export default function CourseLearnPage() {
                       }`}
                     >
                       <span className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-colors ${
-                        isActive ? 'bg-[#facc15] text-black' : 'bg-white/5 text-zinc-500'
+                        isActive
+                          ? 'bg-[#facc15] text-black'
+                          : lesson.is_completed
+                            ? 'bg-green-500/20 text-green-400'
+                            : 'bg-white/5 text-zinc-500'
                       }`}>
-                        {isActive ? <Play className="w-2.5 h-2.5 fill-black ml-0.5" /> : lIdx + 1}
+                        {isActive ? (
+                          <Play className="w-2.5 h-2.5 fill-black ml-0.5" />
+                        ) : lesson.is_completed ? (
+                          <Check className="w-3 h-3" />
+                        ) : (
+                          lIdx + 1
+                        )}
                       </span>
                       <span className="leading-relaxed truncate flex-1">{lesson.title}</span>
                       {lesson.is_locked && <Lock className="w-3.5 h-3.5 text-zinc-600 shrink-0" />}
                     </button>
+                  );
+                })}
+
+                {/* Phase 4.3: assessment entries -- a separate destination
+                    page (/assessments/...), not shown inline in the video
+                    player, so these are plain nav links rather than
+                    setActiveLesson buttons. Server-computed status/is_published
+                    only -- no client-side guessing. */}
+                {module.assessments?.map((assessment: any) => {
+                  const meta = assessmentStatusMeta(assessment);
+                  return (
+                    <Link
+                      key={`assessment-${assessment.id}`}
+                      href={meta.href}
+                      className="w-full text-left px-3 py-3 rounded-xl text-sm flex items-center gap-3 transition-all duration-200 text-zinc-300 hover:bg-white/5 hover:translate-x-0.5"
+                    >
+                      <span className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center bg-white/5 text-[#facc15]">
+                        {assessment.status === "PASSED" ? <Trophy className="w-3.5 h-3.5" /> : <ClipboardList className="w-3.5 h-3.5" />}
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span className="block leading-relaxed truncate font-medium">{assessment.title}</span>
+                        <span className="flex items-center gap-2 text-[11px] text-zinc-500 mt-0.5">
+                          <span>{assessment.question_count} question{assessment.question_count !== 1 ? 's' : ''}</span>
+                          {assessment.time_limit_minutes && (
+                            <span className="flex items-center gap-0.5"><Clock className="w-2.5 h-2.5" /> {assessment.time_limit_minutes}m</span>
+                          )}
+                        </span>
+                      </span>
+                      <span className={`shrink-0 text-[10px] font-semibold px-2 py-1 rounded-full ${meta.badgeClass}`}>
+                        {meta.cta}
+                      </span>
+                    </Link>
+                  );
+                })}
+
+                {/* Phase 4.7: assignment entries -- same "separate destination
+                    page, server-computed status only" pattern as assessments
+                    above. */}
+                {module.assignments?.map((assignment: any) => {
+                  const meta = assignmentStatusMeta(assignment);
+                  return (
+                    <Link
+                      key={`assignment-${assignment.id}`}
+                      href={`/assignments/${assignment.id}`}
+                      className="w-full text-left px-3 py-3 rounded-xl text-sm flex items-center gap-3 transition-all duration-200 text-zinc-300 hover:bg-white/5 hover:translate-x-0.5"
+                    >
+                      <span className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center bg-white/5 text-[#facc15]">
+                        {assignment.status === "GRADED" ? (
+                          <Check className="w-3.5 h-3.5" />
+                        ) : assignment.status === "RETURNED_FOR_REVISION" ? (
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        ) : (
+                          <FileText className="w-3.5 h-3.5" />
+                        )}
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span className="block leading-relaxed truncate font-medium">{assignment.title}</span>
+                        <span className="flex items-center gap-2 text-[11px] text-zinc-500 mt-0.5">
+                          <span>Max marks: {assignment.max_marks}</span>
+                        </span>
+                      </span>
+                      <span className={`shrink-0 text-[10px] font-semibold px-2 py-1 rounded-full ${meta.badgeClass}`}>
+                        {meta.label}
+                      </span>
+                    </Link>
                   );
                 })}
               </div>

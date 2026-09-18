@@ -45,6 +45,28 @@ function MySubscriptionSection() {
       .finally(() => setLoading(false));
   }, []);
 
+  // CSRF hardening fix: CancelSubscriptionView now enforces CSRF for
+  // cookie-authenticated (browser) requests -- see backend/orders/views.py's
+  // CSRFEnforcedJWTCookieAuthentication. The csrftoken cookie this reads is
+  // already guaranteed present by the time this section even renders: the
+  // mount effect above (GET subscriptions/me/, which now carries
+  // @ensure_csrf_cookie) must succeed with a subscription before this
+  // component renders anything but null (see the early return below).
+  const getCsrfToken = () => {
+    let csrfToken = "";
+    if (typeof document !== 'undefined' && document.cookie) {
+      const cookies = document.cookie.split(';');
+      for (let i = 0; i < cookies.length; i++) {
+        const cookie = cookies[i].trim();
+        if (cookie.startsWith('csrftoken=')) {
+          csrfToken = decodeURIComponent(cookie.substring('csrftoken='.length));
+          break;
+        }
+      }
+    }
+    return csrfToken;
+  };
+
   const handleCancel = async () => {
     setCancelling(true);
     setMessage("");
@@ -52,6 +74,7 @@ function MySubscriptionSection() {
       const res = await fetch(`${API}/api/orders/subscriptions/cancel/`, {
         method: "POST",
         credentials: "include",
+        headers: { "X-CSRFToken": getCsrfToken() },
       });
       const data = await res.json();
       if (res.ok) {
@@ -139,6 +162,8 @@ export default function MyOrdersPage() {
           </Link>
           <div className="flex gap-4">
             <Link href="/bundles" className="text-sm font-medium hover:text-[#facc15] transition-colors">Bundles</Link>
+            <Link href="/subscriptions" className="text-sm font-medium hover:text-[#facc15] transition-colors">Subscriptions</Link>
+            <Link href="/invoices" className="text-sm font-medium hover:text-[#facc15] transition-colors">Invoices</Link>
             <Link href="/dashboard" className="text-sm font-medium hover:text-[#facc15] transition-colors">Dashboard</Link>
           </div>
         </div>

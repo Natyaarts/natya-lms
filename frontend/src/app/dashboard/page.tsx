@@ -82,6 +82,12 @@ export default function Dashboard() {
             <Link href="/orders" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
               My Orders
             </Link>
+            <Link href="/subscriptions" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
+              Subscriptions
+            </Link>
+            <Link href="/invoices" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
+              Invoices
+            </Link>
 
             <NotificationBell />
 
@@ -99,12 +105,15 @@ export default function Dashboard() {
                     <p className="text-sm font-semibold text-white truncate">{user?.first_name || user?.username || 'User'}</p>
                     <p className="text-xs text-zinc-400 truncate">{user?.email || user?.phone_number || ''}</p>
                   </div>
+                  <Link href="/profile" className="block px-4 py-2 text-sm text-zinc-300 hover:bg-white/5 hover:text-white transition-colors">
+                    My Profile
+                  </Link>
                   {user?.is_superuser || user?.is_teacher ? (
                     <Link href="/admin" className="block px-4 py-2 text-sm text-zinc-300 hover:bg-white/5 hover:text-white transition-colors">
                       Admin Dashboard
                     </Link>
                   ) : null}
-                  <button 
+                  <button
                     onClick={handleLogout}
                     className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-red-400/10 transition-colors"
                   >
@@ -178,17 +187,44 @@ export default function Dashboard() {
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                           />
                           <div className="absolute inset-0 bg-black/40 group-hover:bg-transparent transition-colors" />
-                          <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur px-3 py-1 rounded-full text-xs font-medium border border-white/10">
-                            0% Completed
-                          </div>
+                          {/* Phase 4.5 CORRECTION: the dashboard's normal
+                              progress display now uses course.completion_percentage
+                              (module/assessment-aware, backend-authoritative --
+                              CourseSerializer.to_representation via
+                              courses/services/completion.py), not the legacy
+                              lesson-only course.progress_percentage (Phase 3.9).
+                              The legacy field is untouched and still served by
+                              the API for any other consumer -- this page simply
+                              no longer reads it, so there is exactly one
+                              progress definition on screen. null (locked/no
+                              access, or anonymous) renders no badge/bar fill
+                              at all rather than a misleading number --
+                              no fallback progress is invented client-side. */}
+                          {/* Phase 4.6: the card itself already links to
+                              /courses/<id>/learn, which shows the actual
+                              "View Your Certificate" action once there --
+                              this badge can't be a second, nested link,
+                              so it just signals that a certificate is
+                              now available. */}
+                          {course.is_completed ? (
+                            <div className="absolute bottom-4 left-4 bg-green-500/80 backdrop-blur px-3 py-1 rounded-full text-xs font-semibold border border-white/10 text-black">
+                              🎓 Certificate Ready
+                            </div>
+                          ) : typeof course.completion_percentage === "number" && (
+                            <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur px-3 py-1 rounded-full text-xs font-medium border border-white/10">
+                              {course.completion_percentage}% Completed
+                            </div>
+                          )}
                         </div>
                         <div className="p-6 flex flex-col grow">
                           <h3 className="text-xl font-bold mb-2 group-hover:text-[#facc15] transition-colors">{course.title}</h3>
                           <p className="text-zinc-400 text-sm mb-6 line-clamp-2 grow">{course.description}</p>
                           <div className="w-full bg-zinc-900 rounded-full h-2 overflow-hidden mb-2">
-                            <div className="bg-[#facc15] h-full w-[5%]" />
+                            <div
+                              className="bg-[#facc15] h-full"
+                              style={{ width: `${typeof course.completion_percentage === "number" ? course.completion_percentage : 0}%` }}
+                            />
                           </div>
-                          <div className="text-xs text-zinc-500 text-right">Last accessed: Just now</div>
                         </div>
                       </motion.div>
                     </Link>

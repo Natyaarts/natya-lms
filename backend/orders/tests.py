@@ -10,6 +10,7 @@ from unittest.mock import patch
 from courses.models import Course, Enrollment, Bundle
 from orders.models import Purchase, WebhookEvent, Order, OrderItem
 from notifications.models import Notification
+from django.core.cache import cache
 
 User = get_user_model()
 
@@ -33,6 +34,7 @@ def sign_webhook_payload(payload_dict, secret=WEBHOOK_TEST_SECRET):
 
 class PaymentNotificationTests(APITestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         # Create users
         self.student = User.objects.create_user(username="student_pay_test", password="password123")
         self.student.is_student = True
@@ -172,6 +174,7 @@ class PaymentHardeningPhase3Tests(APITestCase):
     """
 
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.student = User.objects.create_user(username="student_hardening_test", password="password123")
         self.student.is_student = True
         self.student.save()
@@ -320,8 +323,11 @@ class PaymentHardeningPhase3Tests(APITestCase):
 
     def test_purchase_status_choices_cover_exactly_the_values_in_use(self):
         # Confirmed via a repo-wide search before this change that these
-        # three strings are the only ones ever read/written anywhere.
-        self.assertEqual(set(Purchase.Status.values), {"PENDING", "SUCCESS", "FAILED"})
+        # three strings were the only ones ever read/written anywhere.
+        # Phase 3.5.6: REFUNDED added -- finance/services.py's refund
+        # success path is now the sole code that ever writes it (see
+        # Purchase.Status's own docstring in orders/models.py).
+        self.assertEqual(set(Purchase.Status.values), {"PENDING", "SUCCESS", "FAILED", "REFUNDED"})
 
     # ---- Duplicate purchase / order creation prevention ----
 
@@ -359,6 +365,7 @@ class RazorpayWebhookTests(APITestCase):
     """
 
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.student = User.objects.create_user(username="student_webhook_test", password="password123")
         self.student.is_student = True
         self.student.save()
@@ -520,7 +527,14 @@ class RazorpayWebhookTests(APITestCase):
     # ---- Unknown event type ----
 
     def test_unknown_event_type_is_ignored_gracefully(self):
-        payload = {"event": "refund.created", "payload": {"refund": {"entity": {"id": "rfnd_1"}}}}
+        # Phase 3.5.6: "refund.created" USED to be this test's example of a
+        # not-yet-handled event type -- it no longer is (REFUND_EVENT_TYPES
+        # now handles it; see RefundWebhookTests in finance/test_refunds.py
+        # for that behavior). "payment.dispute.created" is a genuine
+        # Razorpay event type (confirmed against Razorpay's current webhook
+        # documentation) this codebase still has no handler for at all,
+        # making it a correct stand-in for this test's actual intent.
+        payload = {"event": "payment.dispute.created", "payload": {"dispute": {"entity": {"id": "disp_1"}}}}
         response = self._post(payload, event_id="evt_unknown_1")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
@@ -528,7 +542,7 @@ class RazorpayWebhookTests(APITestCase):
         self.assertEqual(self.purchase.status, "PENDING")  # untouched
         event = WebhookEvent.objects.get(razorpay_event_id="evt_unknown_1")
         self.assertEqual(event.status, WebhookEvent.Status.IGNORED)
-        self.assertEqual(event.event_type, "refund.created")
+        self.assertEqual(event.event_type, "payment.dispute.created")
 
     # ---- Malformed payload ----
 
@@ -620,6 +634,7 @@ class BundleAdminAPITests(APITestCase):
     """Bundle CRUD + permissions, items 1-8 of the Phase 3.3 test list."""
 
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.admin = User.objects.create_superuser(username="bundle_admin", password="password123")
         self.student = User.objects.create_user(username="bundle_student", password="password123")
         self.course1 = Course.objects.create(title="Bharatanatyam Basics", description="x", price=1000, is_published=True)
@@ -698,6 +713,7 @@ class OrderCreationTests(APITestCase):
     status-write-protection items 32-35."""
 
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.student = User.objects.create_user(username="order_student", password="password123")
         self.student.is_student = True
         self.student.save()
@@ -840,11 +856,97 @@ class OrderCreationTests(APITestCase):
         from orders.serializers import OrderSerializer
         self.assertEqual(set(OrderSerializer.Meta.read_only_fields), set(OrderSerializer.Meta.fields))
 
+    def test_order_has_invoice_field_false_then_true_after_fulfillment(self):
+        # Mobile purchase-history gap fix: OrderSerializer.has_invoice.
+        order = Order.objects.create(user=self.student, subtotal=1500, total_amount=1500, status=Order.Status.PENDING)
+        OrderItem.objects.create(
+            order=order, item_type=OrderItem.ItemType.COURSE, course=self.course1,
+            title_snapshot=self.course1.title, unit_price=1500, total_price=1500,
+        )
+        res = self.client.get(reverse('order-detail', kwargs={'pk': order.pk}))
+        self.assertFalse(res.data['has_invoice'])
+
+        from orders.services import fulfill_order
+        order.status = Order.Status.PAID
+        order.save()
+        fulfill_order(order, previous_status='PENDING')
+
+        res = self.client.get(reverse('order-detail', kwargs={'pk': order.pk}))
+        self.assertTrue(res.data['has_invoice'])
+
+
+class MyPurchaseListAPITests(APITestCase):
+    """Mobile purchase-history gap fix. GET /api/orders/my-purchases/ --
+    the legacy single-course Purchase flow's first-ever student-facing
+    list endpoint (previously only AdminPurchaseViewSet, admin-only,
+    existed)."""
+
+    def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
+        self.url = reverse('my-purchases')
+        self.student = User.objects.create_user(username='mypurchase_student', password='password123')
+        self.other_student = User.objects.create_user(username='mypurchase_other_student', password='password123')
+        self.course = Course.objects.create(title='My Purchase Course', description='x', price=499.00, is_published=True)
+
+    def test_unauthenticated_denied(self):
+        response = self.client.get(self.url)
+        self.assertIn(response.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))
+
+    def test_authenticated_user_can_list_own_purchases(self):
+        purchase = Purchase.objects.create(user=self.student, course=self.course, amount=499.00, status=Purchase.Status.SUCCESS)
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([p['id'] for p in response.data], [purchase.id])
+        self.assertEqual(response.data[0]['course_title'], 'My Purchase Course')
+        self.assertEqual(str(response.data[0]['amount']), '499.00')
+        self.assertEqual(response.data[0]['status'], 'SUCCESS')
+
+    def test_user_cannot_see_another_users_purchase(self):
+        Purchase.objects.create(user=self.other_student, course=self.course, amount=499.00, status=Purchase.Status.SUCCESS)
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_no_razorpay_ids_leaked(self):
+        Purchase.objects.create(
+            user=self.student, course=self.course, amount=499.00, status=Purchase.Status.SUCCESS,
+            razorpay_order_id='order_should_not_leak', razorpay_payment_id='pay_should_not_leak',
+        )
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(self.url)
+        self.assertNotIn('razorpay', str(response.content).lower())
+
+    def test_has_invoice_false_before_fulfillment(self):
+        Purchase.objects.create(user=self.student, course=self.course, amount=499.00, status=Purchase.Status.PENDING)
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(self.url)
+        self.assertFalse(response.data[0]['has_invoice'])
+
+    def test_has_invoice_true_after_fulfillment(self):
+        from orders.services import fulfill_purchase
+        purchase = Purchase.objects.create(user=self.student, course=self.course, amount=499.00, status=Purchase.Status.SUCCESS)
+        fulfill_purchase(purchase, previous_status='PENDING')
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(self.url)
+        self.assertTrue(response.data[0]['has_invoice'])
+
+    def test_shows_all_statuses_not_only_success(self):
+        # Mirrors OrderViewSet's own "no status filter" precedent -- a
+        # failed attempt is still part of the student's own history.
+        Purchase.objects.create(user=self.student, course=self.course, amount=499.00, status=Purchase.Status.FAILED)
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(self.url)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['status'], 'FAILED')
+
 
 class OrderPaymentAndFulfillmentTests(APITestCase):
     """Items 15-26: Razorpay integration, fulfillment, idempotency."""
 
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.student = User.objects.create_user(username="fulfillment_student", password="password123")
         self.course1 = Course.objects.create(title="Fulfillment Course 1", description="x", price=1000.00, is_published=True)
         self.course2 = Course.objects.create(title="Fulfillment Course 2", description="x", price=1200.00, is_published=True)
@@ -995,6 +1097,7 @@ class OrderWebhookMappingTests(APITestCase):
     mapped events, and remain safe for unknown/malformed/error cases."""
 
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.student = User.objects.create_user(username="webhook_order_student", password="password123")
         self.course = Course.objects.create(title="Webhook Order Course", description="x", price=1000.00, is_published=True)
         self.bundle = Bundle.objects.create(name="Webhook Bundle", price=1000.00)
@@ -1052,7 +1155,12 @@ class OrderWebhookMappingTests(APITestCase):
 
     @override_settings(RAZORPAY_WEBHOOK_SECRET=WEBHOOK_TEST_SECRET)
     def test_unknown_webhook_remains_safe_with_order_data_present(self):
-        payload = {"event": "refund.created", "payload": {"refund": {"entity": {"id": "rfnd_1"}}}}
+        # Phase 3.5.6: "refund.created" is no longer an unknown event type
+        # to this app (see REFUND_EVENT_TYPES) -- "payment.dispute.created"
+        # (a genuine Razorpay event type this codebase still has no
+        # handler for) is the correct stand-in now; see
+        # test_unknown_event_type_is_ignored_gracefully's own comment.
+        payload = {"event": "payment.dispute.created", "payload": {"dispute": {"entity": {"id": "disp_1"}}}}
         res = self._post(payload, "evt_order_unknown_1")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.order.refresh_from_db()

@@ -1,49 +1,148 @@
+import logging
+import secrets
+
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
+from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 from datetime import timedelta
 import random
 from .models import OTPVerification, User
+from .throttles import OTPRequestThrottle, OTPVerifyThrottle, LoginRateThrottle, PasswordResetRequestThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render, get_object_or_404
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import ensure_csrf_cookie
+from dj_rest_auth.views import LoginView, PasswordResetView
 
 import requests
+
+logger = logging.getLogger('users.otp')
+
+# Phase 3.9: how many OTPs a single identifier may request within the
+# cooldown window below -- the per-IP OTPRequestThrottle (users/throttles.py)
+# alone doesn't stop an attacker who controls many IPs from spamming one
+# victim's phone/email with unlimited OTP requests; this is the
+# complementary per-identifier layer.
+MAX_OTP_REQUESTS_PER_WINDOW = 5
+OTP_REQUEST_WINDOW_MINUTES = 10
+
+
+def _generate_otp():
+    """Cryptographically secure 6-digit OTP. Previously `random.randint`
+    (Python's Mersenne Twister PRNG) -- not a CSPRNG, and its output is
+    predictable if an attacker ever recovers enough of its internal state.
+    secrets.randbelow is Python's own recommended CSPRNG-backed choice for
+    exactly this kind of security-sensitive random value."""
+    return str(secrets.randbelow(1_000_000)).zfill(6)
+
+
+class ThrottledLoginView(LoginView):
+    """
+    Final release-blocker fix. The one and only change from dj-rest-auth's
+    stock LoginView (core/urls.py routes api/auth/login/ to THIS class
+    instead, overriding dj_rest_auth.urls' own 'login/' pattern -- see
+    that file's own comment) is the added throttle_classes below --
+    everything else (credential validation, JWT cookie issuance, response
+    shape) is entirely inherited, unchanged. Password-based login for
+    superuser/staff/teacher/mentor accounts previously had no rate
+    limiting at all; LoginRateThrottle (users/throttles.py) is the exact
+    same per-IP, Redis-backed SimpleRateThrottle pattern already proven by
+    OTPRequestThrottle/OTPVerifyThrottle above, scoped via
+    REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['login'] (core/settings.py)
+    -- never a hardcoded rate here.
+
+    Deliberately NOT a global DEFAULT_THROTTLE_CLASSES change: this
+    targets only the one endpoint identified as the release blocker,
+    exactly as scoped -- OTP, JWT refresh, and every other endpoint's
+    throttling behavior is untouched.
+    """
+    throttle_classes = [LoginRateThrottle]
+
+
+class ThrottledPasswordResetView(PasswordResetView):
+    """
+    General API rate limiting gap fix. The one and only change from
+    dj-rest-auth's stock PasswordResetView (core/urls.py routes
+    api/auth/password/reset/ to THIS class instead, overriding
+    dj_rest_auth.urls' own 'password/reset/' pattern -- same override
+    technique as ThrottledLoginView above) is the added throttle_classes
+    below -- everything else (email lookup, token generation, email
+    send) is entirely inherited, unchanged. This request-a-reset-email
+    step previously had no EFFECTIVE rate limiting at all: dj-rest-auth's
+    own throttle_scope = 'dj_rest_auth' attribute requires
+    ScopedRateThrottle to be in DEFAULT_THROTTLE_CLASSES, which it never
+    was in this project. PasswordResetRequestThrottle (users/throttles.py)
+    is the exact same per-IP pattern as OTPRequestThrottle, scoped via
+    REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['password_reset']
+    (core/settings.py) -- never a hardcoded rate here.
+    """
+    throttle_classes = [PasswordResetRequestThrottle]
+
 
 class SendOTPView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
+    throttle_classes = [OTPRequestThrottle]
 
     def post(self, request):
         identifier = request.data.get('identifier')
         if not identifier:
             return Response({"error": "Email or Mobile Number is required"}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Generate 6-digit OTP
-        otp = str(random.randint(100000, 999999))
-        
-        # Save to DB
-        OTPVerification.objects.create(identifier=identifier, otp=otp)
-        
-        # Send OTP
-        if identifier == "+919999999999":
-            pass # Bypass actual sending for Google Play reviewers
-        elif '@' in identifier:
-            # TODO: Integrate AWS SES via boto3 or django-ses
-            print(f"*** AWS SES MOCK: Sending Email to {identifier} with OTP: {otp} ***")
+
+        # Phase 3.9: per-identifier cooldown, independent of the per-IP
+        # throttle above -- see MAX_OTP_REQUESTS_PER_WINDOW's own comment.
+        window_start = timezone.now() - timedelta(minutes=OTP_REQUEST_WINDOW_MINUTES)
+        recent_count = OTPVerification.objects.filter(identifier=identifier, created_at__gte=window_start).count()
+        if recent_count >= MAX_OTP_REQUESTS_PER_WINDOW:
+            logger.warning("OTP request rate limit hit for identifier ending in %s", str(identifier)[-6:])
+            return Response(
+                {"error": "Too many OTP requests for this identifier. Please wait a few minutes and try again."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        otp = _generate_otp()
+
+        # Send OTP FIRST, save to DB only once we know delivery didn't
+        # outright fail -- avoids leaving behind a verifiable OTP record
+        # for a code that was never actually delivered to anyone.
+        #
+        # Phase 3.9: the hardcoded "+919999999999" / always-mocked bypass
+        # that used to live here has been REMOVED entirely (this was a
+        # permanent backdoor credential present in production source, not
+        # a test fixture) -- see the Phase 3.9 report for the note on
+        # what a genuine App Store/Play Store reviewer bypass would need
+        # to look like instead, if one is still required; that is an
+        # explicit product/business decision, not something to silently
+        # reintroduce here.
+        if '@' in identifier:
+            from .email_utils import OTPEmailDeliveryError, send_otp_email
+            try:
+                if settings.DEBUG and not (settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY):
+                    # Local dev convenience only: no AWS credentials are
+                    # required to run this project locally (see
+                    # core/settings.py's own S3 fallback for the same
+                    # DEBUG-only allowance). Never reachable in production
+                    # -- AWS credentials are mandatory there.
+                    logger.info("DEBUG mode, no AWS credentials configured -- OTP for %s: %s", identifier, otp)
+                else:
+                    send_otp_email(identifier, otp)
+            except OTPEmailDeliveryError as e:
+                logger.error("Failed to send OTP email to %s: %s", identifier, e)
+                return Response({"error": "Failed to send OTP email. Please try again shortly."}, status=status.HTTP_502_BAD_GATEWAY)
         else:
             # --- INTERAKT WHATSAPP INTEGRATION ---
-            from django.conf import settings
-            
             INTERAKT_SECRET_KEY = settings.INTERAKT_SECRET_KEY
             TEMPLATE_NAME = settings.INTERAKT_TEMPLATE_NAME
-            
+
             headers = {
                 "Authorization": f"Basic {INTERAKT_SECRET_KEY}",
                 "Content-Type": "application/json"
             }
-            
+
             # Interakt requires the phone number without the '+' sign
             formatted_number = identifier.lstrip('+')
             payload = {
@@ -56,42 +155,56 @@ class SendOTPView(APIView):
                     "buttonValues": {"0": [otp]}
                 }
             }
-            
-            print(f"*** Sending WhatsApp via Interakt to {identifier} with OTP: {otp} ***")
-            response = requests.post("https://api.interakt.ai/v1/public/message/", json=payload, headers=headers)
-            print("Interakt Response:", response.json())
-            
+
+            try:
+                response = requests.post("https://api.interakt.ai/v1/public/message/", json=payload, headers=headers, timeout=10)
+                logger.info("Interakt WhatsApp OTP send status=%s for identifier ending in %s", response.status_code, identifier[-4:])
+            except requests.RequestException as e:
+                logger.error("Interakt WhatsApp OTP send failed: %s", e, exc_info=True)
+                return Response({"error": "Failed to send OTP via WhatsApp. Please try again shortly."}, status=status.HTTP_502_BAD_GATEWAY)
+
+        OTPVerification.objects.create(identifier=identifier, otp=otp)
         return Response({"message": "OTP sent successfully"})
 
 class VerifyOTPView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
+    throttle_classes = [OTPVerifyThrottle]
 
     def post(self, request):
         identifier = request.data.get('identifier')
         otp = request.data.get('otp')
-        
+
         if not identifier or not otp:
             return Response({"error": "Identifier and OTP required"}, status=status.HTTP_400_BAD_REQUEST)
-            
-        if identifier == "+919999999999" and otp == "123456":
-            pass # Bypass OTP check for Google Play reviewers
-        else:
-            # Check if OTP is valid and not expired (5 minutes)
+
+        # Phase 3.9: the hardcoded "+919999999999"/"123456" bypass that
+        # used to live here has been REMOVED entirely -- see SendOTPView's
+        # own comment above.
+        with transaction.atomic():
+            # Check if OTP is valid and not expired (5 minutes). Locked so
+            # two simultaneous verify attempts against the same record
+            # can't both read attempts=4 and both proceed past the check
+            # below.
             time_threshold = timezone.now() - timedelta(minutes=5)
-            otp_record = OTPVerification.objects.filter(
-                identifier=identifier, 
-                otp=otp, 
-                is_verified=False,
-                created_at__gte=time_threshold
-            ).last()
-            
-            if not otp_record:
+            otp_record = (
+                OTPVerification.objects.select_for_update()
+                .filter(identifier=identifier, is_verified=False, created_at__gte=time_threshold)
+                .order_by('-created_at')
+                .first()
+            )
+
+            if not otp_record or otp_record.attempts >= OTPVerification.MAX_VERIFY_ATTEMPTS:
                 return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_400_BAD_REQUEST)
-                
+
+            if otp_record.otp != otp:
+                otp_record.attempts += 1
+                otp_record.save(update_fields=['attempts'])
+                return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_400_BAD_REQUEST)
+
             otp_record.is_verified = True
-            otp_record.save()
-        
+            otp_record.save(update_fields=['is_verified'])
+
         # Get or create user
         if '@' in identifier:
             user, created = User.objects.get_or_create(email=identifier, defaults={'username': identifier.split('@')[0] + str(random.randint(1000, 9999))})
@@ -377,8 +490,9 @@ class AdminStatsView(APIView):
         import datetime
         from django.db.models import Sum, Count, OuterRef, Exists
         from django.db.models.functions import TruncMonth
-        from courses.models import Course, Enrollment
-        from orders.models import Purchase
+        from courses.models import Course, Enrollment, AssignmentSubmission, LiveClass
+        from orders.models import Purchase, Subscription
+        from finance.models import Payout, Refund
 
         now = timezone.now()
         start_of_week = now - datetime.timedelta(days=7)
@@ -391,6 +505,9 @@ class AdminStatsView(APIView):
         active_students = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False, is_active=True).count()
         inactive_students = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False, is_active=False).count()
         total_teachers = User.objects.filter(is_teacher=True, is_superuser=False).count()
+        # Admin Dashboard Completion gap fix: nav wants "Teachers/Mentors"
+        # together, and the overview previously reported teachers only.
+        total_mentors = User.objects.filter(is_mentor=True, is_superuser=False).count()
 
         # Courses
         total_courses = Course.objects.count()
@@ -477,6 +594,43 @@ class AdminStatsView(APIView):
                 "enrolled_at": e.enrolled_at
             })
 
+        # Admin Dashboard Completion gap fix: the operational counters the
+        # improved Overview page needs that this endpoint didn't compute
+        # before -- each a single .count() over an already-existing
+        # queryset, no new business logic, matching every metric above.
+        active_subscriptions_count = Subscription.objects.filter(status=Subscription.Status.ACTIVE).count()
+        draft_payouts_count = Payout.objects.filter(status=Payout.Status.DRAFT).count()
+        approved_payouts_pending_count = Payout.objects.filter(status=Payout.Status.APPROVED).count()
+        pending_refunds_count = Refund.objects.filter(status__in=[Refund.Status.REQUESTED, Refund.Status.PROCESSING]).count()
+        pending_assignment_grading_count = AssignmentSubmission.objects.filter(status=AssignmentSubmission.Status.SUBMITTED).count()
+        upcoming_live_classes_count = LiveClass.objects.filter(
+            status=LiveClass.ClassStatus.SCHEDULED, scheduled_start__gte=now,
+        ).count()
+
+        recent_refunds_qs = Refund.objects.select_related('customer').order_by('-requested_at')[:5]
+        recent_refunds = []
+        for r in recent_refunds_qs:
+            name = f"{r.customer.first_name} {r.customer.last_name}".strip() or r.customer.username if r.customer else "Unknown"
+            recent_refunds.append({
+                "id": r.id,
+                "customer_name": name,
+                "amount": float(r.amount),
+                "status": r.status,
+                "requested_at": r.requested_at,
+            })
+
+        upcoming_live_classes_qs = LiveClass.objects.select_related('course').filter(
+            status=LiveClass.ClassStatus.SCHEDULED, scheduled_start__gte=now,
+        ).order_by('scheduled_start')[:5]
+        upcoming_live_classes = []
+        for lc in upcoming_live_classes_qs:
+            upcoming_live_classes.append({
+                "id": lc.id,
+                "title": lc.title,
+                "course_title": lc.course.title if lc.course else None,
+                "scheduled_start": lc.scheduled_start,
+            })
+
         return Response({
             "total_students": total_students,
             "new_students_week": new_students_week,
@@ -484,30 +638,55 @@ class AdminStatsView(APIView):
             "active_students": active_students,
             "inactive_students": inactive_students,
             "total_teachers": total_teachers,
-            
+            "total_mentors": total_mentors,
+
             "total_courses": total_courses,
             "active_courses": active_courses,  # Published courses
             "draft_courses": draft_courses,
             "top_courses": top_courses,
-            
+
             "total_revenue": float(revenue),
             "current_month_revenue": float(current_month_revenue),
             "success_payments": success_payments,
             "pending_payments": pending_payments,
             "failed_payments": failed_payments,
             "revenue_breakdown": revenue_breakdown,
-            
+
             "total_enrollments": total_enrollments,
             "new_enrollments_month": new_enrollments_month,
             "paid_enrollments_count": paid_enrollments_count,
             "manual_enrollments_count": manual_enrollments_count,
-            
+
             "recent_registrations": recent_registrations,
             "recent_payments": recent_payments,
-            "recent_enrollments": recent_enrollments
+            "recent_enrollments": recent_enrollments,
+
+            # Admin Dashboard Completion gap fix.
+            "active_subscriptions_count": active_subscriptions_count,
+            "draft_payouts_count": draft_payouts_count,
+            "approved_payouts_pending_count": approved_payouts_pending_count,
+            "pending_refunds_count": pending_refunds_count,
+            "pending_assignment_grading_count": pending_assignment_grading_count,
+            "upcoming_live_classes_count": upcoming_live_classes_count,
+            "recent_refunds": recent_refunds,
+            "upcoming_live_classes": upcoming_live_classes,
         })
 
+@method_decorator(ensure_csrf_cookie, name='get')
 class CurrentUserView(APIView):
+    """
+    Payment/subscription CSRF hardening (final release audit finding):
+    ensure_csrf_cookie added here -- this is the single most universally-
+    called endpoint across the whole authenticated frontend (every page's
+    own auth/onboarding check hits GET api/users/me/), so it's the most
+    reliable place to guarantee the browser has picked up a csrftoken
+    cookie before it ever reaches a payment/subscription action that now
+    requires one (see orders/views.py's CSRFEnforcedJWTCookieAuthentication
+    and SubscriptionMeView's own copy of this same decorator). Purely
+    additive -- does not change this view's response body/logic, and is a
+    no-op for mobile (no cookie jar to read a Set-Cookie header into, so
+    mobile's own bearer-token calls to this same endpoint are unaffected).
+    """
     def get(self, request):
         if not request.user.is_authenticated:
             return Response({"error": "Not authenticated"}, status=status.HTTP_401_UNAUTHORIZED)
@@ -619,6 +798,23 @@ class SaveProfileView(APIView):
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
+
+def google_oauth_audiences():
+    """
+    Production Environment Verification follow-up. Builds the list of
+    Google OAuth client ids MobileGoogleLoginView will accept as a token's
+    `aud` claim, read fresh from settings on every call (deliberately NOT
+    a precomputed module-level constant in core/settings.py -- that would
+    be fixed at process start and wouldn't respond to Django's
+    override_settings() test helper patching these individual variables).
+    See GOOGLE_MOBILE_CLIENT_ID's own comment in core/settings.py for what
+    each of the three settings is for. Deduplicated, order-preserving,
+    empty entries dropped.
+    """
+    candidates = [settings.GOOGLE_MOBILE_CLIENT_ID, settings.GOOGLE_OAUTH_CLIENT_ID, settings.GOOGLE_ANDROID_CLIENT_ID]
+    return [client_id for client_id in dict.fromkeys(candidates) if client_id]
+
+
 class MobileGoogleLoginView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -628,12 +824,40 @@ class MobileGoogleLoginView(APIView):
         if not token:
             return Response({"error": "No token provided"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Production Environment Verification follow-up: at least one
+        # acceptable audience must be configured for this endpoint to
+        # safely accept any login. Degrades in isolation (this one
+        # endpoint returns an error) rather than crashing the whole app at
+        # boot, the same precedent RAZORPAY_WEBHOOK_SECRET already
+        # established for a not-yet-configured feature.
+        audiences = google_oauth_audiences()
+        if not audiences:
+            logger.error("MobileGoogleLoginView called but no Google OAuth client ID is configured.")
+            return Response(
+                {"error": "Google Sign-In is not fully configured on the server."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         try:
-            # Specify the CLIENT_ID of the app that accesses the backend:
-            # Note: For production, validate the client ID. We skip audience verification here 
-            # for ease of setup across different development keys, but get the info.
-            idinfo = id_token.verify_oauth2_token(token, google_requests.Request(), clock_skew_in_seconds=10)
-            
+            # Phase 3.9: `audience=` was previously omitted entirely --
+            # verify_oauth2_token only checked the token's signature and
+            # expiry, not WHICH OAuth client it was issued for. That meant
+            # a validly-signed Google ID token from ANY Google OAuth
+            # client (not just this app's own) would be accepted here.
+            #
+            # Production Environment Verification follow-up: `audience`
+            # now accepts a LIST of acceptable client ids (google-auth's
+            # underlying jwt.decode supports `str or list`, confirmed
+            # against the installed package) rather than exactly one --
+            # this app legitimately issues Google ID tokens whose `aud`
+            # claim may be either the Web-application client (reused as
+            # mobile's `webClientId`, see LoginScreen.tsx) or, in future,
+            # a separate Android-type client. The token is accepted if its
+            # audience matches ANY entry in this list.
+            idinfo = id_token.verify_oauth2_token(
+                token, google_requests.Request(), audience=audiences, clock_skew_in_seconds=10,
+            )
+
             email = idinfo.get('email')
             if not email:
                 return Response({"error": "Google token did not contain an email"}, status=status.HTTP_400_BAD_REQUEST)
@@ -767,3 +991,43 @@ class MyMentorProfileView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+
+from rest_framework import generics
+from rest_framework.pagination import PageNumberPagination
+from .models import AdminAuditLog
+from .serializers import AdminAuditLogSerializer
+
+
+class AdminAuditLogResultsSetPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class AdminAuditLogListView(generics.ListAPIView):
+    """
+    Admin Dashboard Completion gap fix. AdminAuditLog.record() has been
+    writing role-change/course-instructor/refund/payout audit entries
+    since Phase 3.9, but nothing has ever exposed them through the API --
+    Django admin's read-only AdminAuditLogAdmin was the only way to see
+    them. Read-only, list-only (matches the model's own admin lock:
+    no add/change/delete permission there either).
+    """
+    serializer_class = AdminAuditLogSerializer
+    permission_classes = [IsSuperAdminOrAdmin]
+    pagination_class = AdminAuditLogResultsSetPagination
+
+    def get_queryset(self):
+        qs = AdminAuditLog.objects.select_related('actor').order_by('-created_at')
+        params = self.request.query_params
+        action_param = params.get('action')
+        if action_param:
+            qs = qs.filter(action=action_param)
+        target_type = params.get('target_type')
+        if target_type:
+            qs = qs.filter(target_type=target_type)
+        actor_id = params.get('actor_id')
+        if actor_id:
+            qs = qs.filter(actor_id=actor_id)
+        return qs

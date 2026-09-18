@@ -22,6 +22,7 @@ from rest_framework.test import APITestCase
 
 from courses.models import Course
 from orders.models import SubscriptionPlan, Subscription, SubscriptionPayment
+from django.core.cache import cache
 
 User = get_user_model()
 
@@ -42,6 +43,7 @@ def fake_razorpay_subscription(sub_id="sub_fake_123", rzp_status="created", curr
 
 class CreateSubscriptionViewTests(APITestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.student = User.objects.create_user(username="sub_checkout_student", password="password123")
         self.other_student = User.objects.create_user(username="sub_checkout_other", password="password123")
         self.course = Course.objects.create(title="Kathak Basics", description="x", price=1000, is_published=True)
@@ -236,6 +238,7 @@ class CreateSubscriptionViewTests(APITestCase):
 
 class VerifySubscriptionPaymentViewTests(APITestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self.student = User.objects.create_user(username="verify_sub_student", password="password123")
         self.other_student = User.objects.create_user(username="verify_sub_other", password="password123")
         self.plan = SubscriptionPlan.objects.create(

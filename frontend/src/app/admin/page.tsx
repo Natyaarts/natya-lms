@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { DollarSign, Users, Award, BookOpen, Clock, Calendar, CheckCircle2 } from "lucide-react";
+import Link from "next/link";
+import { DollarSign, Users, Award, BookOpen, Clock, Calendar, CheckCircle2, UserCog, Repeat, Banknote, Undo2, ClipboardCheck, Radio } from "lucide-react";
 
 export default function AdminDashboard() {
   const [stats, setStats] = useState<any>({
@@ -31,7 +32,19 @@ export default function AdminDashboard() {
     
     recent_registrations: [],
     recent_payments: [],
-    recent_enrollments: []
+    recent_enrollments: [],
+
+    // Custom Admin Dashboard Completion additions -- all computed live by
+    // AdminStatsView from existing models, never hardcoded/mocked here.
+    total_mentors: 0,
+    active_subscriptions_count: 0,
+    draft_payouts_count: 0,
+    approved_payouts_pending_count: 0,
+    pending_refunds_count: 0,
+    pending_assignment_grading_count: 0,
+    upcoming_live_classes_count: 0,
+    recent_refunds: [],
+    upcoming_live_classes: [],
   });
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"registrations" | "payments" | "enrollments">("registrations");
@@ -148,6 +161,48 @@ export default function AdminDashboard() {
                 <span className="text-zinc-500 font-normal">this month</span>
               </div>
             </div>
+          </div>
+
+          {/* Operational Alerts Row -- Custom Admin Dashboard Completion
+              additions. Every number here comes straight from
+              AdminStatsView; nothing is hardcoded. Each chip links to the
+              admin page where that item is actually actioned. */}
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+            <Link href="/admin/teachers-mentors" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
+              <div className="p-1.5 bg-indigo-500/10 text-indigo-400 rounded-lg w-fit mb-2"><UserCog className="w-3.5 h-3.5" /></div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{stats.total_mentors.toLocaleString()}</div>
+              <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Mentors</div>
+            </Link>
+            <Link href="/admin/subscriptions" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
+              <div className="p-1.5 bg-teal-500/10 text-teal-400 rounded-lg w-fit mb-2"><Repeat className="w-3.5 h-3.5" /></div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{stats.active_subscriptions_count.toLocaleString()}</div>
+              <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Active Subs</div>
+            </Link>
+            <Link href="/admin/payouts" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
+              <div className="p-1.5 bg-yellow-500/10 text-[#facc15] rounded-lg w-fit mb-2"><Banknote className="w-3.5 h-3.5" /></div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{stats.draft_payouts_count.toLocaleString()}</div>
+              <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Draft Payouts</div>
+            </Link>
+            <Link href="/admin/payouts" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
+              <div className="p-1.5 bg-blue-500/10 text-blue-400 rounded-lg w-fit mb-2"><Banknote className="w-3.5 h-3.5" /></div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{stats.approved_payouts_pending_count.toLocaleString()}</div>
+              <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Payouts to Pay</div>
+            </Link>
+            <Link href="/admin/refunds" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
+              <div className="p-1.5 bg-red-500/10 text-red-400 rounded-lg w-fit mb-2"><Undo2 className="w-3.5 h-3.5" /></div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{stats.pending_refunds_count.toLocaleString()}</div>
+              <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Pending Refunds</div>
+            </Link>
+            <Link href="/admin/assignments" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
+              <div className="p-1.5 bg-orange-500/10 text-orange-400 rounded-lg w-fit mb-2"><ClipboardCheck className="w-3.5 h-3.5" /></div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{stats.pending_assignment_grading_count.toLocaleString()}</div>
+              <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Needs Grading</div>
+            </Link>
+            <Link href="/admin/live-classes" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
+              <div className="p-1.5 bg-purple-500/10 text-purple-400 rounded-lg w-fit mb-2"><Radio className="w-3.5 h-3.5" /></div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{stats.upcoming_live_classes_count.toLocaleString()}</div>
+              <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Upcoming Classes</div>
+            </Link>
           </div>
 
           {/* Revenue and Enrollment charts row */}
@@ -370,6 +425,85 @@ export default function AdminDashboard() {
               <div className="bg-white/5 px-6 py-4 flex items-center justify-between border-t border-white/5 text-[10px] text-zinc-500 font-medium uppercase tracking-wider">
                 <span>Natya LMS Admin Panel Logs Feed</span>
                 <span>Active</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Recent Refunds / Upcoming Live Classes -- Custom Admin
+              Dashboard Completion additions, same two-column layout as the
+              row above. */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="bg-zinc-900 border border-white/5 rounded-2xl shadow-xl overflow-hidden">
+              <div className="px-6 py-5 border-b border-white/5">
+                <h3 className="text-base font-bold text-white">Recent Refunds</h3>
+                <p className="text-zinc-500 text-[10px] mt-0.5">Latest refund requests across all payment sources.</p>
+              </div>
+              <div className="p-6">
+                {stats.recent_refunds.length === 0 ? (
+                  <div className="text-center py-8 text-zinc-500 text-xs">No refunds requested yet.</div>
+                ) : (
+                  <div className="space-y-4">
+                    {stats.recent_refunds.map((r: any) => (
+                      <div key={r.id} className="flex items-center justify-between text-xs hover:bg-white/5 p-2 rounded-xl transition-colors">
+                        <div className="min-w-0">
+                          <div className="font-bold text-white">{r.customer_name}</div>
+                          <div className="text-zinc-500 text-[10px] mt-0.5 font-mono">
+                            {new Date(r.requested_at).toLocaleString()}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="font-bold text-[#facc15]">₹{parseFloat(r.amount).toLocaleString()}</div>
+                          <span className={`px-2 py-0.5 text-[8px] font-bold rounded-full inline-block mt-1 ${
+                            r.status === 'SUCCESS'
+                              ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                              : r.status === 'FAILED' || r.status === 'REJECTED'
+                              ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                              : 'bg-yellow-500/10 text-[#facc15] border border-yellow-500/20'
+                          }`}>
+                            {r.status}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="bg-white/5 px-6 py-3 border-t border-white/5">
+                <Link href="/admin/refunds" className="text-[10px] font-semibold text-zinc-400 hover:text-white uppercase tracking-wider transition-colors">
+                  View all refunds &rarr;
+                </Link>
+              </div>
+            </div>
+
+            <div className="bg-zinc-900 border border-white/5 rounded-2xl shadow-xl overflow-hidden">
+              <div className="px-6 py-5 border-b border-white/5">
+                <h3 className="text-base font-bold text-white">Upcoming Live Classes</h3>
+                <p className="text-zinc-500 text-[10px] mt-0.5">Next scheduled sessions across all courses.</p>
+              </div>
+              <div className="p-6">
+                {stats.upcoming_live_classes.length === 0 ? (
+                  <div className="text-center py-8 text-zinc-500 text-xs">No upcoming live classes scheduled.</div>
+                ) : (
+                  <div className="space-y-4">
+                    {stats.upcoming_live_classes.map((c: any) => (
+                      <div key={c.id} className="flex items-center justify-between text-xs hover:bg-white/5 p-2 rounded-xl transition-colors">
+                        <div className="min-w-0">
+                          <div className="font-bold text-white truncate max-w-[220px]">{c.title}</div>
+                          <div className="text-zinc-500 text-[10px] mt-0.5 truncate max-w-[220px]">{c.course_title}</div>
+                        </div>
+                        <div className="text-zinc-400 flex items-center gap-1 font-medium font-mono shrink-0">
+                          <Calendar className="w-3.5 h-3.5 text-purple-400" />
+                          {new Date(c.scheduled_start).toLocaleString()}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="bg-white/5 px-6 py-3 border-t border-white/5">
+                <Link href="/admin/live-classes" className="text-[10px] font-semibold text-zinc-400 hover:text-white uppercase tracking-wider transition-colors">
+                  View all live classes &rarr;
+                </Link>
               </div>
             </div>
           </div>

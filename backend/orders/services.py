@@ -54,6 +54,17 @@ def fulfill_purchase(purchase, previous_status):
     _grant_course_access(purchase.user, purchase.course)
     NotificationService.trigger_payment_success(purchase, previous_status)
 
+    # Phase 3.5.2: revenue attribution, hooked into this already-proven
+    # success path. Never affects the enrollment/notification above --
+    # see finance/services.py's own docstring for why this can never
+    # raise back into this function.
+    from finance.services import create_earning_entry_for_purchase, create_invoice_for_purchase
+    create_earning_entry_for_purchase(purchase)
+    # Phase 3.5.5: customer invoice/receipt -- an independent side effect
+    # of this same success event, never affecting or affected by the
+    # ledger entry above (see create_invoice_for_purchase's docstring).
+    create_invoice_for_purchase(purchase)
+
 
 def fulfill_order(order, previous_status):
     """
@@ -74,11 +85,26 @@ def fulfill_order(order, previous_status):
     if order.status != 'PAID':
         return
 
+    # Phase 3.5.2: revenue attribution, hooked into this already-proven
+    # success path -- one LedgerEntry attempt per item, same as the
+    # existing per-item access-granting loop. A BUNDLE item's courses are
+    # resolved to a single instructor only if the bundle contains exactly
+    # one course; otherwise it's a safe no-op (see
+    # finance/services.py's create_earning_entry_for_order_item /
+    # _resolve_primary_instructor docstrings -- multi-instructor bundle
+    # splitting is explicitly out of scope for this phase).
+    from finance.services import create_earning_entry_for_order_item, create_invoice_for_order
+
     for item in order.items.select_related('course').prefetch_related('bundle__courses'):
         if item.item_type == 'COURSE' and item.course_id:
             _grant_course_access(order.user, item.course)
         elif item.item_type == 'BUNDLE' and item.bundle_id:
             for course in item.bundle.courses.all():
                 _grant_course_access(order.user, course)
+        create_earning_entry_for_order_item(item, order.currency)
+
+    # Phase 3.5.5: ONE invoice per Order (the whole checkout), not per
+    # item -- called once here, outside the per-item loop above.
+    create_invoice_for_order(order)
 
     NotificationService.trigger_order_payment_success(order, previous_status)

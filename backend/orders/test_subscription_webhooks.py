@@ -31,6 +31,7 @@ from rest_framework.test import APITestCase
 
 from orders.models import Subscription, SubscriptionPayment, SubscriptionPlan, WebhookEvent
 from orders.tests import WEBHOOK_TEST_SECRET, sign_webhook_payload
+from django.core.cache import cache
 
 User = get_user_model()
 
@@ -62,6 +63,7 @@ def payment_entity(payment_id="pay_webhook_charge_1", amount=99900, currency="IN
 @override_settings(RAZORPAY_WEBHOOK_SECRET=WEBHOOK_TEST_SECRET)
 class SubscriptionWebhookTests(APITestCase):
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         # Phase 3.4.5: entering PENDING/HALTED now schedules a grace-period
         # notification task via apply_async(eta=...) -- mocked here exactly
         # like courses/tests.py mocks send_class_reminder.apply_async
@@ -219,6 +221,23 @@ class SubscriptionWebhookTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.subscription.refresh_from_db()
         self.assertEqual(self.subscription.status, Subscription.Status.HALTED)
+
+    # Phase 4.8: locks in the documented reason no SubscriptionPayment(FAILED)
+    # is ever recorded from subscription.pending/.halted -- per Razorpay's
+    # webhook payload documentation (already confirmed when
+    # SUBSCRIPTION_EVENT_TYPES was written, see that comment in
+    # orders/views.py), only subscription.charged carries payload.payment.entity;
+    # pending/halted carry payload.subscription.entity alone, with no payment
+    # id of any kind to record a row against. _record_subscription_charge
+    # (the only code that ever creates a SubscriptionPayment) is called
+    # exclusively for subscription.charged -- never pending/halted -- so
+    # inventing a FAILED row here would require fabricating a payment id,
+    # which is exactly what this test exists to prevent ever silently
+    # regressing into.
+    def test_pending_and_halted_never_create_a_subscription_payment(self):
+        self._post(self._lifecycle_payload("subscription.pending", "pending"), event_id="evt_pending_no_payment_1")
+        self._post(self._lifecycle_payload("subscription.halted", "halted"), event_id="evt_halted_no_payment_1")
+        self.assertEqual(SubscriptionPayment.objects.count(), 0)
 
     def test_subscription_cancelled_sets_cancelled_at_from_razorpay_timestamp(self):
         payload = self._lifecycle_payload("subscription.cancelled", "cancelled", ended_at=1735689600)
@@ -405,6 +424,7 @@ class SubscriptionWebhookStatusFallbackAndStalenessTests(APITestCase):
     """
 
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self._grace_apply_async_patcher = patch('orders.tasks.notify_subscription_grace_period_expired.apply_async')
         self._grace_apply_async_patcher.start()
         self.addCleanup(self._grace_apply_async_patcher.stop)
@@ -596,6 +616,7 @@ class SubscriptionWebhookPaymentStatusAndPeriodDataTests(APITestCase):
     """
 
     def setUp(self):
+        cache.clear()  # rate-limiting gap fix: LocMemCache isn't reset between test methods, and reused PKs across rolled-back transactions can leak throttle state across test classes.
         self._grace_apply_async_patcher = patch('orders.tasks.notify_subscription_grace_period_expired.apply_async')
         self._grace_apply_async_patcher.start()
         self.addCleanup(self._grace_apply_async_patcher.stop)
