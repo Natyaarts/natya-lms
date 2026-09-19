@@ -4,6 +4,16 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { DollarSign, Users, Award, BookOpen, Clock, Calendar, CheckCircle2, UserCog, Repeat, Banknote, Undo2, ClipboardCheck, Radio } from "lucide-react";
 
+// Production incident fix: AdminStatsView's response is trusted to always
+// include every numeric field, but a version-skewed deployment (frontend
+// ahead of backend, or a future backend regression) can return a payload
+// missing one -- e.g. total_mentors/active_subscriptions_count/etc. were
+// added to AdminStatsView after this page started reading them, so an
+// older backend build's 200 response simply omits them, leaving
+// stats.total_mentors undefined and crashing on .toLocaleString(). This
+// coerces any non-number (undefined, null, NaN) to 0 rather than throwing.
+const fmtNum = (value: unknown): string => (typeof value === "number" && !isNaN(value) ? value : 0).toLocaleString();
+
 export default function AdminDashboard() {
   const [stats, setStats] = useState<any>({
     total_students: 0,
@@ -57,7 +67,11 @@ export default function AdminDashboard() {
         });
         if (res.ok) {
           const data = await res.json();
-          setStats(data);
+          // Merge over the existing (safe-default) state instead of
+          // replacing it outright -- a response missing a field (e.g. an
+          // older backend build that predates a newer stat) must fall back
+          // to its 0/[] default, not become undefined. See fmtNum above.
+          setStats((prev: any) => ({ ...prev, ...data }));
         }
       } catch (err) {
         console.error(err);
@@ -76,7 +90,7 @@ export default function AdminDashboard() {
   const manualPct = 100 - paidPct;
 
   // Max value in monthly revenue for scaling bars
-  const maxRevenue = stats.revenue_breakdown.reduce((max: number, item: any) => (item.total > max ? item.total : max), 0) || 1;
+  const maxRevenue = (stats.revenue_breakdown || []).reduce((max: number, item: any) => (item.total > max ? item.total : max), 0) || 1;
 
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 font-sans text-white pb-20 max-w-6xl mx-auto">
@@ -104,10 +118,10 @@ export default function AdminDashboard() {
                 </div>
               </div>
               <div className="text-3xl font-extrabold text-white tracking-tight">
-                ₹{stats.total_revenue.toLocaleString()}
+                ₹{fmtNum(stats.total_revenue)}
               </div>
               <div className="text-[10px] text-emerald-400 mt-2 flex items-center gap-1 font-medium">
-                <span>₹{stats.current_month_revenue.toLocaleString()}</span>
+                <span>₹{fmtNum(stats.current_month_revenue)}</span>
                 <span className="text-zinc-500 font-normal">collected this month</span>
               </div>
             </div>
@@ -121,7 +135,7 @@ export default function AdminDashboard() {
                 </div>
               </div>
               <div className="text-3xl font-extrabold text-white tracking-tight">
-                {stats.total_students.toLocaleString()}
+                {fmtNum(stats.total_students)}
               </div>
               <div className="text-[10px] text-blue-400 mt-2 flex items-center gap-1 font-medium">
                 <span>+{stats.new_students_week} students</span>
@@ -138,7 +152,7 @@ export default function AdminDashboard() {
                 </div>
               </div>
               <div className="text-3xl font-extrabold text-white tracking-tight">
-                {stats.total_teachers.toLocaleString()}
+                {fmtNum(stats.total_teachers)}
               </div>
               <div className="text-[10px] text-zinc-500 mt-2 font-normal">
                 Active teacher dashboards in database
@@ -154,7 +168,7 @@ export default function AdminDashboard() {
                 </div>
               </div>
               <div className="text-3xl font-extrabold text-white tracking-tight">
-                {stats.total_enrollments.toLocaleString()}
+                {fmtNum(stats.total_enrollments)}
               </div>
               <div className="text-[10px] text-purple-400 mt-2 flex items-center gap-1 font-medium">
                 <span>+{stats.new_enrollments_month} enrollments</span>
@@ -170,37 +184,37 @@ export default function AdminDashboard() {
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
             <Link href="/admin/teachers-mentors" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
               <div className="p-1.5 bg-indigo-500/10 text-indigo-400 rounded-lg w-fit mb-2"><UserCog className="w-3.5 h-3.5" /></div>
-              <div className="text-xl font-extrabold text-white tracking-tight">{stats.total_mentors.toLocaleString()}</div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{fmtNum(stats.total_mentors)}</div>
               <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Mentors</div>
             </Link>
             <Link href="/admin/subscriptions" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
               <div className="p-1.5 bg-teal-500/10 text-teal-400 rounded-lg w-fit mb-2"><Repeat className="w-3.5 h-3.5" /></div>
-              <div className="text-xl font-extrabold text-white tracking-tight">{stats.active_subscriptions_count.toLocaleString()}</div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{fmtNum(stats.active_subscriptions_count)}</div>
               <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Active Subs</div>
             </Link>
             <Link href="/admin/payouts" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
               <div className="p-1.5 bg-yellow-500/10 text-[#facc15] rounded-lg w-fit mb-2"><Banknote className="w-3.5 h-3.5" /></div>
-              <div className="text-xl font-extrabold text-white tracking-tight">{stats.draft_payouts_count.toLocaleString()}</div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{fmtNum(stats.draft_payouts_count)}</div>
               <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Draft Payouts</div>
             </Link>
             <Link href="/admin/payouts" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
               <div className="p-1.5 bg-blue-500/10 text-blue-400 rounded-lg w-fit mb-2"><Banknote className="w-3.5 h-3.5" /></div>
-              <div className="text-xl font-extrabold text-white tracking-tight">{stats.approved_payouts_pending_count.toLocaleString()}</div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{fmtNum(stats.approved_payouts_pending_count)}</div>
               <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Payouts to Pay</div>
             </Link>
             <Link href="/admin/refunds" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
               <div className="p-1.5 bg-red-500/10 text-red-400 rounded-lg w-fit mb-2"><Undo2 className="w-3.5 h-3.5" /></div>
-              <div className="text-xl font-extrabold text-white tracking-tight">{stats.pending_refunds_count.toLocaleString()}</div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{fmtNum(stats.pending_refunds_count)}</div>
               <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Pending Refunds</div>
             </Link>
             <Link href="/admin/assignments" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
               <div className="p-1.5 bg-orange-500/10 text-orange-400 rounded-lg w-fit mb-2"><ClipboardCheck className="w-3.5 h-3.5" /></div>
-              <div className="text-xl font-extrabold text-white tracking-tight">{stats.pending_assignment_grading_count.toLocaleString()}</div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{fmtNum(stats.pending_assignment_grading_count)}</div>
               <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Needs Grading</div>
             </Link>
             <Link href="/admin/live-classes" className="bg-zinc-900 border border-white/5 hover:border-white/10 p-4 rounded-2xl shadow-xl transition-colors">
               <div className="p-1.5 bg-purple-500/10 text-purple-400 rounded-lg w-fit mb-2"><Radio className="w-3.5 h-3.5" /></div>
-              <div className="text-xl font-extrabold text-white tracking-tight">{stats.upcoming_live_classes_count.toLocaleString()}</div>
+              <div className="text-xl font-extrabold text-white tracking-tight">{fmtNum(stats.upcoming_live_classes_count)}</div>
               <div className="text-[9px] text-zinc-500 uppercase tracking-wider font-semibold mt-1">Upcoming Classes</div>
             </Link>
           </div>
@@ -212,13 +226,13 @@ export default function AdminDashboard() {
               <h3 className="text-lg font-bold mb-1">Monthly Billing Trends</h3>
               <p className="text-zinc-500 text-xs mb-8">Completed checkouts logs aggregated monthly.</p>
 
-              {stats.revenue_breakdown.length === 0 ? (
+              {(stats.revenue_breakdown || []).length === 0 ? (
                 <div className="h-48 flex items-center justify-center text-zinc-500 text-sm">
                   No billing history to display.
                 </div>
               ) : (
                 <div className="flex flex-col gap-5">
-                  {stats.revenue_breakdown.map((item: any, idx: number) => {
+                  {(stats.revenue_breakdown || []).map((item: any, idx: number) => {
                     const widthPct = Math.max(8, Math.round((item.total / maxRevenue) * 100));
                     return (
                       <div key={idx} className="flex items-center gap-4 text-xs">
@@ -230,7 +244,7 @@ export default function AdminDashboard() {
                           />
                         </div>
                         <div className="w-20 text-right font-bold text-white">
-                          ₹{item.total.toLocaleString()}
+                          ₹{fmtNum(item.total)}
                         </div>
                       </div>
                     );
@@ -291,10 +305,10 @@ export default function AdminDashboard() {
               <p className="text-zinc-500 text-xs mb-6">Highest registered classes by student count.</p>
 
               <div className="space-y-4">
-                {stats.top_courses.length === 0 ? (
+                {(stats.top_courses || []).length === 0 ? (
                   <div className="p-8 text-center text-zinc-600 text-xs">No course enrollments logged.</div>
                 ) : (
-                  stats.top_courses.map((course: any, idx: number) => (
+                  (stats.top_courses || []).map((course: any, idx: number) => (
                     <div key={course.id} className="flex items-center justify-between text-xs">
                       <div className="flex items-center gap-3 min-w-0">
                         <span className="w-5 h-5 flex items-center justify-center font-bold bg-white/5 border border-white/10 rounded-md text-zinc-400 shrink-0">
@@ -351,10 +365,10 @@ export default function AdminDashboard() {
                   {/* Tab 1: Registrations */}
                   {activeTab === "registrations" && (
                     <div className="space-y-4">
-                      {stats.recent_registrations.length === 0 ? (
+                      {(stats.recent_registrations || []).length === 0 ? (
                         <div className="text-center py-8 text-zinc-500 text-xs">No recent student registrations.</div>
                       ) : (
-                        stats.recent_registrations.map((u: any, idx: number) => (
+                        (stats.recent_registrations || []).map((u: any, idx: number) => (
                           <div key={idx} className="flex items-center justify-between text-xs hover:bg-white/5 p-2 rounded-xl transition-colors">
                             <div className="min-w-0">
                               <div className="font-bold text-white">{u.name}</div>
@@ -373,17 +387,17 @@ export default function AdminDashboard() {
                   {/* Tab 2: Payments */}
                   {activeTab === "payments" && (
                     <div className="space-y-4">
-                      {stats.recent_payments.length === 0 ? (
+                      {(stats.recent_payments || []).length === 0 ? (
                         <div className="text-center py-8 text-zinc-500 text-xs">No recent purchase transactions.</div>
                       ) : (
-                        stats.recent_payments.map((p: any, idx: number) => (
+                        (stats.recent_payments || []).map((p: any, idx: number) => (
                           <div key={idx} className="flex items-center justify-between text-xs hover:bg-white/5 p-2 rounded-xl transition-colors">
                             <div className="min-w-0">
                               <div className="font-bold text-white">{p.student_name}</div>
                               <div className="text-zinc-500 text-[10px] mt-0.5 truncate max-w-[200px]">{p.course_title}</div>
                             </div>
                             <div className="text-right shrink-0">
-                              <div className="font-bold text-[#facc15]">₹{p.amount.toLocaleString()}</div>
+                              <div className="font-bold text-[#facc15]">₹{fmtNum(p.amount)}</div>
                               <span className={`px-2 py-0.5 text-[8px] font-bold rounded-full inline-block mt-1 ${
                                 p.status === 'SUCCESS'
                                   ? 'bg-green-500/10 text-green-400 border border-green-500/20'
@@ -401,10 +415,10 @@ export default function AdminDashboard() {
                   {/* Tab 3: Enrollments */}
                   {activeTab === "enrollments" && (
                     <div className="space-y-4">
-                      {stats.recent_enrollments.length === 0 ? (
+                      {(stats.recent_enrollments || []).length === 0 ? (
                         <div className="text-center py-8 text-zinc-500 text-xs">No recent student course enrollments.</div>
                       ) : (
-                        stats.recent_enrollments.map((e: any, idx: number) => (
+                        (stats.recent_enrollments || []).map((e: any, idx: number) => (
                           <div key={idx} className="flex items-center justify-between text-xs hover:bg-white/5 p-2 rounded-xl transition-colors">
                             <div className="min-w-0">
                               <div className="font-bold text-white">{e.student_name}</div>
@@ -439,11 +453,11 @@ export default function AdminDashboard() {
                 <p className="text-zinc-500 text-[10px] mt-0.5">Latest refund requests across all payment sources.</p>
               </div>
               <div className="p-6">
-                {stats.recent_refunds.length === 0 ? (
+                {(stats.recent_refunds || []).length === 0 ? (
                   <div className="text-center py-8 text-zinc-500 text-xs">No refunds requested yet.</div>
                 ) : (
                   <div className="space-y-4">
-                    {stats.recent_refunds.map((r: any) => (
+                    {(stats.recent_refunds || []).map((r: any) => (
                       <div key={r.id} className="flex items-center justify-between text-xs hover:bg-white/5 p-2 rounded-xl transition-colors">
                         <div className="min-w-0">
                           <div className="font-bold text-white">{r.customer_name}</div>
@@ -452,7 +466,7 @@ export default function AdminDashboard() {
                           </div>
                         </div>
                         <div className="text-right shrink-0">
-                          <div className="font-bold text-[#facc15]">₹{parseFloat(r.amount).toLocaleString()}</div>
+                          <div className="font-bold text-[#facc15]">₹{fmtNum(parseFloat(r.amount))}</div>
                           <span className={`px-2 py-0.5 text-[8px] font-bold rounded-full inline-block mt-1 ${
                             r.status === 'SUCCESS'
                               ? 'bg-green-500/10 text-green-400 border border-green-500/20'
@@ -481,11 +495,11 @@ export default function AdminDashboard() {
                 <p className="text-zinc-500 text-[10px] mt-0.5">Next scheduled sessions across all courses.</p>
               </div>
               <div className="p-6">
-                {stats.upcoming_live_classes.length === 0 ? (
+                {(stats.upcoming_live_classes || []).length === 0 ? (
                   <div className="text-center py-8 text-zinc-500 text-xs">No upcoming live classes scheduled.</div>
                 ) : (
                   <div className="space-y-4">
-                    {stats.upcoming_live_classes.map((c: any) => (
+                    {(stats.upcoming_live_classes || []).map((c: any) => (
                       <div key={c.id} className="flex items-center justify-between text-xs hover:bg-white/5 p-2 rounded-xl transition-colors">
                         <div className="min-w-0">
                           <div className="font-bold text-white truncate max-w-[220px]">{c.title}</div>
