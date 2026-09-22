@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { Video, Calendar as CalendarIcon, List as ListIcon, ExternalLink, PlayCircle, CheckCircle2 } from "lucide-react";
-import NotificationBell from "@/components/NotificationBell";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
 
 // Phase 2: student-facing live classes -- upcoming/today/completed/
@@ -96,20 +95,6 @@ export default function StudentLiveClassesPage() {
 
   return (
     <div className="min-h-screen bg-black text-white font-sans pb-24">
-      <nav className="border-b border-white/10 bg-black/50 backdrop-blur-md fixed top-0 w-full z-50">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-          <Link href="/" className="flex items-center">
-            <Image src="/img/logo.png" alt="Natya LMS Logo" width={140} height={40} className="object-contain" />
-          </Link>
-          <div className="flex gap-4 items-center">
-            <Link href="/dashboard" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
-              My Learning
-            </Link>
-            <NotificationBell />
-          </div>
-        </div>
-      </nav>
-
       <div className="pt-32 px-6 max-w-5xl mx-auto">
         <div className="flex items-center gap-3 mb-8">
           <div className="w-10 h-10 rounded-full bg-[#facc15]/10 flex items-center justify-center text-[#facc15]">

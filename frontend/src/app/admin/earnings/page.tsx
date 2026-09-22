@@ -204,8 +204,13 @@ export default function EarningsLedger() {
         { credentials: "include" }
       );
       if (res.ok) {
-        const data: LedgerEntry[] = await res.json();
-        setEligibleEntries(data || []);
+        // EligibleLedgerEntriesView is paginated (StandardResultsSetPagination),
+        // so the response is {count, next, previous, results: [...]}, never a
+        // bare array -- reading the envelope itself as the array silently
+        // stored the object and crashed the very next render on
+        // eligibleEntries.map() for any instructor with eligible entries.
+        const data: { results?: LedgerEntry[] } = await res.json();
+        setEligibleEntries(data.results || []);
         setSelectedEntryIds([]);
         setEligibleLoadedForId(recipientId);
       } else {

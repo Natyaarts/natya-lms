@@ -4,45 +4,31 @@ import Link from "next/link";
 import Image from "next/image";
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import NotificationBell from "@/components/NotificationBell";
+import { useAuth } from "@/context/AuthContext";
 
 export default function Dashboard() {
+  const { user, loading: authLoading } = useAuth();
   const [loading, setLoading] = useState(true);
   const [courses, setCourses] = useState<any[]>([]);
   const [announcements, setAnnouncements] = useState<any[]>([]);
-  const [user, setUser] = useState<any>(null);
-  const [dropdownOpen, setDropdownOpen] = useState(false);
 
-  const handleLogout = async () => {
-    try {
-      await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/logout/`, {
-        method: 'POST',
-        credentials: 'include'
-      });
-    } catch (err) {
-      console.error(err);
+  useEffect(() => {
+    // If auth is loaded and user is not authenticated or not onboarded, redirect
+    if (!authLoading) {
+      if (!user) {
+        window.location.href = "/login";
+        return;
+      }
+      if (user.is_onboarded === false && !user.is_superuser && !user.is_teacher) {
+        window.location.href = "/onboarding";
+        return;
+      }
     }
-    window.location.href = '/login';
-  };
+  }, [user, authLoading]);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const userRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/me/`, {
-          credentials: "include"
-        });
-        if (userRes.ok) {
-          const userData = await userRes.json();
-          setUser(userData);
-          if (userData.is_onboarded === false && !userData.is_superuser && !userData.is_teacher) {
-            window.location.href = '/onboarding';
-            return;
-          }
-        } else {
-          window.location.href = '/login';
-          return;
-        }
-
         const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/my_courses/`, {
           credentials: "include"
         });
@@ -63,69 +49,6 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-black text-white font-sans pb-24">
-      {/* Navigation Bar */}
-      <nav className="border-b border-white/10 bg-black/50 backdrop-blur-md fixed top-0 w-full z-50">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-          <Link href="/" className="flex items-center">
-            <Image src="/img/logo.png" alt="Natya LMS Logo" width={140} height={40} className="object-contain" />
-          </Link>
-          <div className="flex gap-4 items-center">
-            <Link href="/courses" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
-              Browse Courses
-            </Link>
-            <Link href="/bundles" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
-              Bundles
-            </Link>
-            <Link href="/live-classes" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
-              Live Classes
-            </Link>
-            <Link href="/orders" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
-              My Orders
-            </Link>
-            <Link href="/subscriptions" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
-              Subscriptions
-            </Link>
-            <Link href="/invoices" className="text-sm font-medium text-[#facc15] hover:text-white transition-colors">
-              Invoices
-            </Link>
-
-            <NotificationBell />
-
-            <div className="relative">
-              <button 
-                onClick={() => setDropdownOpen(!dropdownOpen)}
-                className="w-10 h-10 rounded-full bg-zinc-800 border-2 border-[#facc15] flex items-center justify-center text-sm font-bold uppercase text-[#facc15] hover:scale-105 transition-transform"
-              >
-                {user ? (user.first_name?.[0] || user.username?.[0] || "U") : "U"}
-              </button>
-
-              {dropdownOpen && (
-                <div className="absolute right-0 mt-2 w-48 bg-[#1a1a1a] border border-white/10 rounded-xl shadow-xl py-2 z-50">
-                  <div className="px-4 py-2 border-b border-white/10 mb-2">
-                    <p className="text-sm font-semibold text-white truncate">{user?.first_name || user?.username || 'User'}</p>
-                    <p className="text-xs text-zinc-400 truncate">{user?.email || user?.phone_number || ''}</p>
-                  </div>
-                  <Link href="/profile" className="block px-4 py-2 text-sm text-zinc-300 hover:bg-white/5 hover:text-white transition-colors">
-                    My Profile
-                  </Link>
-                  {user?.is_superuser || user?.is_teacher ? (
-                    <Link href="/admin" className="block px-4 py-2 text-sm text-zinc-300 hover:bg-white/5 hover:text-white transition-colors">
-                      Admin Dashboard
-                    </Link>
-                  ) : null}
-                  <button
-                    onClick={handleLogout}
-                    className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-red-400/10 transition-colors"
-                  >
-                    Log Out
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </nav>
-
       {/* Main Content */}
       <div className="pt-20">
         {/* Banner Section */}

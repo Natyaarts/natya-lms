@@ -5,10 +5,10 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Play, Pause, Volume2, VolumeX, Maximize, Minimize,
-  Settings, Check, ChevronLeft, Lock, ClipboardList, Trophy, Clock,
+  Play, Check, ChevronLeft, Lock, ClipboardList, Trophy, Clock,
   FileText, RotateCcw
 } from "lucide-react";
+import WebVideoPlayer from "@/components/player/WebVideoPlayer";
 
 // Phase 4.3: assessment status -> badge label/color + CTA label/href,
 // reusing the exact status values ModuleSerializer.get_assessments
@@ -71,26 +71,6 @@ export default function CourseLearnPage() {
   const [course, setCourse] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [activeLesson, setActiveLesson] = useState<any>(null);
-  
-  // Video & Audio Sync State
-  const containerRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const audioRef = useRef<HTMLAudioElement>(null);
-  
-  const [activeLanguage, setActiveLanguage] = useState<string>('en'); 
-  const [showLanguageMenu, setShowLanguageMenu] = useState(false);
-
-  // Custom Player State
-  const [isPlaying, setIsPlaying] = useState(true);
-  const [progress, setProgress] = useState(0);
-  const [currentTimeStr, setCurrentTimeStr] = useState("0:00");
-  const [durationStr, setDurationStr] = useState("0:00");
-  const [volume, setVolume] = useState(1);
-  const [isMuted, setIsMuted] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [showControls, setShowControls] = useState(true);
-  
-  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Lesson Progress State and Refs
   const [savedProgressPosition, setSavedProgressPosition] = useState<number>(0);
@@ -185,35 +165,6 @@ export default function CourseLearnPage() {
     fetchProgress();
   }, [activeLesson?.id]);
 
-  // Cleanup: save progress of previous lesson when switching or unmounting
-  useEffect(() => {
-    const lessonId = activeLesson?.id;
-
-    return () => {
-      if (lessonId && videoRef.current) {
-        const current = videoRef.current.currentTime;
-        const duration = videoRef.current.duration;
-        if (duration > 0 && current > 0) {
-          saveProgress(lessonId, current, duration, false);
-        }
-      }
-    };
-  }, [activeLesson?.id]);
-
-  // Double protection: seek if progress arrives after metadata has loaded
-  useEffect(() => {
-    if (savedProgressPosition > 0 && videoRef.current) {
-      const duration = videoRef.current.duration;
-      if (duration && duration > 0 && savedProgressPosition < duration) {
-        if (Math.abs(videoRef.current.currentTime - savedProgressPosition) > 1) {
-          videoRef.current.currentTime = savedProgressPosition;
-          if (activeLanguage !== 'en' && audioRef.current) {
-            audioRef.current.currentTime = savedProgressPosition;
-          }
-        }
-      }
-    }
-  }, [savedProgressPosition, activeLanguage]);
 
   // Phase 4.5: refreshes just the course/module completion numbers
   // (re-fetches the same GET /api/courses/<id>/ the mount effect below
@@ -275,236 +226,6 @@ export default function CourseLearnPage() {
     if (id) fetchCourse();
   }, [id]);
 
-  // Handle Fullscreen Changes
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, []);
-
-  // Sync Audio to Video and Player Events
-  const handlePlay = () => {
-    setIsPlaying(true);
-    if (activeLanguage !== 'en' && audioRef.current && videoRef.current) {
-      if (Math.abs(audioRef.current.currentTime - videoRef.current.currentTime) > 0.3) {
-        audioRef.current.currentTime = videoRef.current.currentTime;
-      }
-      audioRef.current.play().catch(console.error);
-    }
-  };
-
-  const handlePause = () => {
-    setIsPlaying(false);
-    if (audioRef.current) {
-      audioRef.current.pause();
-    }
-
-    // Save progress immediately on pause
-    if (activeLesson?.id && videoRef.current) {
-      const current = videoRef.current.currentTime;
-      const duration = videoRef.current.duration;
-      if (duration > 0) {
-        saveProgress(activeLesson.id, current, duration, false);
-      }
-    }
-  };
-
-  const handleSeek = () => {
-    if (activeLanguage !== 'en' && audioRef.current && videoRef.current) {
-      audioRef.current.currentTime = videoRef.current.currentTime;
-    }
-  };
-
-  const handleTimeUpdate = () => {
-    if (videoRef.current) {
-      const current = videoRef.current.currentTime;
-      const duration = videoRef.current.duration;
-      if (duration > 0) {
-        setProgress((current / duration) * 100);
-      }
-      setCurrentTimeStr(formatTime(current));
-
-      // Periodic save: Save progress approximately every 10 seconds.
-      const lessonId = activeLesson?.id;
-      if (lessonId && duration > 0) {
-        const timeDiff = Math.abs(current - lastSavedTime.current);
-        if (timeDiff >= 10) {
-          saveProgress(lessonId, current, duration, false);
-        }
-      }
-    }
-  };
-
-  // Duration display must always come from the VIDEO element -- never the
-  // alternate translated-audio element, which can legitimately have a
-  // different length than the video (see CustomVideoPlayer.tsx equivalent
-  // note on mobile). Only accept finite, positive readings: some MP4s
-  // (moov atom not at the start of the file, or a server that doesn't
-  // fully support byte-range requests) report an inaccurate, too-short
-  // duration on `loadedmetadata`, then correct it later via `durationchange`
-  // once more of the file has been parsed. Skipping non-finite/zero values
-  // here avoids ever displaying "Infinity:NaN" mid-buffer.
-  const updateDurationDisplay = () => {
-    const duration = videoRef.current?.duration;
-    if (typeof duration === 'number' && Number.isFinite(duration) && duration > 0) {
-      setDurationStr(formatTime(duration));
-    }
-  };
-
-  const handleLoadedMetadata = () => {
-    if (videoRef.current) {
-      const duration = videoRef.current.duration;
-      updateDurationDisplay();
-
-      // Seek to saved position on loaded metadata
-      if (savedProgressPosition > 0 && duration > 0 && savedProgressPosition < duration) {
-        videoRef.current.currentTime = savedProgressPosition;
-        if (activeLanguage !== 'en' && audioRef.current) {
-          audioRef.current.currentTime = savedProgressPosition;
-        }
-      }
-    }
-  };
-
-  // The browser corrects an inaccurate initial duration reading via this
-  // event once it has buffered/parsed enough of the video file.
-  const handleDurationChange = () => {
-    updateDurationDisplay();
-  };
-
-  const handleEnded = () => {
-    if (activeLesson?.id && videoRef.current) {
-      const duration = videoRef.current.duration;
-      if (duration > 0) {
-        saveProgress(activeLesson.id, duration, duration, true).then(refreshCourseProgress);
-      }
-    }
-  };
-
-
-  const formatTime = (timeInSeconds: number) => {
-    const m = Math.floor(timeInSeconds / 60);
-    const s = Math.floor(timeInSeconds % 60);
-    return `${m}:${s < 10 ? '0' : ''}${s}`;
-  };
-
-  // Custom Controls Handlers
-  const togglePlay = () => {
-    if (videoRef.current) {
-      if (videoRef.current.paused) {
-        videoRef.current.play().catch(console.error);
-      } else {
-        videoRef.current.pause();
-      }
-    }
-  };
-
-  const handleProgressChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newProgress = parseFloat(e.target.value);
-    setProgress(newProgress);
-    if (videoRef.current) {
-      const newTime = (newProgress / 100) * videoRef.current.duration;
-      videoRef.current.currentTime = newTime;
-    }
-  };
-
-  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newVol = parseFloat(e.target.value);
-    setVolume(newVol);
-    setIsMuted(newVol === 0);
-    applyVolume(newVol, newVol === 0);
-  };
-
-  const toggleMute = () => {
-    const newMutedState = !isMuted;
-    setIsMuted(newMutedState);
-    applyVolume(newMutedState ? 0 : volume, newMutedState);
-  };
-
-  const applyVolume = (vol: number, muted: boolean) => {
-    if (activeLanguage === 'en') {
-      if (videoRef.current) {
-        videoRef.current.volume = vol;
-        videoRef.current.muted = muted;
-      }
-    } else {
-      if (audioRef.current) {
-        audioRef.current.volume = vol;
-        audioRef.current.muted = muted;
-      }
-    }
-  };
-
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      containerRef.current?.requestFullscreen().catch(console.error);
-    } else {
-      document.exitFullscreen();
-    }
-  };
-
-  const handleMouseMove = () => {
-    setShowControls(true);
-    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
-    controlsTimeoutRef.current = setTimeout(() => {
-      if (isPlaying) setShowControls(false);
-    }, 2500);
-  };
-
-  const handleMouseLeave = () => {
-    if (isPlaying) setShowControls(false);
-  };
-
-  // Get audio URL for a specific language
-  const getAudioUrlForLang = (langCode: string) => {
-    if (!activeLesson || langCode === 'en') return null;
-    const audioTrack = activeLesson.translated_audios?.find((a: any) => a.language_code.startsWith(langCode) && a.status === 'completed');
-    return audioTrack ? audioTrack.audio_file : null;
-  };
-
-  // Change Language
-  const changeLanguage = (langCode: string) => {
-    setActiveLanguage(langCode);
-    setShowLanguageMenu(false);
-
-    if (langCode === 'en') {
-      if (videoRef.current) videoRef.current.muted = isMuted;
-      if (audioRef.current) audioRef.current.pause();
-    } else {
-      const newAudioUrl = getAudioUrlForLang(langCode);
-      if (videoRef.current) videoRef.current.muted = true; // Video is always muted for dubs
-      if (audioRef.current && newAudioUrl) {
-        audioRef.current.src = newAudioUrl;
-        audioRef.current.load();
-        audioRef.current.volume = volume;
-        audioRef.current.muted = isMuted;
-        if (videoRef.current) {
-          audioRef.current.currentTime = videoRef.current.currentTime;
-        }
-        if (videoRef.current && !videoRef.current.paused) {
-          audioRef.current.play().catch(e => console.error("Audio play blocked", e));
-        }
-      }
-    }
-  };
-
-  // Reset to English (original video audio) and stop any alternate-language
-  // audio from the previous lesson whenever the active lesson changes.
-  useEffect(() => {
-    setActiveLanguage('en');
-    setShowLanguageMenu(false);
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.removeAttribute('src');
-      audioRef.current.load();
-    }
-    if (videoRef.current) {
-      videoRef.current.muted = isMuted;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeLesson?.id]);
 
 
   if (loading) return (
@@ -723,175 +444,19 @@ export default function CourseLearnPage() {
               {/* Ambient glow behind the player frame */}
               <div className="hidden md:block absolute inset-6 bg-[#facc15]/5 blur-[80px] rounded-full pointer-events-none" />
 
-              {/* Custom Video Player Container */}
-              <div
-                ref={containerRef}
-                className="w-full aspect-video bg-black relative group flex items-center justify-center overflow-hidden md:rounded-2xl md:ring-1 md:ring-white/10 md:shadow-[0_25px_70px_-20px_rgba(0,0,0,0.9)]"
-                onMouseMove={handleMouseMove}
-                onMouseLeave={handleMouseLeave}
-                onDoubleClick={toggleFullscreen}
-              >
-              <video 
-                ref={videoRef}
-                src={activeLesson.video_file}
-                className="w-full h-full object-contain cursor-pointer"
-                onPlay={handlePlay}
-                onPause={handlePause}
-                onSeeked={handleSeek}
-                onTimeUpdate={handleTimeUpdate}
-                onLoadedMetadata={handleLoadedMetadata}
-                onDurationChange={handleDurationChange}
-                onEnded={handleEnded}
-                onClick={togglePlay}
-                autoPlay
+              <WebVideoPlayer
+                videoUrl={activeLesson.video_file}
+                title={activeLesson.title}
+                lessonId={activeLesson.id}
+                translatedAudios={activeLesson.translated_audios}
+                savedProgressPosition={savedProgressPosition}
+                onSaveProgress={(pos, dur, comp) => saveProgress(activeLesson.id, pos, dur, comp)}
+                onEnded={() => {
+                  if (activeLesson?.id) {
+                    saveProgress(activeLesson.id, activeLesson.video_duration || 0, activeLesson.video_duration || 0, true).then(refreshCourseProgress);
+                  }
+                }}
               />
-
-              <audio ref={audioRef} className="hidden" />
-
-              {/* Big Play Button Overlay (when paused) */}
-              <AnimatePresence>
-                {!isPlaying && (
-                  <motion.button
-                    initial={{ opacity: 0, scale: 0.8 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.8 }}
-                    onClick={togglePlay}
-                    className="absolute inset-0 m-auto w-20 h-20 bg-[#facc15]/90 hover:bg-[#facc15] text-black rounded-full flex items-center justify-center transition-transform hover:scale-110 shadow-[0_0_40px_rgba(250,204,21,0.3)] z-20"
-                  >
-                    <Play className="w-8 h-8 ml-1 fill-black" />
-                  </motion.button>
-                )}
-              </AnimatePresence>
-
-              {/* Controls Gradient & Bar */}
-              <div 
-                className={`absolute bottom-0 left-0 right-0 px-6 pt-24 pb-6 bg-gradient-to-t from-black/90 via-black/50 to-transparent transition-opacity duration-300 z-30 flex flex-col gap-3 ${showControls || !isPlaying ? 'opacity-100' : 'opacity-0'}`}
-              >
-                {/* Progress Bar */}
-                <div className="relative w-full h-1.5 group-hover/progress:h-2 bg-white/20 rounded-full group/progress cursor-pointer flex items-center transition-all">
-                  <div
-                    className="absolute top-0 left-0 h-full bg-[#facc15] rounded-full shadow-[0_0_10px_rgba(250,204,21,0.5)]"
-                    style={{ width: `${progress}%` }}
-                  />
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="0.1"
-                    value={progress}
-                    onChange={handleProgressChange}
-                    className="absolute top-0 left-0 w-full h-full opacity-0 cursor-pointer"
-                  />
-                  {/* Thumb indicator on hover */}
-                  <div
-                    className="absolute h-3.5 w-3.5 bg-[#facc15] rounded-full shadow-lg ring-2 ring-black/40 opacity-0 group-hover/progress:opacity-100 transition-opacity"
-                    style={{ left: `calc(${progress}% - 7px)` }}
-                  />
-                </div>
-
-                {/* Bottom Controls Row */}
-                <div className="flex items-center justify-between mt-1">
-
-                  {/* Left: Play/Pause, Volume, Time */}
-                  <div className="flex items-center gap-2">
-                    <button onClick={togglePlay} className="text-white hover:text-[#facc15] p-2 rounded-full hover:bg-white/10 transition-colors">
-                      {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current" />}
-                    </button>
-
-                    <div className="flex items-center gap-2 group/volume pl-1">
-                      <button onClick={toggleMute} className="text-white hover:text-[#facc15] p-2 rounded-full hover:bg-white/10 transition-colors">
-                        {isMuted || volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
-                      </button>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        value={isMuted ? 0 : volume}
-                        onChange={handleVolumeChange}
-                        className="w-0 group-hover/volume:w-20 opacity-0 group-hover/volume:opacity-100 transition-all duration-300 accent-[#facc15] h-1 bg-white/20 rounded-full appearance-none outline-none"
-                      />
-                    </div>
-
-                    <div className="text-sm font-medium text-white/90 font-mono tracking-wider pl-2">
-                      {currentTimeStr} <span className="text-white/40 mx-1">/</span> {durationStr}
-                    </div>
-                  </div>
-
-                  {/* Right: Audio Menu & Fullscreen */}
-                  <div className="flex items-center gap-2">
-
-                    {/* Netflix Style Audio Menu */}
-                    <div className="relative">
-                      <button
-                        onClick={() => setShowLanguageMenu(!showLanguageMenu)}
-                        className={`flex items-center gap-2 text-sm font-medium pl-3 pr-2.5 py-2 rounded-full border transition-colors ${
-                          showLanguageMenu
-                            ? 'bg-white/15 border-white/20 text-white'
-                            : 'bg-white/5 border-white/10 text-white/90 hover:bg-white/10 hover:text-white'
-                        }`}
-                      >
-                        <Settings className="w-5 h-5" />
-                        <span className="text-sm font-medium">
-                          {activeLanguage === 'en'
-                            ? 'English'
-                            : languageDisplayName(
-                                activeLesson.translated_audios?.find((a: any) => a.language_code.split('-')[0] === activeLanguage) || { language_code: activeLanguage }
-                              )}
-                        </span>
-                      </button>
-
-                      <AnimatePresence>
-                        {showLanguageMenu && (
-                          <motion.div 
-                            initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                            animate={{ opacity: 1, y: 0, scale: 1 }}
-                            exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                            transition={{ duration: 0.15 }}
-                            className="absolute bottom-full right-0 mb-4 w-56 bg-[#18181b]/95 backdrop-blur-xl border border-white/10 rounded-2xl overflow-hidden shadow-[0_10px_40px_rgba(0,0,0,0.5)]"
-                          >
-                            <div className="p-3">
-                              <div className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest px-3 py-2 mb-1">
-                                Audio Tracks
-                              </div>
-                              
-                              <button 
-                                onClick={() => changeLanguage('en')}
-                                className={`w-full text-left px-3 py-2.5 text-sm rounded-xl mb-1 flex justify-between items-center transition-colors ${activeLanguage === 'en' ? 'bg-white/10 text-white font-medium' : 'hover:bg-white/5 text-zinc-300'}`}
-                              >
-                                English (Original)
-                                {activeLanguage === 'en' && <Check className="w-4 h-4 text-[#facc15]" />}
-                              </button>
-
-                              {activeLesson.translated_audios?.filter((a: any) => a.status === 'completed').map((audio: any) => {
-                                const langName = languageDisplayName(audio);
-                                const isActive = activeLanguage === audio.language_code.split('-')[0];
-
-                                return (
-                                  <button
-                                    key={audio.id}
-                                    onClick={() => changeLanguage(audio.language_code.split('-')[0])}
-                                    className={`w-full text-left px-3 py-2.5 text-sm rounded-xl mb-1 flex justify-between items-center transition-colors ${isActive ? 'bg-white/10 text-white font-medium' : 'hover:bg-white/5 text-zinc-300'}`}
-                                  >
-                                    {langName}
-                                    {isActive && <Check className="w-4 h-4 text-[#facc15]" />}
-                                  </button>
-                                )
-                              })}
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </div>
-
-                    <button onClick={toggleFullscreen} className="text-white hover:text-[#facc15] p-2 rounded-full hover:bg-white/10 transition-colors">
-                      {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
-                    </button>
-                  </div>
-
-                </div>
-              </div>
-              </div>
             </div>
 
             {/* Lesson Details */}

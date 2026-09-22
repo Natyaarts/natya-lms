@@ -138,7 +138,7 @@ export default function AdminDashboard() {
                 {fmtNum(stats.total_students)}
               </div>
               <div className="text-[10px] text-blue-400 mt-2 flex items-center gap-1 font-medium">
-                <span>+{stats.new_students_week} students</span>
+                <span>+{fmtNum(stats.new_students_week)} students</span>
                 <span className="text-zinc-500 font-normal">joined this week</span>
               </div>
             </div>
@@ -171,7 +171,7 @@ export default function AdminDashboard() {
                 {fmtNum(stats.total_enrollments)}
               </div>
               <div className="text-[10px] text-purple-400 mt-2 flex items-center gap-1 font-medium">
-                <span>+{stats.new_enrollments_month} enrollments</span>
+                <span>+{fmtNum(stats.new_enrollments_month)} enrollments</span>
                 <span className="text-zinc-500 font-normal">this month</span>
               </div>
             </div>

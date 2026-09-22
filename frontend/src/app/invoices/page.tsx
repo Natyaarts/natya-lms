@@ -51,19 +51,6 @@ export default function InvoicesPage() {
 
   return (
     <div className="min-h-screen bg-black text-white font-sans selection:bg-[#facc15] selection:text-black pb-24">
-      <nav className="border-b border-white/10 bg-black/50 backdrop-blur-md fixed top-0 w-full z-50">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-          <Link href="/" className="flex items-center">
-            <span className="font-bold text-lg tracking-tight">Natya</span>
-          </Link>
-          <div className="flex gap-4">
-            <Link href="/orders" className="text-sm font-medium hover:text-[#facc15] transition-colors">My Orders</Link>
-            <Link href="/subscriptions" className="text-sm font-medium hover:text-[#facc15] transition-colors">Subscriptions</Link>
-            <Link href="/dashboard" className="text-sm font-medium hover:text-[#facc15] transition-colors">Dashboard</Link>
-          </div>
-        </div>
-      </nav>
-
       <div className="max-w-5xl mx-auto px-6 pt-32">
         <h1 className="text-4xl font-bold mb-2">Invoices</h1>
         <p className="text-zinc-400 text-sm mb-8">Receipts for every course, bundle, and subscription payment on your account.</p>

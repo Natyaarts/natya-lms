@@ -54,23 +54,6 @@ function formatDate(value: string | null) {
   return new Date(value).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 }
 
-function Nav() {
-  return (
-    <nav className="border-b border-white/10 bg-black/50 backdrop-blur-md fixed top-0 w-full z-50">
-      <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-        <Link href="/" className="flex items-center">
-          <Image src="/img/logo.png" alt="Natya LMS Logo" width={140} height={40} className="object-contain" />
-        </Link>
-        <div className="flex gap-4">
-          <Link href="/courses" className="text-sm font-medium hover:text-[#facc15] transition-colors">Courses</Link>
-          <Link href="/bundles" className="text-sm font-medium hover:text-[#facc15] transition-colors">Bundles</Link>
-          <Link href="/orders" className="text-sm font-medium hover:text-[#facc15] transition-colors">Orders</Link>
-          <Link href="/dashboard" className="text-sm font-medium hover:text-[#facc15] transition-colors">Dashboard</Link>
-        </div>
-      </div>
-    </nav>
-  );
-}
 
 export default function SubscriptionsPage() {
   const [plans, setPlans] = useState<any[]>([]);
@@ -206,8 +189,6 @@ export default function SubscriptionsPage() {
 
   return (
     <div className="min-h-screen bg-black text-white font-sans selection:bg-[#facc15] selection:text-black pb-24">
-      <Nav />
-
       <div className="pt-32 pb-12 px-6">
         <div className="max-w-5xl mx-auto">
           <h1 className="text-4xl md:text-5xl font-bold mb-4">Subscriptions</h1>

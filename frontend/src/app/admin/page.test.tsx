@@ -71,7 +71,7 @@ describe("AdminDashboard", () => {
   });
 
   it("does not crash when the API response omits newer stat fields (old-backend / version-skew scenario)", async () => {
-    render(<AdminDashboard />);
+    const { container } = render(<AdminDashboard />);
 
     // Loading state first, then the real content once fetchStats resolves.
     await waitFor(() => expect(screen.getByText("Admin Overview")).toBeInTheDocument());
@@ -92,11 +92,25 @@ describe("AdminDashboard", () => {
     const pendingRefundsCard = screen.getByText("Pending Refunds").closest("a");
     expect(pendingRefundsCard).toHaveTextContent("0");
 
+    ["Draft Payouts", "Payouts to Pay", "Needs Grading", "Upcoming Classes"].forEach((label) => {
+      expect(screen.getByText(label).closest("a")).toHaveTextContent("0");
+    });
+
     // The array-backed "Recent Refunds" / "Upcoming Live Classes" sections
     // (also absent from the old response) must render their empty states,
     // not throw on .length/.map() of an undefined value.
     expect(screen.getByText("No refunds requested yet.")).toBeInTheDocument();
     expect(screen.getByText("No upcoming live classes scheduled.")).toBeInTheDocument();
+
+    // Exhaustive sweep: every one of the 12 numeric fields this page reads
+    // (the 4 main stat cards + 7 operational-alert chips, not just the
+    // handful spot-checked by name above) must have rendered SOME safe
+    // fallback -- literal "undefined"/"NaN" text anywhere in the DOM would
+    // mean a value slipped past fmtNum unguarded, exactly the class of bug
+    // that let commit 2448a66's fix leave 15 call sites in a since-deployed
+    // build unfixed (see the deployed-bundle finding in the incident report).
+    expect(container.textContent).not.toMatch(/undefined/i);
+    expect(container.textContent).not.toMatch(/NaN/);
   });
 
   it("renders real values when the API response includes every current field (happy path, unchanged)", async () => {

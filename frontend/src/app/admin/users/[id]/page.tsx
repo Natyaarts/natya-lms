@@ -111,7 +111,7 @@ export default function UserDetailPage() {
     const fetchTeacherStudents = async () => {
       if (user && user.is_teacher) {
         try {
-          const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/teacher-students/`, {
+          const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/teacher_students/`, {
             credentials: "include"
           });
           if (res.ok) {
@@ -291,7 +291,7 @@ export default function UserDetailPage() {
         
         // Refresh teacher students if teacher
         if (user?.is_teacher) {
-          const studentsRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/teacher-students/`, { credentials: "include" });
+          const studentsRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/teacher_students/`, { credentials: "include" });
           if (studentsRes.ok) setTeacherStudents(await studentsRes.json());
         }
 
@@ -330,7 +330,7 @@ export default function UserDetailPage() {
         
         // Refresh teacher students list if teacher
         if (user?.is_teacher) {
-          const studentsRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/teacher-students/`, { credentials: "include" });
+          const studentsRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/teacher_students/`, { credentials: "include" });
           if (studentsRes.ok) setTeacherStudents(await studentsRes.json());
         }
       } else {

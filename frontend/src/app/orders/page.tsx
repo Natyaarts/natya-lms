@@ -155,20 +155,6 @@ export default function MyOrdersPage() {
 
   return (
     <div className="min-h-screen bg-black text-white font-sans selection:bg-[#facc15] selection:text-black pb-24">
-      <nav className="border-b border-white/10 bg-black/50 backdrop-blur-md fixed top-0 w-full z-50">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-          <Link href="/" className="flex items-center">
-            <Image src="/img/logo.png" alt="Natya LMS Logo" width={140} height={40} className="object-contain" />
-          </Link>
-          <div className="flex gap-4">
-            <Link href="/bundles" className="text-sm font-medium hover:text-[#facc15] transition-colors">Bundles</Link>
-            <Link href="/subscriptions" className="text-sm font-medium hover:text-[#facc15] transition-colors">Subscriptions</Link>
-            <Link href="/invoices" className="text-sm font-medium hover:text-[#facc15] transition-colors">Invoices</Link>
-            <Link href="/dashboard" className="text-sm font-medium hover:text-[#facc15] transition-colors">Dashboard</Link>
-          </div>
-        </div>
-      </nav>
-
       <div className="pt-32 px-6 max-w-4xl mx-auto">
         <MySubscriptionSection />
 

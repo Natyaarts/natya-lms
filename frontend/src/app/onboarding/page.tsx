@@ -81,11 +81,7 @@ export default function OnboardingPage() {
   }
 
   return (
-    <div className="min-h-screen bg-black text-white font-sans flex flex-col">
-      <nav className="h-20 border-b border-white/10 flex items-center px-8 shrink-0">
-        <Image src="/img/logo.png" alt="Natya LMS Logo" width={120} height={40} className="object-contain" />
-      </nav>
-
+    <div className="min-h-screen bg-black text-white font-sans flex flex-col pt-20">
       <div className="flex-1 flex items-center justify-center p-6">
         <div className="w-full max-w-xl bg-[#0a0a0a] border border-white/10 p-8 rounded-3xl">
           <h1 className="text-3xl font-bold mb-2">Complete your profile</h1>

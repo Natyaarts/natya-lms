@@ -35,18 +35,6 @@ export default async function CourseDetail(props: { params: Promise<{ id: string
 
   return (
     <div className="min-h-screen bg-black text-white font-sans selection:bg-[#facc15] selection:text-black pb-24">
-      {/* Navigation Bar */}
-      <nav className="border-b border-white/10 bg-black/50 backdrop-blur-md fixed top-0 w-full z-50">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-          <Link href="/" className="flex items-center">
-            <Image src="/img/logo.png" alt="Natya LMS Logo" width={140} height={40} className="object-contain" />
-          </Link>
-          <div className="flex gap-4">
-            <Link href="/dashboard" className="text-sm font-medium hover:text-[#facc15] transition-colors">Dashboard</Link>
-          </div>
-        </div>
-      </nav>
-
       {/* Hero Section */}
       <div className="relative pt-32 pb-20 px-6 overflow-hidden">
         <div className="absolute top-1/4 right-0 w-[500px] h-[500px] bg-[#facc15]/10 rounded-full blur-[120px] pointer-events-none -z-10" />

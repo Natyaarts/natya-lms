@@ -193,19 +193,6 @@ export default function NotificationsPage() {
 
   return (
     <div className="min-h-screen bg-black text-white font-sans selection:bg-[#facc15] selection:text-black pb-24">
-      <nav className="border-b border-white/10 bg-black/50 backdrop-blur-md fixed top-0 w-full z-50">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-          <Link href="/" className="flex items-center">
-            <span className="font-bold text-lg tracking-tight">Natya</span>
-          </Link>
-          <div className="flex gap-4">
-            <Link href="/invoices" className="text-sm font-medium hover:text-[#facc15] transition-colors">Invoices</Link>
-            <Link href="/orders" className="text-sm font-medium hover:text-[#facc15] transition-colors">My Orders</Link>
-            <Link href="/dashboard" className="text-sm font-medium hover:text-[#facc15] transition-colors">Dashboard</Link>
-          </div>
-        </div>
-      </nav>
-
       <div className="max-w-3xl mx-auto px-6 pt-32">
         <div className="flex items-center justify-between mb-2">
           <h1 className="text-4xl font-bold flex items-center gap-3">
