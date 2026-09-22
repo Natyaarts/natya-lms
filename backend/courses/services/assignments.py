@@ -138,6 +138,7 @@ def _notify_grading_result(submission, returned):
             title=title,
             body=body,
             notification_type=NotificationType.ASSIGNMENT,
+            action_url="/dashboard",
             idempotency_key=f"assignment_submission_graded:{submission.id}:{submission.status}",
         )
     except Exception:

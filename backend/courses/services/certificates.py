@@ -140,6 +140,7 @@ def maybe_issue_certificate_and_notify(course, user):
                 title="Certificate earned!",
                 body=f"You've completed \"{course.title}\" and earned a certificate.",
                 notification_type=NotificationType.CERTIFICATE,
+                action_url="/dashboard",
                 idempotency_key=f"certificate_issued:{certificate.id}",
             )
     except Exception:

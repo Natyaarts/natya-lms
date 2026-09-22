@@ -70,6 +70,7 @@ def notify_subscription_grace_period_expired(self, subscription_id, expected_acc
                 f"purchased individually remain fully accessible."
             ),
             notification_type=NotificationType.PAYMENT,
+            action_url="/dashboard",
             idempotency_key=f"subscription:{subscription.id}:grace_expired:{current_timestamp}",
         )
     except Exception as e:
