@@ -12,7 +12,7 @@
       "backgroundColor": "#FFFFFF"
     },
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.natyaarts.academy",
       "buildNumber": "1",
       "infoPlist": {
