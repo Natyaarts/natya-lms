@@ -1,8 +1,9 @@
 import logging
+import re
 import secrets
 
 from rest_framework.views import APIView
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from django.conf import settings
@@ -10,7 +11,7 @@ from django.db import transaction
 from django.utils import timezone
 from datetime import timedelta
 import random
-from .models import OTPVerification, User
+from .models import OTPVerification, User, AccountDeletionRequest
 from .throttles import OTPRequestThrottle, OTPVerifyThrottle, LoginRateThrottle, PasswordResetRequestThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import render, get_object_or_404
@@ -21,6 +22,77 @@ from dj_rest_auth.views import LoginView, PasswordResetView
 import requests
 
 logger = logging.getLogger('users.otp')
+
+
+def _normalize_phone_identifier(raw: str) -> str:
+    """
+    Safely canonicalize phone or email identifiers.
+
+    - For emails (contains '@'): strips whitespace, validates basic RFC structure,
+      and returns lowercased email. Does not convert emails into phone numbers.
+    - For phone numbers:
+      - Rejects malformed input containing letters, scripts, or invalid characters.
+      - Strips benign formatting characters (spaces, dashes, parentheses, dots).
+      - Handles international dial prefix ('00').
+      - Validates E.164 digit length (7 to 15 digits) and non-zero country code prefix.
+      - Returns canonical E.164 string with leading '+' prefix (e.g., '+919999900001').
+    - Returns empty string '' for invalid or malformed identifiers so callers can reject safely.
+    """
+    if not raw:
+        return ''
+    cleaned = str(raw).strip()
+    if not cleaned:
+        return ''
+
+    # Email handling: preserve email identity, lowercase
+    if '@' in cleaned:
+        email_pattern = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
+        if re.match(email_pattern, cleaned):
+            return cleaned.lower()
+        return ''
+
+    # Phone handling:
+    # 1. Reject if it contains letters or disallowed punctuation
+    if re.search(r'[^\d\s\+\-\(\)\.]', cleaned):
+        return ''
+
+    # 2. Check for international prefix '00' (e.g., '00919999900001')
+    digits_raw = cleaned
+    if digits_raw.startswith('00'):
+        digits_raw = digits_raw[2:]
+    elif digits_raw.startswith('+00'):
+        digits_raw = digits_raw[3:]
+
+    # 3. Extract only digits
+    digits = re.sub(r'[^\d]', '', digits_raw)
+
+    # 4. Validate E.164 constraints:
+    # Standard ITU-T E.164 allows 7 to 15 digits
+    if len(digits) < 7 or len(digits) > 15:
+        return ''
+
+    # E.164 country codes never start with '0'
+    if digits.startswith('0'):
+        return ''
+
+    return f"+{digits}"
+
+
+def _is_reviewer_request(identifier: str) -> bool:
+    """
+    Check if reviewer access is enabled and identifier matches the configured reviewer phone number.
+    Strictly gated by APP_REVIEW_ENABLED and requires non-empty APP_REVIEW_PHONE_NUMBER and APP_REVIEW_STATIC_OTP.
+    """
+    if not getattr(settings, 'APP_REVIEW_ENABLED', False):
+        return False
+    configured_number = getattr(settings, 'APP_REVIEW_PHONE_NUMBER', '')
+    static_otp = getattr(settings, 'APP_REVIEW_STATIC_OTP', '')
+    if not configured_number or not static_otp:
+        return False
+    norm_ident = _normalize_phone_identifier(identifier)
+    norm_conf = _normalize_phone_identifier(configured_number)
+    return bool(norm_ident and norm_ident == norm_conf)
+
 
 # Phase 3.9: how many OTPs a single identifier may request within the
 # cooldown window below -- the per-IP OTPRequestThrottle (users/throttles.py)
@@ -83,20 +155,85 @@ class ThrottledPasswordResetView(PasswordResetView):
     throttle_classes = [PasswordResetRequestThrottle]
 
 
+def _dispatch_otp(identifier: str, otp: str):
+    """
+    Deliver OTP via email or WhatsApp Interakt.
+    Returns (success: bool, error_response: Response | None).
+    """
+    if '@' in identifier:
+        from .email_utils import OTPEmailDeliveryError, send_otp_email
+        try:
+            if settings.DEBUG and not (settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY):
+                logger.info("DEBUG mode, no AWS credentials configured -- OTP for %s: %s", identifier, otp)
+            else:
+                send_otp_email(identifier, otp)
+        except OTPEmailDeliveryError as e:
+            logger.error("Failed to send OTP email to %s: %s", identifier, e)
+            return False, Response(
+                {"error": "Failed to send OTP email. Please try again shortly."},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+    else:
+        # --- INTERAKT WHATSAPP INTEGRATION ---
+        INTERAKT_SECRET_KEY = settings.INTERAKT_SECRET_KEY
+        TEMPLATE_NAME = settings.INTERAKT_TEMPLATE_NAME
+
+        headers = {
+            "Authorization": f"Basic {INTERAKT_SECRET_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        # Interakt requires the phone number without the '+' sign
+        formatted_number = identifier.lstrip('+')
+        payload = {
+            "fullPhoneNumber": formatted_number,
+            "type": "Template",
+            "template": {
+                "name": TEMPLATE_NAME,
+                "languageCode": "en",
+                "bodyValues": [otp],
+                "buttonValues": {"0": [otp]}
+            }
+        }
+
+        try:
+            response = requests.post("https://api.interakt.ai/v1/public/message/", json=payload, headers=headers, timeout=10)
+            logger.info("Interakt WhatsApp OTP send status=%s for identifier ending in %s", response.status_code, identifier[-4:])
+        except requests.RequestException as e:
+            logger.error("Interakt WhatsApp OTP send failed: %s", e, exc_info=True)
+            return False, Response(
+                {"error": "Failed to send OTP via WhatsApp. Please try again shortly."},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+    return True, None
+
+
 class SendOTPView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
     throttle_classes = [OTPRequestThrottle]
 
     def post(self, request):
-        identifier = request.data.get('identifier')
-        if not identifier:
+        raw_identifier = request.data.get('identifier')
+        if not raw_identifier:
             return Response({"error": "Email or Mobile Number is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        identifier = _normalize_phone_identifier(raw_identifier)
+        if not identifier:
+            return Response(
+                {"error": "A valid mobile number with country code or email is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Phase 3.9: per-identifier cooldown, independent of the per-IP
         # throttle above -- see MAX_OTP_REQUESTS_PER_WINDOW's own comment.
         window_start = timezone.now() - timedelta(minutes=OTP_REQUEST_WINDOW_MINUTES)
-        recent_count = OTPVerification.objects.filter(identifier=identifier, created_at__gte=window_start).count()
+        recent_count = OTPVerification.objects.filter(
+            identifier=identifier,
+            purpose=OTPVerification.Purpose.LOGIN,
+            created_at__gte=window_start
+        ).count()
         if recent_count >= MAX_OTP_REQUESTS_PER_WINDOW:
             logger.warning("OTP request rate limit hit for identifier ending in %s", str(identifier)[-6:])
             return Response(
@@ -104,67 +241,31 @@ class SendOTPView(APIView):
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
 
-        otp = _generate_otp()
-
-        # Send OTP FIRST, save to DB only once we know delivery didn't
-        # outright fail -- avoids leaving behind a verifiable OTP record
-        # for a code that was never actually delivered to anyone.
-        #
-        # Phase 3.9: the hardcoded "+919999999999" / always-mocked bypass
-        # that used to live here has been REMOVED entirely (this was a
-        # permanent backdoor credential present in production source, not
-        # a test fixture) -- see the Phase 3.9 report for the note on
-        # what a genuine App Store/Play Store reviewer bypass would need
-        # to look like instead, if one is still required; that is an
-        # explicit product/business decision, not something to silently
-        # reintroduce here.
-        if '@' in identifier:
-            from .email_utils import OTPEmailDeliveryError, send_otp_email
-            try:
-                if settings.DEBUG and not (settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY):
-                    # Local dev convenience only: no AWS credentials are
-                    # required to run this project locally (see
-                    # core/settings.py's own S3 fallback for the same
-                    # DEBUG-only allowance). Never reachable in production
-                    # -- AWS credentials are mandatory there.
-                    logger.info("DEBUG mode, no AWS credentials configured -- OTP for %s: %s", identifier, otp)
-                else:
-                    send_otp_email(identifier, otp)
-            except OTPEmailDeliveryError as e:
-                logger.error("Failed to send OTP email to %s: %s", identifier, e)
-                return Response({"error": "Failed to send OTP email. Please try again shortly."}, status=status.HTTP_502_BAD_GATEWAY)
+        if _is_reviewer_request(identifier):
+            # Apple App Store reviewer path (Stage 2D Step 1):
+            # Bypass external WhatsApp/email dispatch only when reviewer access is explicitly
+            # enabled and identifier matches the server-configured review phone number.
+            # Stores the configured static OTP in the standard OTPVerification table, where
+            # the standard 5-minute expiry and attempt limits apply identically.
+            # Never logs or returns the OTP value.
+            otp = settings.APP_REVIEW_STATIC_OTP
+            logger.warning(
+                "App Reviewer login OTP requested for configured review account (IP: %s)",
+                request.META.get('REMOTE_ADDR')
+            )
         else:
-            # --- INTERAKT WHATSAPP INTEGRATION ---
-            INTERAKT_SECRET_KEY = settings.INTERAKT_SECRET_KEY
-            TEMPLATE_NAME = settings.INTERAKT_TEMPLATE_NAME
+            otp = _generate_otp()
+            success, err_resp = _dispatch_otp(identifier, otp)
+            if not success:
+                return err_resp
 
-            headers = {
-                "Authorization": f"Basic {INTERAKT_SECRET_KEY}",
-                "Content-Type": "application/json"
-            }
-
-            # Interakt requires the phone number without the '+' sign
-            formatted_number = identifier.lstrip('+')
-            payload = {
-                "fullPhoneNumber": formatted_number,
-                "type": "Template",
-                "template": {
-                    "name": TEMPLATE_NAME,
-                    "languageCode": "en",
-                    "bodyValues": [otp],
-                    "buttonValues": {"0": [otp]}
-                }
-            }
-
-            try:
-                response = requests.post("https://api.interakt.ai/v1/public/message/", json=payload, headers=headers, timeout=10)
-                logger.info("Interakt WhatsApp OTP send status=%s for identifier ending in %s", response.status_code, identifier[-4:])
-            except requests.RequestException as e:
-                logger.error("Interakt WhatsApp OTP send failed: %s", e, exc_info=True)
-                return Response({"error": "Failed to send OTP via WhatsApp. Please try again shortly."}, status=status.HTTP_502_BAD_GATEWAY)
-
-        OTPVerification.objects.create(identifier=identifier, otp=otp)
+        OTPVerification.objects.create(
+            identifier=identifier,
+            otp=otp,
+            purpose=OTPVerification.Purpose.LOGIN
+        )
         return Response({"message": "OTP sent successfully"})
+
 
 class VerifyOTPView(APIView):
     authentication_classes = []
@@ -172,24 +273,33 @@ class VerifyOTPView(APIView):
     throttle_classes = [OTPVerifyThrottle]
 
     def post(self, request):
-        identifier = request.data.get('identifier')
+        raw_identifier = request.data.get('identifier')
         otp = request.data.get('otp')
 
-        if not identifier or not otp:
+        if not raw_identifier or not otp:
             return Response({"error": "Identifier and OTP required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        identifier = _normalize_phone_identifier(raw_identifier)
+        if not identifier:
+            return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Phase 3.9: the hardcoded "+919999999999"/"123456" bypass that
         # used to live here has been REMOVED entirely -- see SendOTPView's
         # own comment above.
         with transaction.atomic():
-            # Check if OTP is valid and not expired (5 minutes). Locked so
+            # Check if OTP is valid, purpose matches LOGIN, and not expired (5 minutes). Locked so
             # two simultaneous verify attempts against the same record
             # can't both read attempts=4 and both proceed past the check
             # below.
             time_threshold = timezone.now() - timedelta(minutes=5)
             otp_record = (
                 OTPVerification.objects.select_for_update()
-                .filter(identifier=identifier, is_verified=False, created_at__gte=time_threshold)
+                .filter(
+                    identifier=identifier,
+                    purpose=OTPVerification.Purpose.LOGIN,
+                    is_verified=False,
+                    created_at__gte=time_threshold
+                )
                 .order_by('-created_at')
                 .first()
             )
@@ -255,6 +365,278 @@ class VerifyOTPView(APIView):
         )
         
         return response
+
+
+class RequestAccountDeletionOTPView(APIView):
+    """
+    Stage 2D Step 2B: Initiates re-authentication for account deletion by dispatching
+    a purpose-bound ACCOUNT_DELETION OTP.
+    - Requires authenticated user.
+    - Throttled per IP via OTPRequestThrottle.
+    - Cooldown enforced per identifier.
+    - Resolves and verifies identifier against request.user.
+    - Never returns or logs the OTP value.
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [OTPRequestThrottle]
+
+    def post(self, request):
+        user = request.user
+
+        # Prevent duplicate OTP generation if user's request is already in processing
+        if AccountDeletionRequest.objects.filter(
+            user=user,
+            status=AccountDeletionRequest.Status.PROCESSING
+        ).exists():
+            return Response(
+                {"error": "Account deletion is already being processed."},
+                status=status.HTTP_409_CONFLICT
+            )
+
+        raw_identifier = request.data.get('identifier')
+        user_phone = _normalize_phone_identifier(user.phone_number) if user.phone_number else ''
+        user_email = user.email.strip().lower() if user.email else ''
+
+        if raw_identifier:
+            identifier = _normalize_phone_identifier(raw_identifier)
+            if not identifier:
+                return Response(
+                    {"error": "A valid mobile number with country code or email is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if identifier != user_phone and identifier != user_email:
+                return Response(
+                    {"error": "Provided identifier does not match your account."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            if user_phone:
+                identifier = user_phone
+            elif user_email:
+                identifier = user_email
+            else:
+                return Response(
+                    {"error": "No verified phone number or email found on your account to send OTP."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # Per-identifier cooldown check for ACCOUNT_DELETION OTPs
+        window_start = timezone.now() - timedelta(minutes=OTP_REQUEST_WINDOW_MINUTES)
+        recent_count = OTPVerification.objects.filter(
+            identifier=identifier,
+            purpose=OTPVerification.Purpose.ACCOUNT_DELETION,
+            created_at__gte=window_start
+        ).count()
+        if recent_count >= MAX_OTP_REQUESTS_PER_WINDOW:
+            logger.warning("Account deletion OTP rate limit hit for identifier ending in %s", str(identifier)[-6:])
+            return Response(
+                {"error": "Too many OTP requests for this identifier. Please wait a few minutes and try again."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
+        otp = _generate_otp()
+        success, err_resp = _dispatch_otp(identifier, otp)
+        if not success:
+            return err_resp
+
+        OTPVerification.objects.create(
+            identifier=identifier,
+            otp=otp,
+            purpose=OTPVerification.Purpose.ACCOUNT_DELETION
+        )
+        return Response({"message": "Account deletion OTP sent successfully"})
+
+
+class VerifyAccountDeletionOTPView(APIView):
+    """
+    Stage 2D Step 2B: Verifies an ACCOUNT_DELETION OTP and executes the account deletion lifecycle.
+    - Requires authenticated user.
+    - Throttled per IP via OTPVerifyThrottle.
+    - Requires 5-minute expiry, max attempts (5) lockout, single-use enforcement.
+    - Rejects LOGIN OTPs.
+    - Executes AccountDeletionService (immediate access cutoff, JWT blacklisting, PII anonymization).
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [OTPVerifyThrottle]
+
+    def post(self, request):
+        user = request.user
+        otp = request.data.get('otp')
+        reason = request.data.get('reason', '')
+
+        if not otp:
+            return Response({"error": "OTP is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        raw_identifier = request.data.get('identifier')
+        user_phone = _normalize_phone_identifier(user.phone_number) if user.phone_number else ''
+        user_email = user.email.strip().lower() if user.email else ''
+
+        if raw_identifier:
+            identifier = _normalize_phone_identifier(raw_identifier)
+            if not identifier:
+                return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_400_BAD_REQUEST)
+            if identifier != user_phone and identifier != user_email:
+                return Response(
+                    {"error": "Provided identifier does not match your account."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            if user_phone:
+                identifier = user_phone
+            elif user_email:
+                identifier = user_email
+            else:
+                return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            time_threshold = timezone.now() - timedelta(minutes=5)
+            otp_record = (
+                OTPVerification.objects.select_for_update()
+                .filter(
+                    identifier=identifier,
+                    purpose=OTPVerification.Purpose.ACCOUNT_DELETION,
+                    is_verified=False,
+                    created_at__gte=time_threshold
+                )
+                .order_by('-created_at')
+                .first()
+            )
+
+            if not otp_record or otp_record.attempts >= OTPVerification.MAX_VERIFY_ATTEMPTS:
+                return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_400_BAD_REQUEST)
+
+            if otp_record.otp != otp:
+                otp_record.attempts += 1
+                otp_record.save(update_fields=['attempts'])
+                return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_400_BAD_REQUEST)
+
+            otp_record.is_verified = True
+            otp_record.save(update_fields=['is_verified'])
+
+            # Idempotent creation/retrieval of AccountDeletionRequest
+            active_request = (
+                AccountDeletionRequest.objects.select_for_update()
+                .filter(user=user)
+                .exclude(status__in=AccountDeletionRequest.TERMINAL_STATUSES)
+                .first()
+            )
+
+            if active_request:
+                if reason and not active_request.reason:
+                    active_request.reason = str(reason).strip()
+                active_request.confirmed_at = timezone.now()
+                active_request.save(update_fields=['confirmed_at', 'reason', 'updated_at'])
+                deletion_request = active_request
+                created = False
+            else:
+                deletion_request = AccountDeletionRequest.objects.create(
+                    user=user,
+                    status=AccountDeletionRequest.Status.PENDING,
+                    reason=str(reason).strip() if reason else "",
+                    confirmed_at=timezone.now(),
+                )
+                created = True
+
+        # Stage 2D Step 2B, Phase 2: Execute account deletion lifecycle
+        from users.services.deletion import AccountDeletionService
+        deletion_request = AccountDeletionService.execute_deletion(deletion_request.id)
+
+        return Response({
+            "message": "Account deletion completed successfully",
+            "request_id": deletion_request.id,
+            "status": deletion_request.status,
+            "confirmed_at": deletion_request.confirmed_at,
+            "completed_at": deletion_request.completed_at,
+            "created": created,
+        }, status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED)
+
+
+class AccountDeletionStatusView(APIView):
+    """
+    Stage 2D Step 2B: Check the status of the authenticated user's deletion request.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        active_request = (
+            AccountDeletionRequest.objects.filter(user=request.user)
+            .exclude(status__in=AccountDeletionRequest.TERMINAL_STATUSES)
+            .first()
+        )
+
+        if active_request:
+            return Response({
+                "has_active_request": True,
+                "request": {
+                    "id": active_request.id,
+                    "status": active_request.status,
+                    "reason": active_request.reason,
+                    "confirmed_at": active_request.confirmed_at,
+                    "created_at": active_request.created_at,
+                    "updated_at": active_request.updated_at,
+                }
+            })
+
+        latest_request = AccountDeletionRequest.objects.filter(user=request.user).first()
+        if latest_request:
+            return Response({
+                "has_active_request": False,
+                "latest_request": {
+                    "id": latest_request.id,
+                    "status": latest_request.status,
+                    "error_message": latest_request.error_message,
+                    "completed_at": latest_request.completed_at,
+                    "created_at": latest_request.created_at,
+                    "updated_at": latest_request.updated_at,
+                }
+            })
+
+        return Response({
+            "has_active_request": False,
+            "latest_request": None,
+        })
+
+
+class CancelAccountDeletionRequestView(APIView):
+    """
+    Stage 2D Step 2B: Cancel an existing PENDING account deletion request.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        with transaction.atomic():
+            active_request = (
+                AccountDeletionRequest.objects.select_for_update()
+                .filter(user=request.user, status=AccountDeletionRequest.Status.PENDING)
+                .first()
+            )
+
+            if not active_request:
+                # Check if there is already a processing or completed request
+                in_flight_or_done = (
+                    AccountDeletionRequest.objects.filter(user=request.user)
+                    .filter(status__in=[AccountDeletionRequest.Status.PROCESSING, AccountDeletionRequest.Status.COMPLETED])
+                    .exists()
+                )
+                if in_flight_or_done:
+                    return Response(
+                        {"error": "Cannot cancel an account deletion request that is already processing or completed."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                return Response(
+                    {"error": "No pending deletion request found to cancel."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            active_request.status = AccountDeletionRequest.Status.CANCELLED
+            active_request.save(update_fields=['status', 'updated_at'])
+
+        return Response({
+            "message": "Account deletion request cancelled successfully.",
+            "request_id": active_request.id,
+            "status": active_request.status,
+        })
+
 
 from rest_framework import status, viewsets, permissions
 from rest_framework.decorators import action
