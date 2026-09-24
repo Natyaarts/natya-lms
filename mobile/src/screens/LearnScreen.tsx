@@ -2,7 +2,12 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ActivityIndicator, ScrollView, Linking, Image, Alert } from 'react-native';
 import client, { resolveMediaUrl } from '../api/client';
 import CustomVideoPlayer, { AudioTrackOption } from '../components/CustomVideoPlayer';
+import Icon from '../components/Icon';
+import ProgressBar from '../components/ProgressBar';
+import { colors, spacing, radius, typography } from '../theme';
 import { usePreventScreenCapture } from 'expo-screen-capture';
+
+const FALLBACK_THUMB = 'https://images.unsplash.com/photo-1514320291840-2e0a9bf2a9ae?q=80&w=1470&auto=format&fit=crop';
 
 // Assessment/assignment status -> badge label/color, reusing the exact
 // status values the backend already computes (courses/serializers.py
@@ -10,20 +15,20 @@ import { usePreventScreenCapture } from 'expo-screen-capture';
 // here, same principle the web frontend's learn page follows.
 function assessmentStatusMeta(assessment: any) {
   switch (assessment.status) {
-    case 'IN_PROGRESS': return { label: 'In Progress', color: '#60a5fa' };
-    case 'PASSED': return { label: 'Passed', color: '#22c55e' };
-    case 'FAILED': return { label: 'Failed', color: '#f87171' };
-    case 'MAX_ATTEMPTS_REACHED': return { label: 'Max Attempts', color: '#71717a' };
-    default: return { label: 'Not Started', color: '#71717a' };
+    case 'IN_PROGRESS': return { label: 'In Progress', color: colors.info };
+    case 'PASSED': return { label: 'Passed', color: colors.success };
+    case 'FAILED': return { label: 'Failed', color: colors.danger };
+    case 'MAX_ATTEMPTS_REACHED': return { label: 'Max Attempts', color: colors.textTertiary };
+    default: return { label: 'Not Started', color: colors.textTertiary };
   }
 }
 
 function assignmentStatusMeta(assignment: any) {
   switch (assignment.status) {
-    case 'SUBMITTED': return { label: 'Submitted', color: '#60a5fa' };
-    case 'GRADED': return { label: 'Graded', color: '#22c55e' };
-    case 'RETURNED_FOR_REVISION': return { label: 'Revision Needed', color: '#fb923c' };
-    default: return { label: 'Not Submitted', color: '#71717a' };
+    case 'SUBMITTED': return { label: 'Submitted', color: colors.info };
+    case 'GRADED': return { label: 'Graded', color: colors.success };
+    case 'RETURNED_FOR_REVISION': return { label: 'Revision Needed', color: colors.warning };
+    default: return { label: 'Not Submitted', color: colors.textTertiary };
   }
 }
 
@@ -43,6 +48,8 @@ export default function LearnScreen({ route, navigation }: any) {
   const [activeLesson, setActiveLesson] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [marking, setMarking] = useState(false);
+  const [savedPosition, setSavedPosition] = useState<number>(0);
+  const activeProgressLessonIdRef = useRef<number | null>(null);
 
   // Phase 4.9: lesson completion + progress. Latest known playback position
   // for the CURRENTLY active lesson, kept in a ref (not state) so the
@@ -69,6 +76,42 @@ export default function LearnScreen({ route, navigation }: any) {
   useEffect(() => {
     fetchCourse();
   }, [courseId]);
+
+  // Phase 2C: Fetch saved lesson progress when a lesson is opened or switched
+  useEffect(() => {
+    if (!activeLesson?.id) {
+      setSavedPosition(0);
+      lastSavedRef.current = 0;
+      positionRef.current = { lessonId: null, position: 0, duration: 0 };
+      return;
+    }
+
+    const lessonId = activeLesson.id;
+    activeProgressLessonIdRef.current = lessonId;
+    setSavedPosition(0);
+    lastSavedRef.current = 0;
+    positionRef.current = { lessonId, position: 0, duration: 0 };
+
+    const fetchLessonProgress = async () => {
+      try {
+        const res = await client.get(`courses/lessons/${lessonId}/progress/`);
+        // Guard against race conditions where the user switched lessons before response returned
+        if (activeProgressLessonIdRef.current === lessonId && res.data) {
+          const pos = typeof res.data.last_watched_position === 'number'
+            ? res.data.last_watched_position
+            : 0;
+          setSavedPosition(pos);
+          lastSavedRef.current = pos;
+        }
+      } catch (err) {
+        if (activeProgressLessonIdRef.current === lessonId) {
+          setSavedPosition(0);
+        }
+      }
+    };
+
+    fetchLessonProgress();
+  }, [activeLesson?.id]);
 
   const saveProgress = async (lessonId: number, position: number, duration: number, completed: boolean) => {
     try {
@@ -104,7 +147,7 @@ export default function LearnScreen({ route, navigation }: any) {
   useEffect(() => {
     return () => {
       const { lessonId, position, duration } = positionRef.current;
-      if (lessonId && duration > 0) {
+      if (lessonId && duration > 0 && position > 0) {
         const nearEnd = position / duration >= 0.9;
         saveProgress(lessonId, position, duration, nearEnd);
       }
@@ -153,30 +196,28 @@ export default function LearnScreen({ route, navigation }: any) {
     Linking.openURL(`https://academy.natyaarts.com/courses/${courseId}`);
   };
 
-  if (loading) return <View style={styles.centered}><ActivityIndicator color="#facc15" size="large" /></View>;
-  if (!course) return <View style={styles.centered}><Text style={{color: '#fff'}}>Course not found</Text></View>;
+  if (loading) return <View style={styles.centered}><ActivityIndicator color={colors.accent} size="large" /></View>;
+  if (!course) return <View style={styles.centered}><Text style={{ color: colors.text }}>Course not found</Text></View>;
 
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.backText}>← Back</Text>
+        <TouchableOpacity onPress={() => navigation.goBack()} accessibilityRole="button" accessibilityLabel="Go back">
+          <Icon name="arrow-left" size={20} color={colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle} numberOfLines={1}>{course.title}</Text>
+        <View style={{ width: 20 }} />
       </View>
 
       <View style={styles.videoContainer}>
         {!isEnrolled ? (
           <>
-            <Image 
-              source={{ uri: course.thumbnail?.startsWith('/') ? `https://academy-api.natyaarts.com${course.thumbnail}` : (course.thumbnail || 'https://images.unsplash.com/photo-1514320291840-2e0a9bf2a9ae?q=80&w=1470&auto=format&fit=crop') }} 
-              style={styles.previewImage} 
-            />
+            <Image source={{ uri: resolveMediaUrl(course.thumbnail) || FALLBACK_THUMB }} style={styles.previewImage} />
             <View style={styles.previewOverlay}>
               <TouchableOpacity style={styles.purchaseButton} onPress={handlePurchase}>
                 <Text style={styles.purchaseButtonText}>Purchase for ₹{course.price}</Text>
               </TouchableOpacity>
-              <Text style={styles.secureCheckoutText}>Secure Checkout via Web</Text>
+              <Text style={styles.secureCheckoutText}>Secure checkout via web</Text>
             </View>
           </>
         ) : videoSource ? (
@@ -184,39 +225,55 @@ export default function LearnScreen({ route, navigation }: any) {
             source={videoSource}
             audioTracks={audioTracks}
             lessonKey={activeLesson?.id}
+            initialPosition={savedPosition}
             onProgress={handleVideoProgress}
           />
         ) : (
-          <View style={styles.noVideo}><Text style={{color: '#666'}}>No video uploaded for this lesson</Text></View>
+          <View style={styles.noVideo}>
+            <Icon name="film" size={22} color={colors.textTertiary} />
+            <Text style={styles.noVideoText}>No video uploaded for this lesson</Text>
+          </View>
         )}
       </View>
 
-      {isEnrolled && activeLesson && videoSource && (
-        <TouchableOpacity
-          style={[styles.markCompleteButton, activeLesson.is_completed && styles.markCompleteButtonDone]}
-          onPress={handleMarkComplete}
-          disabled={marking || activeLesson.is_completed}
-        >
-          {marking ? (
-            <ActivityIndicator color="#000" size="small" />
-          ) : (
-            <Text style={styles.markCompleteText}>
-              {activeLesson.is_completed ? '✓ Lesson Completed' : 'Mark Lesson as Complete'}
-            </Text>
+      {isEnrolled && activeLesson && (
+        <View style={styles.lessonMetaBlock}>
+          <Text style={styles.lessonTitle} numberOfLines={2}>{activeLesson.title}</Text>
+          {videoSource && (
+            <TouchableOpacity
+              style={[styles.markCompleteButton, activeLesson.is_completed && styles.markCompleteButtonDone]}
+              onPress={handleMarkComplete}
+              disabled={marking || activeLesson.is_completed}
+              accessibilityRole="button"
+              accessibilityLabel={activeLesson.is_completed ? 'Lesson completed' : 'Mark lesson as complete'}
+            >
+              {marking ? (
+                <ActivityIndicator color={colors.textInverse} size="small" />
+              ) : (
+                <>
+                  <Icon
+                    name={activeLesson.is_completed ? 'check-circle' : 'check'}
+                    size={14}
+                    color={activeLesson.is_completed ? colors.accent : colors.textInverse}
+                  />
+                  <Text style={[styles.markCompleteText, activeLesson.is_completed && styles.markCompleteTextDone]}>
+                    {activeLesson.is_completed ? 'Lesson completed' : 'Mark as complete'}
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
           )}
-        </TouchableOpacity>
+        </View>
       )}
 
-      <ScrollView style={styles.curriculum}>
+      <ScrollView style={styles.curriculum} showsVerticalScrollIndicator={false}>
         <View style={styles.courseDetails}>
           <Text style={styles.courseDescription}>{course.description}</Text>
           {typeof course.completion_percentage === 'number' && (
             <View style={styles.courseProgressRow}>
-              <View style={styles.progressBarTrack}>
-                <View style={[styles.progressBarFill, { width: `${course.completion_percentage}%` }]} />
-              </View>
+              <ProgressBar percent={course.completion_percentage} />
               <Text style={styles.courseProgressText}>
-                {course.is_completed ? '🎓 Course Completed' : `${course.completion_percentage}% complete`}
+                {course.is_completed ? 'Course completed' : `${course.completion_percentage}% complete`}
               </Text>
             </View>
           )}
@@ -227,28 +284,34 @@ export default function LearnScreen({ route, navigation }: any) {
           <View key={module.id} style={styles.moduleCard}>
             <View style={styles.moduleHeaderRow}>
               <Text style={styles.moduleTitle}>Module {idx + 1}: {module.title}</Text>
-              {module.is_completed && <Text style={styles.moduleDoneCheck}>✓</Text>}
+              {module.is_completed && <Icon name="check-circle" size={14} color={colors.success} />}
             </View>
-            {module.lessons?.map((lesson: any, lIdx: number) => (
-              <TouchableOpacity
-                key={lesson.id} 
-                style={[
-                  styles.lessonRow, 
-                  activeLesson?.id === lesson.id && styles.activeLessonRow,
-                  !isEnrolled && styles.lockedLessonRow
-                ]}
-                onPress={() => isEnrolled && setActiveLesson(lesson)}
-                disabled={!isEnrolled}
-              >
-                <Text style={[
-                  styles.lessonText,
-                  activeLesson?.id === lesson.id && styles.activeLessonText,
-                  !isEnrolled && styles.lockedLessonText
-                ]}>
-                  {lesson.is_completed ? '✓ ' : `${lIdx + 1}. `}{lesson.title} {!isEnrolled && "🔒"}
-                </Text>
-              </TouchableOpacity>
-            ))}
+            {module.lessons?.map((lesson: any, lIdx: number) => {
+              const locked = isEnrolled ? !!lesson.is_locked : true;
+              const active = activeLesson?.id === lesson.id;
+              return (
+                <TouchableOpacity
+                  key={lesson.id}
+                  style={[styles.lessonRow, active && styles.activeLessonRow]}
+                  onPress={() => !locked && setActiveLesson(lesson)}
+                  disabled={locked}
+                  accessibilityRole="button"
+                  accessibilityLabel={lesson.title}
+                >
+                  <Icon
+                    name={lesson.is_completed ? 'check-circle' : locked ? 'lock' : 'play'}
+                    size={14}
+                    color={lesson.is_completed ? colors.success : locked ? colors.textTertiary : active ? colors.accent : colors.textSecondary}
+                  />
+                  <Text
+                    style={[styles.lessonText, active && styles.activeLessonText, locked && styles.lockedLessonText]}
+                    numberOfLines={1}
+                  >
+                    {lIdx + 1}. {lesson.title}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
 
             {/* Assessments -- a separate destination screen, not shown
                 inline in the video player, mirroring the web learn page. */}
@@ -260,7 +323,7 @@ export default function LearnScreen({ route, navigation }: any) {
                   style={styles.taskRow}
                   onPress={() => navigation.navigate('Assessment', { assessmentId: assessment.id })}
                 >
-                  <Text style={styles.taskIcon}>📝</Text>
+                  <Icon name="edit-2" size={13} color={colors.textSecondary} />
                   <Text style={styles.taskText} numberOfLines={1}>{assessment.title}</Text>
                   <Text style={[styles.taskStatus, { color: meta.color }]}>{meta.label}</Text>
                 </TouchableOpacity>
@@ -276,7 +339,7 @@ export default function LearnScreen({ route, navigation }: any) {
                   style={styles.taskRow}
                   onPress={() => navigation.navigate('Assignment', { assignmentId: assignment.id })}
                 >
-                  <Text style={styles.taskIcon}>📄</Text>
+                  <Icon name="download" size={13} color={colors.textSecondary} />
                   <Text style={styles.taskText} numberOfLines={1}>{assignment.title}</Text>
                   <Text style={[styles.taskStatus, { color: meta.color }]}>{meta.label}</Text>
                 </TouchableOpacity>
@@ -290,48 +353,56 @@ export default function LearnScreen({ route, navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#050505' },
-  centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#050505' },
-  header: { flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#27272a' },
-  backText: { color: '#facc15', fontSize: 16, marginRight: 16 },
-  headerTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold', flex: 1 },
-  videoContainer: { width: '100%', aspectRatio: 16/9, backgroundColor: '#000', position: 'relative' },
-  noVideo: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  
-  // Preview Overlay
+  container: { flex: 1, backgroundColor: colors.bg },
+  centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.bg },
+  header: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
+    borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  headerTitle: { ...typography.section, flex: 1, marginHorizontal: spacing.md, textAlign: 'center' },
+  videoContainer: { width: '100%', aspectRatio: 16 / 9, backgroundColor: '#000', position: 'relative' },
+  noVideo: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: spacing.sm },
+  noVideoText: { color: colors.textTertiary, marginTop: spacing.sm },
+
   previewImage: { width: '100%', height: '100%', resizeMode: 'cover', opacity: 0.5 },
-  previewOverlay: { position: 'absolute', inset: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)' },
-  purchaseButton: { backgroundColor: '#facc15', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 30 },
-  purchaseButtonText: { color: '#000', fontSize: 16, fontWeight: 'bold' },
-  secureCheckoutText: { color: '#a1a1aa', fontSize: 12, marginTop: 8 },
+  previewOverlay: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.overlay },
+  purchaseButton: { backgroundColor: colors.accent, paddingHorizontal: spacing.xxl, paddingVertical: spacing.md, borderRadius: radius.pill },
+  purchaseButtonText: { color: colors.textInverse, fontSize: 16, fontWeight: '700' },
+  secureCheckoutText: { ...typography.meta, marginTop: spacing.sm },
 
-  markCompleteButton: { backgroundColor: '#facc15', paddingVertical: 12, alignItems: 'center' },
-  markCompleteButtonDone: { backgroundColor: '#18181b' },
-  markCompleteText: { color: '#000', fontSize: 14, fontWeight: 'bold' },
+  lessonMetaBlock: { padding: spacing.lg, borderBottomWidth: 1, borderBottomColor: colors.border, gap: spacing.md },
+  lessonTitle: { ...typography.title },
+  markCompleteButton: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
+    backgroundColor: colors.accent, paddingVertical: spacing.md, borderRadius: radius.md, alignSelf: 'flex-start',
+    paddingHorizontal: spacing.xl,
+  },
+  markCompleteButtonDone: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border },
+  markCompleteText: { color: colors.textInverse, fontSize: 13, fontWeight: '700', marginLeft: spacing.sm },
+  markCompleteTextDone: { color: colors.accent },
 
-  curriculum: { flex: 1, padding: 16 },
-  courseDetails: { marginBottom: 24 },
-  courseDescription: { color: '#a1a1aa', fontSize: 14, lineHeight: 20 },
-  courseProgressRow: { marginTop: 16 },
-  courseProgressText: { color: '#facc15', fontSize: 13, fontWeight: '600', marginTop: 8 },
-  progressBarTrack: { height: 6, backgroundColor: '#18181b', borderRadius: 3, overflow: 'hidden' },
-  progressBarFill: { height: '100%', backgroundColor: '#facc15', borderRadius: 3 },
-  curriculumHeader: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 16 },
+  curriculum: { flex: 1, padding: spacing.lg },
+  courseDetails: { marginBottom: spacing.xxl },
+  courseDescription: { ...typography.bodyRegular, lineHeight: 20 },
+  courseProgressRow: { marginTop: spacing.lg },
+  courseProgressText: { ...typography.meta, color: colors.accent, fontWeight: '600', marginTop: spacing.sm },
+  curriculumHeader: { ...typography.section, marginBottom: spacing.lg },
 
-  moduleHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  moduleDoneCheck: { color: '#22c55e', fontSize: 14, fontWeight: 'bold' },
+  moduleHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.sm },
 
-  taskRow: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: 8, marginBottom: 4, backgroundColor: 'rgba(255,255,255,0.03)' },
-  taskIcon: { fontSize: 14, marginRight: 8 },
-  taskText: { flex: 1, color: '#e4e4e7', fontSize: 15 },
-  taskStatus: { fontSize: 11, fontWeight: 'bold', marginLeft: 8 },
+  taskRow: {
+    flexDirection: 'row', alignItems: 'center', padding: spacing.md, borderRadius: radius.sm,
+    marginBottom: 4, backgroundColor: colors.cardAlt, gap: spacing.sm,
+  },
+  taskText: { flex: 1, color: colors.text, fontSize: 14, marginLeft: spacing.sm },
+  taskStatus: { fontSize: 11, fontWeight: '700', marginLeft: spacing.sm },
 
-  moduleCard: { marginBottom: 24 },
-  moduleTitle: { color: '#a1a1aa', fontSize: 12, fontWeight: 'bold', textTransform: 'uppercase', marginBottom: 8, letterSpacing: 1 },
-  lessonRow: { padding: 12, borderRadius: 8, marginBottom: 4 },
-  activeLessonRow: { backgroundColor: 'rgba(250, 204, 21, 0.1)', borderWidth: 1, borderColor: 'rgba(250, 204, 21, 0.2)' },
-  lockedLessonRow: { opacity: 0.6 },
-  lessonText: { color: '#e4e4e7', fontSize: 15 },
-  activeLessonText: { color: '#facc15', fontWeight: 'bold' },
-  lockedLessonText: { color: '#71717a' }
+  moduleCard: { marginBottom: spacing.xxl },
+  moduleTitle: { ...typography.caption, textTransform: 'uppercase' },
+  lessonRow: { flexDirection: 'row', alignItems: 'center', padding: spacing.md, borderRadius: radius.sm, marginBottom: 4, gap: spacing.sm },
+  activeLessonRow: { backgroundColor: colors.accentMuted, borderWidth: 1, borderColor: colors.accentBorder },
+  lessonText: { color: colors.text, fontSize: 14, flex: 1, marginLeft: spacing.sm },
+  activeLessonText: { color: colors.accent, fontWeight: '600' },
+  lockedLessonText: { color: colors.textTertiary },
 });

@@ -148,10 +148,25 @@ export default function LiveClassesPage() {
   };
   const [form, setForm] = useState(emptyForm);
 
-  const openSchedule = async () => {
-    setForm(emptyForm);
-    setScheduleError("");
-    setShowSchedule(true);
+  // ---- Batch modal state ----
+  const [showBatchModal, setShowBatchModal] = useState(false);
+  const [batchForm, setBatchForm] = useState<{
+    courseId: string;
+    batchType: "GROUP" | "ONE_TO_ONE";
+    maxParticipants: string;
+    instructorId: string;
+    studentIds: number[];
+  }>({
+    courseId: "",
+    batchType: "GROUP",
+    maxParticipants: "20",
+    instructorId: "",
+    studentIds: [],
+  });
+  const [batchCreating, setBatchCreating] = useState(false);
+  const [batchError, setBatchError] = useState<any>("");
+
+  const loadDependencies = async () => {
     try {
       const cRes = await authedFetch("/api/courses/");
       if (cRes.ok) {
@@ -176,6 +191,76 @@ export default function LiveClassesPage() {
     } catch (err) {
       console.error(err);
     }
+  };
+
+  const openCreateBatch = async () => {
+    setBatchError("");
+    await loadDependencies();
+    setBatchForm({
+      courseId: "",
+      batchType: "GROUP",
+      maxParticipants: "20",
+      instructorId: currentUser?.id ? String(currentUser.id) : "",
+      studentIds: [],
+    });
+    setShowBatchModal(true);
+  };
+
+  const handleCreateBatch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (batchCreating) return;
+    setBatchCreating(true);
+    setBatchError("");
+    try {
+      const batchPayload: any = {
+        course: batchForm.courseId,
+        batch_type: batchForm.batchType,
+      };
+      if (batchForm.batchType === "GROUP" && batchForm.maxParticipants) {
+        batchPayload.max_participants = Number(batchForm.maxParticipants);
+      }
+      if (isFullAdmin && batchForm.instructorId) {
+        batchPayload.instructor = batchForm.instructorId;
+      }
+      const bRes = await authedFetch("/api/courses/live-batches/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(batchPayload),
+      });
+      const bData = await bRes.json();
+      if (!bRes.ok) {
+        setBatchError(typeof bData === "string" ? bData : JSON.stringify(bData));
+        setBatchCreating(false);
+        return;
+      }
+
+      for (const sId of batchForm.studentIds) {
+        await authedFetch(`/api/courses/live-batches/${bData.id}/students/`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ student_id: sId }),
+        });
+      }
+
+      setBanner("Live class batch created successfully!");
+      setShowBatchModal(false);
+      const bFetch = await authedFetch("/api/courses/live-batches/?page_size=200");
+      if (bFetch.ok) {
+        const bList = await bFetch.json();
+        setBatches(Array.isArray(bList) ? bList : bList.results || []);
+      }
+    } catch (err) {
+      setBatchError("Failed to create batch. Please check fields.");
+    } finally {
+      setBatchCreating(false);
+    }
+  };
+
+  const openSchedule = async () => {
+    setForm(emptyForm);
+    setScheduleError("");
+    setShowSchedule(true);
+    await loadDependencies();
   };
 
   const eligibleInstructors = useMemo(
@@ -390,9 +475,14 @@ export default function LiveClassesPage() {
           </div>
           <h1 className="text-3xl font-bold">Live Classes</h1>
         </div>
-        <button onClick={openSchedule} disabled={!currentUser} className={`${btnPrimary} flex items-center gap-2`}>
-          <Plus className="w-4 h-4" /> Schedule Class
-        </button>
+        <div className="flex items-center gap-3">
+          <button onClick={openCreateBatch} disabled={!currentUser} className="px-4 py-2 bg-white/10 hover:bg-white/15 text-white font-semibold rounded-xl transition-colors flex items-center gap-2 text-sm border border-white/10 disabled:opacity-50">
+            <UsersIcon className="w-4 h-4 text-[#facc15]" /> Create Batch
+          </button>
+          <button onClick={openSchedule} disabled={!currentUser} className={`${btnPrimary} flex items-center gap-2`}>
+            <Plus className="w-4 h-4" /> Schedule Class
+          </button>
+        </div>
       </div>
 
       {banner && (
@@ -761,6 +851,133 @@ export default function LiveClassesPage() {
                 <button onClick={submitRecording} disabled={!recordingUrl || busyId === recordingTarget.id} className={btnPrimary}>Save</button>
               </div>
             </div>
+          </Modal>
+        )}
+      </AnimatePresence>
+
+      {/* ---------------- Create Batch Modal ---------------- */}
+      <AnimatePresence>
+        {showBatchModal && (
+          <Modal title="Create Live Class Batch" onClose={() => setShowBatchModal(false)} wide>
+            <form onSubmit={handleCreateBatch} className="space-y-4">
+              {batchError && (
+                <div className="px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-xs">
+                  {typeof batchError === "string" ? batchError : JSON.stringify(batchError)}
+                </div>
+              )}
+
+              <div>
+                <label className={labelCls}>Live Course *</label>
+                <select
+                  required
+                  value={batchForm.courseId}
+                  onChange={(e) => setBatchForm(f => ({ ...f, courseId: e.target.value }))}
+                  className={inputCls}
+                >
+                  <option value="" disabled>Select a live course</option>
+                  {courses.map((c: any) => (
+                    <option key={c.id} value={c.id}>{c.title}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>Batch Type *</label>
+                  <select
+                    value={batchForm.batchType}
+                    onChange={(e: any) => setBatchForm(f => ({ ...f, batchType: e.target.value }))}
+                    className={inputCls}
+                  >
+                    <option value="GROUP">Group Batch</option>
+                    <option value="ONE_TO_ONE">One-to-One Batch</option>
+                  </select>
+                </div>
+                {batchForm.batchType === "GROUP" && (
+                  <div>
+                    <label className={labelCls}>Max Students</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={batchForm.maxParticipants}
+                      onChange={(e) => setBatchForm(f => ({ ...f, maxParticipants: e.target.value }))}
+                      placeholder="e.g. 20"
+                      className={inputCls}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {isFullAdmin && (
+                <div>
+                  <label className={labelCls}>Assigned Instructor *</label>
+                  <select
+                    required
+                    value={batchForm.instructorId}
+                    onChange={(e) => setBatchForm(f => ({ ...f, instructorId: e.target.value }))}
+                    className={inputCls}
+                  >
+                    <option value="" disabled>Select an instructor</option>
+                    {eligibleInstructors.map((u: any) => (
+                      <option key={u.id} value={u.id}>
+                        {(u.first_name ? `${u.first_name} ${u.last_name || ""}` : u.username)} {u.is_mentor ? "(Mentor)" : "(Teacher)"}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div>
+                <label className={labelCls}>Assign Students ({batchForm.studentIds.length} selected)</label>
+                <div className="max-h-40 overflow-y-auto space-y-1 bg-zinc-950 border border-white/10 rounded-xl p-2.5">
+                  {eligibleStudents.length === 0 ? (
+                    <p className="text-xs text-zinc-500 p-2">No students available to assign.</p>
+                  ) : eligibleStudents.map((s: any) => {
+                    const isChecked = batchForm.studentIds.includes(s.id);
+                    return (
+                      <label
+                        key={s.id}
+                        className={`flex items-center gap-2.5 text-xs px-2.5 py-1.5 rounded-lg cursor-pointer transition-colors ${
+                          isChecked ? "bg-[#facc15]/10 text-white" : "text-zinc-300 hover:bg-white/5"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => {
+                            setBatchForm(f => ({
+                              ...f,
+                              studentIds: isChecked ? f.studentIds.filter(id => id !== s.id) : [...f.studentIds, s.id]
+                            }));
+                          }}
+                          className="rounded border-zinc-700 text-[#facc15] focus:ring-[#facc15]"
+                        />
+                        <span className="font-medium text-white">{s.first_name ? `${s.first_name} ${s.last_name || ""}` : s.username}</span>
+                        <span className="text-zinc-500 text-[11px]">@{s.username}</span>
+                        {s.phone_number && <span className="text-zinc-500 text-[11px]">• {s.phone_number}</span>}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-2 border-t border-white/5">
+                <button
+                  type="button"
+                  onClick={() => setShowBatchModal(false)}
+                  className="flex-1 py-2.5 bg-white/5 hover:bg-white/10 text-zinc-300 font-semibold rounded-xl transition-all text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={batchCreating}
+                  className="flex-1 py-2.5 bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-all text-xs disabled:opacity-50"
+                >
+                  {batchCreating ? "Creating..." : "Create Batch"}
+                </button>
+              </div>
+            </form>
           </Modal>
         )}
       </AnimatePresence>

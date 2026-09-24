@@ -19,6 +19,8 @@ static/
 test_zip_extract/
 *-release.zip
 deploy-manual.zip
+*.apk
+*.aab
 
 # Local tooling / pulled EB server logs / Expo bundle-log exports -- none
 # of these are application source, and EB/Expo logs specifically can

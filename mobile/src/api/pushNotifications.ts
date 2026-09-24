@@ -1,35 +1,51 @@
 import { Platform } from 'react-native';
-import * as Notifications from 'expo-notifications';
+import type * as NotificationsType from 'expo-notifications';
 import * as Device from 'expo-device';
-import Constants from 'expo-constants';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
+import { isRunningInExpoGo } from 'expo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import client from './client';
 
-// Phase 4.10: REGISTRATION (asking for permission, obtaining an Expo push
-// token, telling the backend about it). Push DELIVERY gap fix (this
-// phase): the backend now actually sends a push through Expo for every
-// new Notification row, so this file also now exports
-// resolveActionUrlToRoute -- a pure, ALLOW-LISTED mapping from a
-// notification's action_url to one of this app's own existing screens.
-// It deliberately does not do generic path parsing/opening -- only the
-// exact action_url shapes the backend is actually known to produce
-// (see backend/notifications/services.py / signals.py / courses/tasks.py)
-// are recognized; anything else (including any external URL) falls back
-// to the Notifications screen rather than being "opened" at all. The
-// actual navigation call stays in App.tsx (which already owns
-// navigationRef) to avoid a circular import between this file and App.tsx.
+export const isExpoGo = Boolean(
+  isRunningInExpoGo?.() ||
+  Constants.executionEnvironment === ExecutionEnvironment.StoreClient ||
+  (Constants as any).appOwnership === 'expo'
+);
 
-// Foreground notification presentation -- standard Expo boilerplate,
-// required once at app startup so a notification that arrives while the
-// app is open is actually shown (Expo's default is to suppress it).
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: false,
-    shouldSetBadge: false,
-  }),
-});
+/**
+ * Safely resolves expo-notifications only when NOT running in Expo Go on Android.
+ * In Expo Go on Android (SDK 53+), importing/evaluating expo-notifications at top level
+ * automatically executes DevicePushTokenAutoRegistration.fx at bundle startup,
+ * which calls addPushTokenListener -> warnOfExpoGoPushUsage and throws a fatal Error.
+ */
+export function getNotifications(): typeof NotificationsType | null {
+  if (Platform.OS === 'android' && isExpoGo) {
+    return null;
+  }
+  try {
+    return require('expo-notifications');
+  } catch {
+    return null;
+  }
+}
+
+// Foreground notification presentation -- standard Expo boilerplate.
+// Only registered if the native notifications module is available.
+const notificationsModule = getNotifications();
+if (notificationsModule) {
+  try {
+    notificationsModule.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowBanner: true,
+        shouldShowList: true,
+        shouldPlaySound: false,
+        shouldSetBadge: false,
+      }),
+    });
+  } catch (e) {
+    console.warn('setNotificationHandler failed:', e);
+  }
+}
 
 const STORAGE_KEY = 'expo_push_token';
 
@@ -44,20 +60,28 @@ const STORAGE_KEY = 'expo_push_token';
  */
 export async function registerForPushNotificationsAsync(): Promise<void> {
   try {
+    // Remote notifications functionality was removed from Expo Go on Android in SDK 53+.
+    // Calling getExpoPushTokenAsync in Expo Go on Android throws an error.
+    // Skip registration in Expo Go; supported builds (development/production) continue normally.
+    if (isExpoGo) return;
+
     // Push tokens don't exist on a simulator/emulator -- Device.isDevice
     // is Expo's own documented way to detect that before ever asking.
     if (!Device.isDevice) return;
 
-    const existing = await Notifications.getPermissionsAsync();
+    const notifications = getNotifications();
+    if (!notifications) return;
+
+    const existing = await notifications.getPermissionsAsync();
     let granted = existing.granted;
     if (!granted) {
-      const requested = await Notifications.requestPermissionsAsync();
+      const requested = await notifications.requestPermissionsAsync();
       granted = requested.granted;
     }
     if (!granted) return;
 
     const projectId = Constants.expoConfig?.extra?.eas?.projectId;
-    const { data: token } = await Notifications.getExpoPushTokenAsync(
+    const { data: token } = await notifications.getExpoPushTokenAsync(
       projectId ? { projectId } : undefined
     );
     if (!token) return;
@@ -69,10 +93,9 @@ export async function registerForPushNotificationsAsync(): Promise<void> {
     await client.post('notifications/device-token/', { token, platform });
     await AsyncStorage.setItem(STORAGE_KEY, token);
   } catch (err) {
-    // Never breaks app usage over a push-registration failure -- exactly
-    // the same "swallow and log, never propagate" principle the backend's
-    // own NotificationService already follows for its own side effects.
-    console.error('Push notification registration failed:', err);
+    // Never breaks app usage over a push-registration failure -- log as warning
+    // so it doesn't pop a RedBox crash modal in development.
+    console.warn('Push notification registration skipped or failed:', err);
   }
 }
 
@@ -83,12 +106,13 @@ export async function registerForPushNotificationsAsync(): Promise<void> {
  */
 export async function unregisterForPushNotificationsAsync(): Promise<void> {
   try {
+    if (isExpoGo) return;
     const token = await AsyncStorage.getItem(STORAGE_KEY);
     if (token) {
       await client.delete('notifications/device-token/', { data: { token } });
     }
   } catch (err) {
-    console.error('Push notification unregistration failed:', err);
+    console.warn('Push notification unregistration failed:', err);
   } finally {
     await AsyncStorage.removeItem(STORAGE_KEY);
   }
@@ -103,27 +127,30 @@ export type ResolvedRoute = { name: string; params?: Record<string, any> };
  * Only the action_url shapes the backend is actually known to produce
  * today are recognized (see backend/notifications/services.py,
  * notifications/signals.py, courses/tasks.py, courses/views.py):
- *   /dashboard              -> MainTabs (My Learning tab)
+ *   /dashboard              -> MainTabs (Home tab)
  *   /courses/<id>/learn     -> Learn screen for that course
  *   /courses/<id>/live      -> LiveClasses (this screen has no
  *                              per-course filter today, so this is the
  *                              closest existing match, not a precise one)
  *   /live-classes           -> LiveClasses
- * Anything else -- including any absolute/external URL, or an
- * action_url the backend doesn't currently produce -- safely falls back
- * to the Notifications screen instead of being "opened" at all. This
- * function performs no navigation itself and never touches
- * window/Linking -- it only returns a plain {name, params} object for
- * App.tsx's own navigationRef to act on.
+ * Anything else -- including a missing/empty action_url, any absolute/
+ * external URL, or a shape the backend doesn't currently produce --
+ * safely falls back to Home rather than being "opened" at all. Home
+ * (not the Notifications screen) is the intentional fallback: a
+ * notification whose payload doesn't name a specific destination should
+ * still land somewhere useful, and Home is that default. This function
+ * performs no navigation itself and never touches window/Linking -- it
+ * only returns a plain {name, params} object for App.tsx's own
+ * navigationRef to act on.
  */
 export function resolveActionUrlToRoute(actionUrl: string | null | undefined): ResolvedRoute {
-  const fallback: ResolvedRoute = { name: 'Notifications' };
+  const fallback: ResolvedRoute = { name: 'MainTabs', params: { screen: 'Home' } };
   if (!actionUrl || typeof actionUrl !== 'string') return fallback;
 
   const url = actionUrl.trim();
 
   if (url === '/dashboard') {
-    return { name: 'MainTabs', params: { screen: 'My Learning' } };
+    return { name: 'MainTabs', params: { screen: 'Home' } };
   }
 
   let match = url.match(/^\/courses\/(\d+)\/learn$/);

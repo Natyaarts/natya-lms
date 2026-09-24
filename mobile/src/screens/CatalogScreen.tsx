@@ -1,22 +1,45 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, Image, ActivityIndicator, SafeAreaView, RefreshControl } from 'react-native';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, TextInput, ActivityIndicator, SafeAreaView, RefreshControl } from 'react-native';
 import client from '../api/client';
+import Icon from '../components/Icon';
+import CourseCard from '../components/CourseCard';
+import EmptyState from '../components/EmptyState';
+import { colors, spacing, radius, typography } from '../theme';
+
+// course_type is a real, small enum on the Course model (LIVE | RECORDED)
+// -- these filter chips are derived from that actual field, never an
+// invented taxonomy.
+const FILTERS = [
+  { key: 'ALL', label: 'All' },
+  { key: 'RECORDED', label: 'Recorded' },
+  { key: 'LIVE', label: 'Live' },
+] as const;
 
 export default function CatalogScreen({ navigation }: any) {
   const [courses, setCourses] = useState<any[]>([]);
+  const [enrolledIds, setEnrolledIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState(false);
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<typeof FILTERS[number]['key']>('ALL');
 
   const fetchCatalogData = async () => {
-    try {
-      const res = await client.get('courses/');
-      setCourses(res.data);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+    setError(false);
+    const [catalogRes, myCoursesRes] = await Promise.allSettled([
+      client.get('courses/'),
+      client.get('courses/my_courses/'),
+    ]);
+    if (catalogRes.status === 'fulfilled') {
+      setCourses(catalogRes.value.data || []);
+    } else {
+      setError(true);
     }
+    if (myCoursesRes.status === 'fulfilled') {
+      setEnrolledIds(new Set((myCoursesRes.value.data || []).map((c: any) => c.id)));
+    }
+    setLoading(false);
+    setRefreshing(false);
   };
 
   useEffect(() => {
@@ -28,37 +51,18 @@ export default function CatalogScreen({ navigation }: any) {
     fetchCatalogData();
   }, []);
 
-  const renderCourse = ({ item }: { item: any }) => {
-    let thumbUrl = item.thumbnail || 'https://images.unsplash.com/photo-1514320291840-2e0a9bf2a9ae?q=80&w=1470&auto=format&fit=crop';
-    if (thumbUrl.startsWith('/')) {
-      thumbUrl = `https://academy-api.natyaarts.com${thumbUrl}`;
-    }
-
-    return (
-      <TouchableOpacity 
-        style={styles.courseCard} 
-        onPress={() => navigation.navigate('CourseDetails', { courseId: item.id })}
-      >
-        <Image 
-          source={{ uri: thumbUrl }} 
-          style={styles.thumbnail} 
-        />
-        <View style={styles.cardContent}>
-          <Text style={styles.courseTitle}>{item.title}</Text>
-          <Text style={styles.courseDescription} numberOfLines={2}>{item.description}</Text>
-          <View style={styles.courseMetaContainer}>
-            <Text style={styles.coursePrice}>₹{item.price}</Text>
-            <Text style={styles.courseModules}>{item.modules?.length || 0} Modules</Text>
-          </View>
-        </View>
-      </TouchableOpacity>
-    );
-  };
+  const filteredCourses = useMemo(() => {
+    return courses.filter((c) => {
+      const matchesFilter = filter === 'ALL' || c.course_type === filter;
+      const matchesQuery = !query.trim() || c.title?.toLowerCase().includes(query.trim().toLowerCase());
+      return matchesFilter && matchesQuery;
+    });
+  }, [courses, filter, query]);
 
   if (loading) {
     return (
       <View style={[styles.container, styles.centered]}>
-        <ActivityIndicator color="#facc15" size="large" />
+        <ActivityIndicator color={colors.accent} size="large" />
       </View>
     );
   }
@@ -66,21 +70,68 @@ export default function CatalogScreen({ navigation }: any) {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Image source={require('../../assets/icon.png')} style={{ width: 40, height: 40, resizeMode: 'contain' }} />
-        <Text style={styles.headerTitle}>Course Catalog</Text>
+        <Text style={styles.headerTitle}>Explore</Text>
       </View>
-      
+
+      <View style={styles.searchRow}>
+        <Icon name="search" size={17} color={colors.textTertiary} style={styles.searchIcon} />
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search courses"
+          placeholderTextColor={colors.textTertiary}
+          style={styles.searchInput}
+          accessibilityLabel="Search courses"
+          returnKeyType="search"
+        />
+      </View>
+
+      <View style={styles.filterRow}>
+        {FILTERS.map((f) => {
+          const active = filter === f.key;
+          return (
+            <TouchableOpacity
+              key={f.key}
+              onPress={() => setFilter(f.key)}
+              style={[styles.chip, active && styles.chipActive]}
+              accessibilityRole="button"
+              accessibilityLabel={`Filter: ${f.label}`}
+            >
+              <Text style={[styles.chipText, active && styles.chipTextActive]}>{f.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
       <FlatList
-        data={courses}
+        data={filteredCourses}
         keyExtractor={(item) => item.id.toString()}
-        renderItem={renderCourse}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#facc15" />}
+        renderItem={({ item }) => (
+          <CourseCard
+            variant="list"
+            title={item.title}
+            thumbnail={item.thumbnail}
+            moduleCount={item.modules?.length}
+            price={enrolledIds.has(item.id) ? undefined : item.price}
+            isCompleted={false}
+            onPress={() => navigation.navigate('CourseDetails', { courseId: item.id })}
+          />
+        )}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
         contentContainerStyle={styles.listContainer}
+        showsVerticalScrollIndicator={false}
         ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyTitle}>No courses found</Text>
-            <Text style={styles.emptyText}>Check back later for new masterclasses!</Text>
-          </View>
+          error ? (
+            <EmptyState
+              icon="alert-circle"
+              title="Couldn't load courses"
+              message="Something went wrong reaching the catalog. Pull down to try again."
+            />
+          ) : query || filter !== 'ALL' ? (
+            <EmptyState icon="search" title="No matches" message="Try a different search term or filter." />
+          ) : (
+            <EmptyState icon="book-open" title="No courses found" message="Check back later for new masterclasses." />
+          )
         }
       />
     </SafeAreaView>
@@ -88,23 +139,28 @@ export default function CatalogScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#050505' },
+  container: { flex: 1, backgroundColor: colors.bg },
   centered: { justifyContent: 'center', alignItems: 'center' },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: '#27272a' },
-  headerTitle: { color: '#fff', fontSize: 20, fontWeight: 'bold', marginLeft: 16 },
-  
-  listContainer: { paddingBottom: 24, paddingTop: 16 },
-  
-  courseCard: { backgroundColor: '#0a0a0a', borderRadius: 16, overflow: 'hidden', marginBottom: 20, marginHorizontal: 16, borderWidth: 1, borderColor: '#27272a' },
-  thumbnail: { width: '100%', height: 180, resizeMode: 'cover' },
-  cardContent: { padding: 16 },
-  courseTitle: { color: '#fff', fontSize: 20, fontWeight: 'bold', marginBottom: 8 },
-  courseDescription: { color: '#a1a1aa', fontSize: 14, marginBottom: 12, lineHeight: 20 },
-  courseMetaContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  coursePrice: { color: '#facc15', fontSize: 18, fontWeight: 'bold' },
-  courseModules: { color: '#a1a1aa', fontSize: 14, backgroundColor: '#18181b', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  
-  emptyContainer: { padding: 24, alignItems: 'center', marginTop: 20 },
-  emptyTitle: { color: '#fff', fontSize: 24, fontWeight: 'bold', marginBottom: 12 },
-  emptyText: { color: '#a1a1aa', fontSize: 16, textAlign: 'center', lineHeight: 24 },
+
+  header: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm, paddingBottom: spacing.md },
+  headerTitle: { ...typography.title },
+
+  searchRow: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: colors.card,
+    borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+    marginHorizontal: spacing.lg, paddingHorizontal: spacing.md, marginBottom: spacing.md,
+  },
+  searchIcon: { marginRight: spacing.sm },
+  searchInput: { flex: 1, color: colors.text, fontSize: 14, paddingVertical: 11 },
+
+  filterRow: { flexDirection: 'row', paddingHorizontal: spacing.lg, marginBottom: spacing.lg, gap: spacing.sm },
+  chip: {
+    paddingHorizontal: spacing.lg, paddingVertical: 8, borderRadius: radius.pill,
+    backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, marginRight: spacing.sm,
+  },
+  chipActive: { backgroundColor: colors.accentMuted, borderColor: colors.accentBorder },
+  chipText: { color: colors.textSecondary, fontSize: 13, fontWeight: '600' },
+  chipTextActive: { color: colors.accent },
+
+  listContainer: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xxl, flexGrow: 1 },
 });
