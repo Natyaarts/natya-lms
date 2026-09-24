@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, Plus, X, ChevronLeft, ChevronRight, Check, Eye } from "lucide-react";
+import CountrySelect from "@/components/CountrySelect";
 
 export default function AdminUsers() {
   const router = useRouter();
@@ -38,6 +39,8 @@ export default function AdminUsers() {
     parent_name: "",
     parent_phone: ""
   });
+  const [countryCode, setCountryCode] = useState("+91");
+  const [parentCountryCode, setParentCountryCode] = useState("+91");
   const [formError, setFormError] = useState("");
 
   const getCsrfToken = () => {
@@ -102,8 +105,19 @@ export default function AdminUsers() {
     e.preventDefault();
     setFormError("");
     
+    const formatPhone = (phone: string, code: string) => {
+      if (!phone) return "";
+      const trimmed = phone.trim();
+      if (trimmed.startsWith("+")) return trimmed;
+      const clean = trimmed.replace(/^0+/, "");
+      return `${code}${clean}`;
+    };
+
+    const formattedPhone = formatPhone(formFields.phone_number, countryCode);
+    const formattedParentPhone = formatPhone(formFields.parent_phone, parentCountryCode);
+
     // Formatting validation
-    if (formFields.phone_number && !formFields.phone_number.startsWith('+')) {
+    if (formattedPhone && !formattedPhone.startsWith('+')) {
       setFormError("Phone number must include country code (e.g. +919999999999).");
       return;
     }
@@ -113,7 +127,7 @@ export default function AdminUsers() {
     const payload: any = {
       username: formFields.username,
       email: formFields.email || undefined,
-      phone_number: formFields.phone_number || undefined,
+      phone_number: formattedPhone || undefined,
       first_name: formFields.first_name,
       last_name: formFields.last_name,
       is_student: modalType === 'student',
@@ -128,7 +142,7 @@ export default function AdminUsers() {
     }
     if (modalType === 'student') {
       payload.parent_name = formFields.parent_name || undefined;
-      payload.parent_phone = formFields.parent_phone || undefined;
+      payload.parent_phone = formattedParentPhone || undefined;
     }
 
     try {
@@ -507,15 +521,21 @@ export default function AdminUsers() {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Phone (with Country Code) *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. +919999999999"
-                      value={formFields.phone_number}
-                      onChange={e => setFormFields({ ...formFields, phone_number: e.target.value })}
-                      className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                    />
+                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Phone Number *</label>
+                    <div className="flex gap-2 h-[42px]">
+                      <CountrySelect
+                        value={countryCode}
+                        onChange={setCountryCode}
+                      />
+                      <input
+                        type="tel"
+                        required
+                        placeholder="e.g. 8113900860"
+                        value={formFields.phone_number}
+                        onChange={e => setFormFields({ ...formFields, phone_number: e.target.value })}
+                        className="flex-1 bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15] h-full"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -558,13 +578,19 @@ export default function AdminUsers() {
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Parent Phone</label>
-                        <input
-                          type="text"
-                          placeholder="e.g. +918888888888"
-                          value={formFields.parent_phone}
-                          onChange={e => setFormFields({ ...formFields, parent_phone: e.target.value })}
-                          className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                        />
+                        <div className="flex gap-2 h-[42px]">
+                          <CountrySelect
+                            value={parentCountryCode}
+                            onChange={setParentCountryCode}
+                          />
+                          <input
+                            type="tel"
+                            placeholder="e.g. 8888888888"
+                            value={formFields.parent_phone}
+                            onChange={e => setFormFields({ ...formFields, parent_phone: e.target.value })}
+                            className="flex-1 bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15] h-full"
+                          />
+                        </div>
                       </div>
                     </div>
                   </div>

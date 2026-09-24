@@ -1,12 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { StatusBar, ActivityIndicator, View } from 'react-native';
+import { StatusBar, ActivityIndicator, View, StyleSheet, Platform } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import LoginScreen from './src/screens/LoginScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
+import MyLearningScreen from './src/screens/MyLearningScreen';
 import LearnScreen from './src/screens/LearnScreen';
 import OnboardingScreen from './src/screens/OnboardingScreen';
 import CatalogScreen from './src/screens/CatalogScreen';
@@ -24,9 +26,11 @@ import CertificatesScreen from './src/screens/CertificatesScreen';
 import InvoicesScreen from './src/screens/InvoicesScreen';
 import PurchaseHistoryScreen from './src/screens/PurchaseHistoryScreen';
 import client, { onSessionExpired } from './src/api/client';
-import * as Notifications from 'expo-notifications';
-import { resolveActionUrlToRoute } from './src/api/pushNotifications';
-import { initSentry, Sentry } from './src/api/sentry';
+import type { NotificationResponse } from 'expo-notifications';
+import { resolveActionUrlToRoute, isExpoGo, getNotifications } from './src/api/pushNotifications';
+import { initSentry, isSentryEnabled, Sentry } from './src/api/sentry';
+import Icon from './src/components/Icon';
+import { colors } from './src/theme';
 
 initSentry();
 
@@ -39,25 +43,68 @@ const Tab = createBottomTabNavigator();
 // React Navigation pattern for "navigate from outside a component".
 export const navigationRef = createNavigationContainerRef();
 
+const TAB_ICONS = {
+  Home: 'home',
+  Explore: 'search',
+  'My Learning': 'book-open',
+  Profile: 'user',
+} as const;
+
 function MainTabs() {
   return (
     <Tab.Navigator
-      screenOptions={{
+      screenOptions={({ route }) => ({
         headerShown: false,
-        tabBarStyle: { backgroundColor: '#050505', borderTopColor: '#27272a' },
-        tabBarActiveTintColor: '#facc15',
-        tabBarInactiveTintColor: '#a1a1aa',
-      }}
+        tabBarStyle: styles.tabBar,
+        tabBarActiveTintColor: colors.accent,
+        tabBarInactiveTintColor: colors.textSecondary,
+        tabBarLabelStyle: styles.tabLabel,
+        tabBarItemStyle: styles.tabItem,
+        tabBarIcon: ({ color, focused }) => (
+          <Icon
+            name={TAB_ICONS[route.name as keyof typeof TAB_ICONS]}
+            size={22}
+            color={color}
+          />
+        ),
+      })}
     >
-      <Tab.Screen name="My Learning" component={DashboardScreen} />
-      <Tab.Screen name="Catalog" component={CatalogScreen} />
+      <Tab.Screen name="Home" component={DashboardScreen} />
+      <Tab.Screen name="Explore" component={CatalogScreen} />
+      <Tab.Screen name="My Learning" component={MyLearningScreen} />
       <Tab.Screen name="Profile" component={ProfileScreen} />
     </Tab.Navigator>
   );
 }
 
+const styles = StyleSheet.create({
+  tabBar: {
+    // No explicit `height` here on purpose: @react-navigation/bottom-tabs
+    // (see its own BottomTabBar getTabBarHeight()) only adds the device's
+    // real bottom safe-area inset on top of its own default height when
+    // tabBarStyle does NOT set a numeric height itself -- a fixed height
+    // bypasses that entirely. On a real Android device with gesture
+    // navigation (a meaningfully large bottom inset that emulators/most
+    // dev builds don't reproduce), a fixed height left no room for that
+    // inset, so the bar (and its last/rightmost item, Profile) rendered
+    // squeezed into or clipped by the system navigation area -- visible
+    // and "registered" in code, but not actually reachable on-device.
+    backgroundColor: colors.bg,
+    borderTopColor: colors.border,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 8,
+  },
+  tabItem: { paddingTop: 2 },
+  tabLabel: { fontSize: 11, fontWeight: '600', marginTop: 2 },
+});
+
 function App() {
   const [initialRoute, setInitialRoute] = useState<string | null>(null);
+  // getLastNotificationResponseAsync() and addNotificationResponseReceivedListener
+  // can both fire for the exact same tap (Expo's own documented cold-start
+  // behavior), which without a guard would call navigationRef.navigate() twice
+  // for one notification tap. Tracked by the response's own stable identifier.
+  const lastHandledNotificationId = useRef<string | null>(null);
 
   useEffect(() => {
     const checkToken = async () => {
@@ -101,6 +148,18 @@ function App() {
   }, []);
 
   useEffect(() => {
+    // Remote notifications functionality was removed from Expo Go on Android in SDK 53+.
+    // Skip notification response listener in Expo Go on Android; in dev client/standalone
+    // production builds, listeners attach normally.
+    if (Platform.OS === 'android' && isExpoGo) {
+      return;
+    }
+
+    const notifications = getNotifications();
+    if (!notifications) {
+      return;
+    }
+
     // Push delivery gap fix -- Step 6 (tap/deep-link). Two cases per
     // Expo's own documented pattern: the app was already running/
     // backgrounded (addNotificationResponseReceivedListener fires), or
@@ -108,9 +167,22 @@ function App() {
     // (getLastNotificationResponseAsync, checked once on mount). Both
     // paths funnel through the same resolveActionUrlToRoute allow-list --
     // never navigate anywhere action_url itself literally says, only to
-    // whichever known screen that helper maps it to (Notifications, as a
-    // safe fallback, if nothing matches).
-    const navigateForResponse = (response: Notifications.NotificationResponse | null | undefined) => {
+    // whichever known screen that helper maps it to (Home, as a safe
+    // fallback, if nothing more specific matches).
+    const navigateForResponse = async (response: NotificationResponse | null | undefined) => {
+      // Both listener paths can fire for the very same tap (documented
+      // Expo behavior for a cold start), and getLastNotificationResponseAsync
+      // keeps returning the same response on repeated calls -- this
+      // identifier check stops a single tap from navigating twice.
+      const notificationId = response?.notification?.request?.identifier;
+      if (notificationId && lastHandledNotificationId.current === notificationId) return;
+      if (notificationId) lastHandledNotificationId.current = notificationId;
+
+      // Only route to authenticated screens if an access token exists.
+      // If unauthenticated, the user must log in first before navigating to protected content.
+      const token = await AsyncStorage.getItem('access_token');
+      if (!token) return;
+
       const data = response?.notification?.request?.content?.data as { action_url?: string } | undefined;
       const route = resolveActionUrlToRoute(data?.action_url);
 
@@ -134,24 +206,29 @@ function App() {
       tryNavigate();
     };
 
-    Notifications.getLastNotificationResponseAsync().then(navigateForResponse).catch(() => {});
-    const subscription = Notifications.addNotificationResponseReceivedListener(navigateForResponse);
-    return () => subscription.remove();
+    let subscription: { remove: () => void } | null = null;
+    try {
+      notifications.getLastNotificationResponseAsync().then(navigateForResponse).catch(() => {});
+      subscription = notifications.addNotificationResponseReceivedListener(navigateForResponse);
+    } catch (err) {
+      console.warn('Notification listener registration failed:', err);
+    }
+    return () => subscription?.remove();
   }, []);
 
   if (!initialRoute) {
     return (
-      <View style={{ flex: 1, backgroundColor: '#050505', justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator color="#facc15" size="large" />
+      <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator color={colors.accent} size="large" />
       </View>
     );
   }
 
   return (
     <>
-      <StatusBar barStyle="light-content" backgroundColor="#050505" />
+      <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
       <NavigationContainer ref={navigationRef}>
-        <Stack.Navigator initialRouteName={initialRoute} screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#050505' } }}>
+        <Stack.Navigator initialRouteName={initialRoute} screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
           <Stack.Screen name="Login" component={LoginScreen} />
           <Stack.Screen name="Onboarding" component={OnboardingScreen} />
           <Stack.Screen name="MainTabs" component={MainTabs} />
@@ -180,8 +257,8 @@ function App() {
 // escapes every other try/catch in the app.
 function ErrorFallback() {
   return (
-    <View style={{ flex: 1, backgroundColor: '#050505', justifyContent: 'center', alignItems: 'center', padding: 24 }}>
-      <ActivityIndicator color="#facc15" size="large" style={{ marginBottom: 16 }} />
+    <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+      <ActivityIndicator color={colors.accent} size="large" style={{ marginBottom: 16 }} />
     </View>
   );
 }
@@ -194,10 +271,12 @@ function ErrorFallback() {
 // active.
 function AppRoot() {
   return (
-    <Sentry.ErrorBoundary fallback={<ErrorFallback />}>
-      <App />
-    </Sentry.ErrorBoundary>
+    <SafeAreaProvider>
+      <Sentry.ErrorBoundary fallback={<ErrorFallback />}>
+        <App />
+      </Sentry.ErrorBoundary>
+    </SafeAreaProvider>
   );
 }
 
-export default Sentry.wrap(AppRoot);
+export default (isSentryEnabled ? Sentry.wrap(AppRoot) : AppRoot);

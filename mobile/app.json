@@ -2,21 +2,31 @@
   "expo": {
     "name": "Natya Arts",
     "slug": "mobile",
-    "version": "1.0.3",
+    "version": "1.0.5",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FFFFFF"
+    },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.natyaarts.academy",
+      "buildNumber": "1",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#FFFFFF",
-        "foregroundImage": "./assets/icon.png"
+        "backgroundColor": "#FABD00",
+        "foregroundImage": "./assets/android-icon-foreground.png"
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.natyaarts.academy",
-      "versionCode": 5,
+      "versionCode": 8,
       "blockedPermissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO"
@@ -30,7 +40,9 @@
       "expo-video",
       "@react-native-google-signin/google-signin",
       "expo-document-picker",
-      "expo-notifications"
+      "expo-notifications",
+      "expo-font",
+      "@sentry/react-native"
     ],
     "extra": {
       "eas": {

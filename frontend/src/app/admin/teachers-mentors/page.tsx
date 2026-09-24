@@ -21,9 +21,9 @@
  *     backend returns.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
-import { Eye, Search, Plus, X, AlertTriangle, Ban, Users } from "lucide-react";
+import { Eye, Search, Plus, X, AlertTriangle, Ban, Users, ChevronDown, Check, Calendar } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -100,6 +100,146 @@ function extractErrorMessage(data: unknown): string {
     if (parts.length) return parts.join(" ");
   }
   return "Request failed.";
+}
+
+function SearchableUserSelect({
+  users,
+  value,
+  onChange,
+  placeholder,
+  label,
+  required
+}: {
+  users: AdminUser[];
+  value: string;
+  onChange: (val: string) => void;
+  placeholder: string;
+  label: string;
+  required?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const selected = users.find(u => String(u.id) === String(value));
+
+  const filtered = users.filter(u => {
+    const q = search.toLowerCase();
+    const name = `${u.first_name || ""} ${u.last_name || ""}`.toLowerCase();
+    const uname = (u.username || "").toLowerCase();
+    const email = (u.email || "").toLowerCase();
+    const phone = (u.phone_number || "").toLowerCase();
+    return name.includes(q) || uname.includes(q) || email.includes(q) || phone.includes(q);
+  });
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <label className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+        <span>{label} {required && <span className="text-[#facc15]">*</span>}</span>
+        {selected && (
+          <button
+            type="button"
+            onClick={() => onChange("")}
+            className="text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            Change
+          </button>
+        )}
+      </label>
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className={`w-full bg-zinc-950 border rounded-xl px-3.5 py-2.5 text-sm text-left flex items-center justify-between transition-all ${
+          isOpen ? "border-[#facc15] ring-1 ring-[#facc15]/30" : "border-white/10 hover:border-white/20"
+        }`}
+      >
+        {selected ? (
+          <div className="flex items-center gap-2.5 truncate min-w-0">
+            <div className="w-7 h-7 rounded-full bg-[#facc15]/20 text-[#facc15] font-bold text-xs flex items-center justify-center shrink-0 border border-[#facc15]/30">
+              {(selected.first_name?.[0] || selected.username?.[0] || "U").toUpperCase()}
+            </div>
+            <div className="truncate">
+              <span className="text-white font-medium text-xs">
+                {selected.first_name ? `${selected.first_name} ${selected.last_name || ""}`.trim() : selected.username}
+              </span>
+              <span className="text-zinc-500 text-[11px] ml-1.5">@{selected.username}</span>
+            </div>
+          </div>
+        ) : (
+          <span className="text-zinc-500 text-xs">{placeholder}</span>
+        )}
+        <ChevronDown className={`w-4 h-4 text-zinc-400 transition-transform shrink-0 ${isOpen ? "rotate-180" : ""}`} />
+      </button>
+
+      {isOpen && (
+        <div className="absolute top-[calc(100%+6px)] left-0 w-full bg-[#141416] border border-white/15 rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col max-h-60 animate-in fade-in zoom-in-95 duration-100">
+          <div className="p-2 border-b border-white/5 bg-zinc-900/80 sticky top-0">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Search name, username, phone..."
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="w-full bg-zinc-950 border border-white/10 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-[#facc15]"
+                autoFocus
+              />
+            </div>
+          </div>
+          <div className="overflow-y-auto divide-y divide-white/5">
+            {filtered.length === 0 ? (
+              <div className="p-4 text-center text-xs text-zinc-500">No users match &ldquo;{search}&rdquo;</div>
+            ) : (
+              filtered.map(u => {
+                const isSelected = String(u.id) === String(value);
+                return (
+                  <button
+                    key={u.id}
+                    type="button"
+                    onClick={() => {
+                      onChange(String(u.id));
+                      setIsOpen(false);
+                      setSearch("");
+                    }}
+                    className={`w-full text-left p-2.5 hover:bg-white/5 flex items-center justify-between gap-2 transition-colors ${
+                      isSelected ? "bg-[#facc15]/10 text-white" : "text-zinc-300"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 truncate min-w-0">
+                      <div className="w-7 h-7 rounded-full bg-white/10 text-zinc-300 font-semibold text-xs flex items-center justify-center shrink-0 border border-white/5">
+                        {(u.first_name?.[0] || u.username?.[0] || "U").toUpperCase()}
+                      </div>
+                      <div className="truncate">
+                        <div className="text-xs font-medium text-white truncate">
+                          {u.first_name ? `${u.first_name} ${u.last_name || ""}`.trim() : u.username}
+                        </div>
+                        <div className="text-[11px] text-zinc-500 truncate">
+                          @{u.username} {u.phone_number ? `• ${u.phone_number}` : ""} {u.email ? `• ${u.email}` : ""}
+                        </div>
+                      </div>
+                    </div>
+                    {isSelected && (
+                      <Check className="w-4 h-4 text-[#facc15] shrink-0" />
+                    )}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function TeachersMentorsPage() {
@@ -532,66 +672,107 @@ export default function TeachersMentorsPage() {
             <p className="text-zinc-500 text-xs mb-6">Assign a mentor to a student. Status defaults to ACTIVE.</p>
 
             <form onSubmit={handleCreateAssignment} className="space-y-4">
-              <div>
-                <label className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1 block">
-                  Student
-                </label>
-                <select
-                  value={assignStudent}
-                  onChange={(e) => setAssignStudent(e.target.value)}
-                  required
-                  className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-[#facc15] cursor-pointer"
-                >
-                  <option value="">Select a student...</option>
-                  {students.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.username}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <SearchableUserSelect
+                users={students}
+                value={assignStudent}
+                onChange={setAssignStudent}
+                placeholder="Search and select a student..."
+                label="Student"
+                required
+              />
 
-              <div>
-                <label className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1 block">
-                  Mentor
-                </label>
-                <select
-                  value={assignMentor}
-                  onChange={(e) => setAssignMentor(e.target.value)}
-                  required
-                  className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-[#facc15] cursor-pointer"
-                >
-                  <option value="">Select a mentor...</option>
-                  {mentors.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.username}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <SearchableUserSelect
+                users={mentors}
+                value={assignMentor}
+                onChange={setAssignMentor}
+                placeholder="Search and select a mentor..."
+                label="Mentor"
+                required
+              />
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1 block">
-                    Start Date (optional)
-                  </label>
-                  <input
-                    type="date"
-                    value={assignStart}
-                    onChange={(e) => setAssignStart(e.target.value)}
-                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1 block">
-                    End Date (optional)
-                  </label>
-                  <input
-                    type="date"
-                    value={assignEnd}
-                    onChange={(e) => setAssignEnd(e.target.value)}
-                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                  />
+              <div className="space-y-1.5">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">
+                        Start Date (optional)
+                      </label>
+                      {assignStart && (
+                        <button
+                          type="button"
+                          onClick={() => setAssignStart("")}
+                          className="text-[10px] text-zinc-500 hover:text-zinc-300"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    <div className="relative">
+                      <input
+                        type="date"
+                        value={assignStart}
+                        onChange={(e) => setAssignStart(e.target.value)}
+                        className="w-full bg-zinc-950 border border-white/10 hover:border-white/20 focus:border-[#facc15] rounded-xl px-3 py-2 text-xs text-white focus:outline-none [color-scheme:dark]"
+                      />
+                      <Calendar className="w-3.5 h-3.5 text-zinc-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    </div>
+                    <div className="flex gap-1 mt-1">
+                      <button
+                        type="button"
+                        onClick={() => setAssignStart(new Date().toISOString().split("T")[0])}
+                        className="px-2 py-0.5 bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white rounded text-[10px] border border-white/5 transition-colors"
+                      >
+                        Today
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">
+                        End Date (optional)
+                      </label>
+                      {assignEnd && (
+                        <button
+                          type="button"
+                          onClick={() => setAssignEnd("")}
+                          className="text-[10px] text-zinc-500 hover:text-zinc-300"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    <div className="relative">
+                      <input
+                        type="date"
+                        value={assignEnd}
+                        onChange={(e) => setAssignEnd(e.target.value)}
+                        className="w-full bg-zinc-950 border border-white/10 hover:border-white/20 focus:border-[#facc15] rounded-xl px-3 py-2 text-xs text-white focus:outline-none [color-scheme:dark]"
+                      />
+                      <Calendar className="w-3.5 h-3.5 text-zinc-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    </div>
+                    <div className="flex gap-1 mt-1 flex-wrap">
+                      {[
+                        { label: "+1M", m: 1 },
+                        { label: "+3M", m: 3 },
+                        { label: "+6M", m: 6 },
+                        { label: "+1Y", m: 12 },
+                      ].map(p => (
+                        <button
+                          key={p.label}
+                          type="button"
+                          onClick={() => {
+                            const d = assignStart ? new Date(assignStart) : new Date();
+                            d.setMonth(d.getMonth() + p.m);
+                            setAssignEnd(d.toISOString().split("T")[0]);
+                          }}
+                          className="px-1.5 py-0.5 bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white rounded text-[10px] border border-white/5 transition-colors"
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
 

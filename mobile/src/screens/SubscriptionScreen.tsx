@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ActivityIndicator, ScrollView, Linking, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ActivityIndicator, ScrollView, Linking, Alert, Platform } from 'react-native';
 import client from '../api/client';
 
 // Phase 4.9 -- subscription status/AutoPay/payment-history screen. Reuses
@@ -118,12 +118,20 @@ export default function SubscriptionScreen({ navigation }: any) {
                 <Text style={styles.planName}>{plan.name}</Text>
                 <Text style={styles.planPrice}>₹{plan.price} / {plan.billing_interval === 'MONTHLY' ? 'month' : 'year'}</Text>
                 {!!plan.description && <Text style={styles.planDescription}>{plan.description}</Text>}
-                <TouchableOpacity
-                  style={styles.subscribeButton}
-                  onPress={() => Linking.openURL('https://academy.natyaarts.com/subscriptions')}
-                >
-                  <Text style={styles.subscribeButtonText}>Subscribe via Web</Text>
-                </TouchableOpacity>
+                {Platform.OS === 'android' ? (
+                  <TouchableOpacity
+                    style={styles.subscribeButton}
+                    onPress={() => Linking.openURL('https://academy.natyaarts.com/subscriptions')}
+                  >
+                    <Text style={styles.subscribeButtonText}>Subscribe via Web</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View style={styles.iosInfoBox}>
+                    <Text style={styles.iosInfoText}>
+                      Subscriptions can be managed on our website. Active plans will appear here automatically.
+                    </Text>
+                  </View>
+                )}
               </View>
             ))}
           </View>
@@ -173,6 +181,20 @@ const styles = StyleSheet.create({
   subscribeButton: { backgroundColor: '#facc15', paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
   subscribeButtonText: { color: '#000', fontSize: 13, fontWeight: 'bold' },
   emptyText: { color: '#a1a1aa', fontSize: 14 },
+  iosInfoBox: {
+    backgroundColor: '#141414',
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#27272a',
+    marginTop: 4,
+  },
+  iosInfoText: {
+    color: '#a1a1aa',
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: 'center',
+  },
 
   historySection: {},
   paymentRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0a0a0a', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 6 },

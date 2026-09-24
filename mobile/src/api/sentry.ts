@@ -81,4 +81,6 @@ export function initSentry(): void {
   });
 }
 
+export const isSentryEnabled = Boolean(dsn);
+
 export { Sentry };
