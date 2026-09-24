@@ -1,7 +1,13 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
-from .views import SendOTPView, VerifyOTPView, AdminUserViewSet, AdminStatsView, CurrentUserView, OnboardingFieldsView, SaveProfileView, MobileGoogleLoginView, OnboardingFieldViewSet, MentorshipViewSet, MyStudentsView, MyTeacherProfileView, MyMentorProfileView, AdminAuditLogListView
+from .views import (
+    SendOTPView, VerifyOTPView, AdminUserViewSet, AdminStatsView, CurrentUserView,
+    OnboardingFieldsView, SaveProfileView, MobileGoogleLoginView, OnboardingFieldViewSet,
+    MentorshipViewSet, MyStudentsView, MyTeacherProfileView, MyMentorProfileView,
+    AdminAuditLogListView, RequestAccountDeletionOTPView, VerifyAccountDeletionOTPView,
+    AccountDeletionStatusView, CancelAccountDeletionRequestView
+)
 
 router = DefaultRouter()
 router.register(r'admin-users', AdminUserViewSet, basename='admin-user')
@@ -11,6 +17,10 @@ router.register(r'mentorships', MentorshipViewSet, basename='mentorship')
 urlpatterns = [
     path('send-otp/', SendOTPView.as_view(), name='send-otp'),
     path('verify-otp/', VerifyOTPView.as_view(), name='verify-otp'),
+    path('delete-account/request-otp/', RequestAccountDeletionOTPView.as_view(), name='delete-account-request-otp'),
+    path('delete-account/verify-otp/', VerifyAccountDeletionOTPView.as_view(), name='delete-account-verify-otp'),
+    path('delete-account/status/', AccountDeletionStatusView.as_view(), name='delete-account-status'),
+    path('delete-account/cancel/', CancelAccountDeletionRequestView.as_view(), name='delete-account-cancel'),
     path('admin-stats/', AdminStatsView.as_view(), name='admin-stats'),
     path('admin/audit-logs/', AdminAuditLogListView.as_view(), name='admin-audit-logs'),
     path('me/', CurrentUserView.as_view(), name='current-user'),

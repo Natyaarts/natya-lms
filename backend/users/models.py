@@ -176,9 +176,19 @@ class MentorProfile(models.Model):
 
 
 class OTPVerification(models.Model):
+    class Purpose(models.TextChoices):
+        LOGIN = 'LOGIN', 'Login'
+        ACCOUNT_DELETION = 'ACCOUNT_DELETION', 'Account Deletion'
+
     # Can be an email or a phone number
     identifier = models.CharField(max_length=255)
     otp = models.CharField(max_length=6)
+    purpose = models.CharField(
+        max_length=30,
+        choices=Purpose.choices,
+        default=Purpose.LOGIN,
+        db_index=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     is_verified = models.BooleanField(default=False)
     # Phase 3.9: brute-force protection. Incremented on every WRONG
@@ -192,7 +202,63 @@ class OTPVerification(models.Model):
     MAX_VERIFY_ATTEMPTS = 5
 
     def __str__(self):
-        return f"{self.identifier} - {self.otp}"
+        return f"{self.identifier} ({self.purpose}) - {self.otp}"
+
+
+class AccountDeletionRequest(models.Model):
+    """
+    Stage 2D Step 2B: Durable model tracking an authenticated user's account deletion request.
+    Provides idempotent tracking across re-authentication, confirmation, and the staged
+    cleanup/anonymization workflows executed in subsequent phases.
+    Never stores OTP codes or passwords.
+    """
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'          # Request verified via OTP, queued for execution
+        PROCESSING = 'PROCESSING', 'Processing'    # Execution in progress (Razorpay, S3, data cleanup)
+        COMPLETED = 'COMPLETED', 'Completed'      # Anonymization and cleanup finished
+        FAILED = 'FAILED', 'Failed'             # Execution failed, eligible for retry
+        CANCELLED = 'CANCELLED', 'Cancelled'       # Request cancelled by user or admin
+
+    TERMINAL_STATUSES = (Status.COMPLETED, Status.FAILED, Status.CANCELLED)
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name='deletion_requests',
+        on_delete=models.CASCADE,
+        help_text="User requesting deletion."
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True
+    )
+    reason = models.TextField(blank=True, help_text="Optional user-provided reason for deleting account.")
+    error_message = models.TextField(blank=True, help_text="Failure reason if status=FAILED.")
+    cleanup_log = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Structured audit log of staged cleanup actions (e.g., razorpay_cancelled, s3_files_deleted)."
+    )
+
+    confirmed_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when deletion OTP was successfully verified.")
+    completed_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when anonymization/cleanup completed.")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user'],
+                condition=~models.Q(status__in=['COMPLETED', 'FAILED', 'CANCELLED']),
+                name='unique_active_deletion_request_per_user',
+            ),
+        ]
+
+    def __str__(self):
+        return f"DeletionRequest #{self.id} for user {self.user_id} ({self.status})"
+
 
 
 class AdminAuditLog(models.Model):

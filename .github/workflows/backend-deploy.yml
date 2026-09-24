@@ -1,4 +1,4 @@
-name: Deploy Backend to AWS Elastic Beanstalk
+﻿name: Deploy Backend to AWS Elastic Beanstalk
 
 on:
   push:
@@ -6,10 +6,13 @@ on:
       - main
     paths:
       - 'backend/**'
+      - '.github/workflows/backend-deploy.yml'
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout Source Code
@@ -18,7 +21,13 @@ jobs:
       - name: Generate Deployment Package
         run: |
           cd backend
-          zip -r ../deploy.zip . -x ".env" -x "venv/*" -x "*/__pycache__/*" -x "*.pyc"
+          zip -r ../deploy.zip . \
+            -x ".env" \
+            -x "*/.env" \
+            -x "venv/*" \
+            -x "*/__pycache__/*" \
+            -x "*.pyc" \
+            -x "static/*"
 
       - name: Deploy to Elastic Beanstalk
         uses: einaregilsson/beanstalk-deploy@v22
@@ -27,6 +36,7 @@ jobs:
           aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           application_name: ${{ vars.EB_APP_NAME || 'natya-lms-backend' }}
           environment_name: ${{ vars.EB_ENV_NAME || 'natya-lms-backend-env' }}
-          version_label: "backend-${{ github.sha }}"
+          version_label: backend-${{ github.sha }}
           region: ap-south-1
           deployment_package: deploy.zip
+          wait_for_deployment: false

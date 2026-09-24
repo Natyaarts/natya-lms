@@ -849,3 +849,18 @@ if SENTRY_DSN:
         event_scrubber=EventScrubber(denylist=DEFAULT_DENYLIST + _SENTRY_EXTRA_DENYLIST, recursive=True),
         before_send=_sentry_before_send,
     )
+
+# ---------------------------------------------------------------------------
+# App Store Reviewer Access Configuration (Stage 2D Step 1)
+# ---------------------------------------------------------------------------
+# Apple App Review Guideline 2.1 requires active demo account sign-in credentials.
+# Normal student login dispatches OTPs via WhatsApp (Interakt), which App Store
+# reviewers cannot receive.
+#
+# These settings allow configuring a dedicated reviewer phone number and static OTP
+# strictly via server-side environment variables. Disabled by default.
+# Reviewer access must never be active without both a designated phone number
+# and a static OTP configured in the environment.
+APP_REVIEW_ENABLED = os.environ.get('APP_REVIEW_ENABLED', 'False').lower() in ('true', '1')
+APP_REVIEW_PHONE_NUMBER = os.environ.get('APP_REVIEW_PHONE_NUMBER', '').strip()
+APP_REVIEW_STATIC_OTP = os.environ.get('APP_REVIEW_STATIC_OTP', '').strip()

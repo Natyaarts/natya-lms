@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from .models import User, OTPVerification, OnboardingField, Mentorship, TeacherProfile, MentorProfile, AdminAuditLog
+from .models import User, OTPVerification, OnboardingField, Mentorship, TeacherProfile, MentorProfile, AdminAuditLog, AccountDeletionRequest
 
 class CustomUserAdmin(UserAdmin):
     fieldsets = UserAdmin.fieldsets + (
@@ -78,3 +78,15 @@ class AdminAuditLogAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(AccountDeletionRequest)
+class AccountDeletionRequestAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'status', 'created_at', 'confirmed_at', 'completed_at')
+    list_filter = ('status', 'created_at')
+    search_fields = ('user__username', 'user__email', 'reason', 'error_message')
+    readonly_fields = ('user', 'status', 'reason', 'cleanup_log', 'error_message', 'confirmed_at', 'completed_at', 'created_at', 'updated_at')
+
+    def has_add_permission(self, request):
+        return False
+
