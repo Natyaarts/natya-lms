@@ -507,9 +507,9 @@ elif not DEBUG:
         "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_STORAGE_BUCKET_NAME must all be set in "
         "production -- refusing to silently fall back to local/ephemeral disk storage for media uploads."
     )
-# Video and large file upload limits (allow up to 500 MB)
-DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000  # 500 MB
-FILE_UPLOAD_MAX_MEMORY_SIZE = 524288000  # 500 MB
+# Video and large file upload limits (allow up to 2 GB with buffer)
+DATA_UPLOAD_MAX_MEMORY_SIZE = 2621440000  # 2.5 GB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 2621440000  # 2.5 GB
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/6.0/ref/settings/#default-auto-field
