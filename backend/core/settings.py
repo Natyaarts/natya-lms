@@ -507,8 +507,9 @@ elif not DEBUG:
         "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_STORAGE_BUCKET_NAME must all be set in "
         "production -- refusing to silently fall back to local/ephemeral disk storage for media uploads."
     )
-# else: DEBUG and no S3 creds -- falls through to Django's default local
-# FileSystemStorage (MEDIA_ROOT above), matching existing local dev behavior.
+# Video and large file upload limits (allow up to 500 MB)
+DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000  # 500 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 524288000  # 500 MB
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/6.0/ref/settings/#default-auto-field
