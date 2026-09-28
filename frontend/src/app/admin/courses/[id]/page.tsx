@@ -76,6 +76,7 @@ export default function CourseManager() {
     video_file: null
   });
   const [lessonLoading, setLessonLoading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
 
   // State for editing lesson
   const [editingLessonId, setEditingLessonId] = useState<number | null>(null);
@@ -400,7 +401,13 @@ export default function CourseManager() {
     e.preventDefault();
     if (!lessonData.title.trim() || !lessonData.video_file) return;
 
+    if (lessonData.video_file.size > 2 * 1024 * 1024 * 1024) {
+      alert(`File exceeds maximum allowed upload limit of 2 GB (${(lessonData.video_file.size / (1024 * 1024 * 1024)).toFixed(2)} GB). Please choose a video under 2 GB.`);
+      return;
+    }
+
     setLessonLoading(true);
+    setUploadProgress(0);
     try {
       const moduleObj = course.modules.find((m: any) => m.id === moduleId);
       
@@ -413,34 +420,63 @@ export default function CourseManager() {
       formData.append("module", moduleId.toString());
       formData.append("order", (moduleObj?.lessons?.length || 0).toString());
 
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/`, {
-        method: "POST",
-        headers: { 
-          "X-CSRFToken": getCsrfToken()
-        },
-        body: formData,
-        credentials: "include"
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+        xhr.open("POST", `${apiUrl}/api/courses/lessons/`);
+        xhr.withCredentials = true;
+
+        const csrf = getCsrfToken();
+        if (csrf) xhr.setRequestHeader("X-CSRFToken", csrf);
+
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const percent = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress(percent);
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve();
+          } else {
+            let errorMsg = `Server returned status ${xhr.status}`;
+            if (xhr.status === 413) {
+              errorMsg = "File is too large (413 Payload Too Large). Cloudflare proxy caps uploads at 100 MB. Please set academy-api.natyaarts.com to 'DNS Only' (Grey Cloud) in Cloudflare DNS to allow up to 2 GB uploads.";
+            } else {
+              try {
+                const parsed = JSON.parse(xhr.responseText);
+                errorMsg = JSON.stringify(parsed);
+              } catch {
+                if (xhr.responseText) errorMsg = xhr.responseText.slice(0, 300);
+              }
+            }
+            reject(new Error(errorMsg));
+          }
+        };
+
+        xhr.onerror = () => {
+          reject(new Error("Network connection error. If uploading a video larger than 100 MB, Cloudflare cuts off the connection unless 'academy-api' is set to DNS Only (Grey Cloud) in Cloudflare DNS."));
+        };
+
+        xhr.send(formData);
       });
 
-      if (res.ok) {
-        setAddingLessonToModule(null);
-        setLessonData({
-          title: "",
-          description: "",
-          transcript: "",
-          timed_transcript: "",
-          video_file: null
-        });
-        fetchCourse();
-      } else {
-        const errData = await res.text();
-        alert("Failed to create lesson: " + errData);
-      }
-    } catch (err) {
+      setAddingLessonToModule(null);
+      setLessonData({
+        title: "",
+        description: "",
+        transcript: "",
+        timed_transcript: "",
+        video_file: null
+      });
+      fetchCourse();
+    } catch (err: any) {
       console.error(err);
-      alert("Network error creating lesson");
+      alert("Error creating lesson: " + (err?.message || "Network error"));
     } finally {
       setLessonLoading(false);
+      setUploadProgress(null);
     }
   };
 
@@ -1422,6 +1458,26 @@ export default function CourseManager() {
                                 onChange={(e) => setLessonData({...lessonData, video_file: e.target.files?.[0] || null})}
                                 className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-sm text-zinc-400 focus:outline-none focus:border-[#facc15] file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-[#facc15] file:text-black hover:file:bg-yellow-500 cursor-pointer"
                               />
+                              {lessonData.video_file && (
+                                <div className="mt-2 text-xs flex flex-wrap items-center justify-between gap-2 bg-zinc-900/60 p-2.5 rounded-xl border border-white/5">
+                                  <span className="text-zinc-300">
+                                    📹 <strong className="text-white">{lessonData.video_file.name}</strong> ({(lessonData.video_file.size / (1024 * 1024)).toFixed(1)} MB)
+                                  </span>
+                                  {lessonData.video_file.size > 2 * 1024 * 1024 * 1024 ? (
+                                    <span className="text-red-400 bg-red-400/10 px-2 py-0.5 rounded text-[11px] border border-red-400/20 font-medium">
+                                      ❌ Exceeds 2 GB limit ({(lessonData.video_file.size / (1024 * 1024 * 1024)).toFixed(2)} GB). Please compress or select a video under 2 GB.
+                                    </span>
+                                  ) : lessonData.video_file.size > 100 * 1024 * 1024 ? (
+                                    <span className="text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded text-[11px] border border-amber-400/20 font-medium">
+                                      ⚠️ &gt;100 MB: Ensure Cloudflare DNS for academy-api is &quot;DNS Only&quot;
+                                    </span>
+                                  ) : (
+                                    <span className="text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded text-[11px] border border-emerald-400/20 font-medium">
+                                      ✓ Ready to upload (max 2 GB)
+                                    </span>
+                                  )}
+                                </div>
+                              )}
                               <p className="text-[10px] text-zinc-600 mt-2">After saving, use "🎧 Audio Tracks" on the lesson to add translated/dubbed audio.</p>
                             </div>
 
@@ -1474,20 +1530,43 @@ export default function CourseManager() {
                               </div>
                             </details>
 
+                            {uploadProgress !== null && uploadProgress > 0 && (
+                              <div className="mt-4 p-3 bg-zinc-900/80 border border-white/10 rounded-xl space-y-2">
+                                <div className="flex justify-between text-xs font-semibold text-zinc-300">
+                                  <span>Uploading video...</span>
+                                  <span className="text-[#facc15]">{uploadProgress}%</span>
+                                </div>
+                                <div className="w-full bg-zinc-800 rounded-full h-2 overflow-hidden">
+                                  <div 
+                                    className="bg-[#facc15] h-full transition-all duration-150"
+                                    style={{ width: `${uploadProgress}%` }}
+                                  />
+                                </div>
+                              </div>
+                            )}
+
                             <div className="flex justify-end gap-3 pt-4 border-t border-white/10 mt-4">
                               <button 
                                 type="button" 
+                                disabled={lessonLoading}
                                 onClick={() => setAddingLessonToModule(null)}
-                                className="px-4 py-2 text-sm text-zinc-400 hover:text-white"
+                                className="px-4 py-2 text-sm text-zinc-400 hover:text-white disabled:opacity-50"
                               >
                                 Cancel
                               </button>
                               <button 
                                 type="submit"
                                 disabled={lessonLoading}
-                                className="px-5 py-2 text-sm bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-colors disabled:opacity-50"
+                                className="px-5 py-2 text-sm bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-colors disabled:opacity-50 flex items-center gap-2"
                               >
-                                Save Lesson
+                                {lessonLoading ? (
+                                  <>
+                                    <span className="inline-block w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                                    <span>{uploadProgress !== null && uploadProgress < 100 ? `Uploading ${uploadProgress}%...` : "Saving Lesson..."}</span>
+                                  </>
+                                ) : (
+                                  "Save Lesson"
+                                )}
                               </button>
                             </div>
                           </motion.form>
