@@ -1,2 +1,2 @@
-web: gunicorn core.wsgi:application
+web: gunicorn core.wsgi:application --timeout 600 --workers 3
 worker: celery -A core worker -l info
