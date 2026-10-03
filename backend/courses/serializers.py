@@ -856,9 +856,13 @@ class CertificateTemplateSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'course', 'course_title', 'title', 'institute_name', 'institute_tagline',
             'presentation_line', 'description_text', 'theme', 'border_style',
-            'signatory1_name', 'signatory1_title', 'signatory1_signature',
-            'signatory2_name', 'signatory2_title', 'signatory2_signature',
-            'logo_url', 'seal_text', 'show_qr', 'show_verification_id', 'show_issue_date',
+            'signatory1_name', 'signatory1_title', 'signatory1_signature', 'signatory1_font',
+            'signatory2_name', 'signatory2_title', 'signatory2_signature', 'signatory2_font',
+            'logo_url', 'logo_size', 'secondary_logo_url', 'secondary_logo_size',
+            'watermark_url', 'watermark_opacity',
+            'seal_type', 'seal_url', 'seal_text',
+            'name_font_style', 'title_font_size', 'custom_gold_color',
+            'show_qr', 'show_verification_id', 'show_issue_date',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']

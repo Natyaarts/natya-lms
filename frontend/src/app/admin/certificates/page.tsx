@@ -1,7 +1,26 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, Award, Palette, FileText, CheckCircle2, Printer, RotateCcw, Save } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Award,
+  Palette,
+  FileText,
+  CheckCircle2,
+  Printer,
+  RotateCcw,
+  Save,
+  Upload,
+  Trash2,
+  Building2,
+  Feather,
+  ShieldCheck,
+  Sparkles,
+  Type,
+  Image as ImageIcon,
+  Check,
+} from "lucide-react";
 import CertificateRenderer, { CertificateTemplateData, DEFAULT_TEMPLATE } from "@/components/CertificateRenderer";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -44,7 +63,9 @@ export default function AdminCertificatesPage() {
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState("");
   const [saveError, setSaveError] = useState("");
-  const [designerCategory, setDesignerCategory] = useState<"institute" | "theme" | "wording" | "signatories" | "seal">("theme");
+  const [designerCategory, setDesignerCategory] = useState<
+    "logos" | "theme" | "wording" | "signatories" | "seal" | "watermark"
+  >("logos");
 
   // Sample Preview Values
   const [testLearnerName, setTestLearnerName] = useState("Ananya Ramanathan");
@@ -58,6 +79,35 @@ export default function AdminCertificatesPage() {
   const [totalCount, setTotalCount] = useState(0);
   const [studentIdFilter, setStudentIdFilter] = useState("");
   const [courseIdFilter, setCourseIdFilter] = useState("");
+
+  // Helper: File to base64 Data URL
+  const handleImageUpload = (
+    e: React.ChangeEvent<HTMLInputElement>,
+    fieldKey: keyof CertificateTemplateData
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      alert("Please upload a valid image file (PNG, JPG, SVG, WebP).");
+      return;
+    }
+
+    if (file.size > 4 * 1024 * 1024) {
+      alert("Image size should be under 4MB for optimal performance.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const result = event.target?.result as string;
+      if (result) {
+        setTemplate((prev) => ({ ...prev, [fieldKey]: result }));
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
 
   // Fetch Certificate Template
   const fetchTemplate = async () => {
@@ -77,7 +127,9 @@ export default function AdminCertificatesPage() {
       if (res.ok) {
         const data = await res.json();
         setTemplate(data);
-        localStorage.setItem("natya_certificate_template", JSON.stringify(data));
+        try {
+          localStorage.setItem("natya_certificate_template", JSON.stringify(data));
+        } catch {}
       }
     } catch (e) {
       console.error("Error fetching certificate template", e);
@@ -130,7 +182,9 @@ export default function AdminCertificatesPage() {
 
     try {
       // Save locally
-      localStorage.setItem("natya_certificate_template", JSON.stringify(template));
+      try {
+        localStorage.setItem("natya_certificate_template", JSON.stringify(template));
+      } catch (e) {}
 
       const res = await fetch(`${API_BASE}/api/courses/admin/certificate-template/`, {
         method: "POST",
@@ -148,7 +202,6 @@ export default function AdminCertificatesPage() {
         setSaveSuccess("✓ Certificate design saved and published dynamically!");
         setTimeout(() => setSaveSuccess(""), 4000);
       } else {
-        // Fallback: If backend is deploying, local save succeeds
         setSaveSuccess("✓ Certificate design saved to academy settings!");
         setTimeout(() => setSaveSuccess(""), 4000);
       }
@@ -164,7 +217,9 @@ export default function AdminCertificatesPage() {
   const handleResetDefaults = () => {
     if (confirm("Reset certificate design to classical Natya academy defaults?")) {
       setTemplate(DEFAULT_TEMPLATE);
-      localStorage.setItem("natya_certificate_template", JSON.stringify(DEFAULT_TEMPLATE));
+      try {
+        localStorage.setItem("natya_certificate_template", JSON.stringify(DEFAULT_TEMPLATE));
+      } catch {}
       setSaveSuccess("Reset to default classical arts template.");
       setTimeout(() => setSaveSuccess(""), 3000);
     }
@@ -213,6 +268,23 @@ export default function AdminCertificatesPage() {
     { id: "ornate_gold", label: "Ornate Gold Filigree" },
     { id: "double_temple", label: "Double Temple Frame" },
     { id: "modern_clean", label: "Modern Architectural" },
+  ];
+
+  const fontStyles = [
+    { id: "great_vibes", label: "Great Vibes", desc: "Classic Royal Cursive", font: "'Great Vibes', cursive" },
+    { id: "pinyon_script", label: "Pinyon Script", desc: "High-Society Romance", font: "'Pinyon Script', cursive" },
+    { id: "alex_brush", label: "Alex Brush", desc: "Master Signature Calligraphy", font: "'Alex Brush', cursive" },
+    { id: "cinzel", label: "Cinzel", desc: "Imperial Classical Serif", font: "'Cinzel', serif" },
+    { id: "playfair", label: "Playfair Display", desc: "Editorial Heritage Serif", font: "'Playfair Display', serif" },
+  ];
+
+  const goldSwatches = [
+    { name: "Theme Default", color: "" },
+    { name: "Temple Gold", color: "#b8860b" },
+    { name: "Amber Ochre", color: "#d4af37" },
+    { name: "Royal Gold", color: "#c59b27" },
+    { name: "Radiant Leaf", color: "#facc15" },
+    { name: "Antique Bronze", color: "#a16207" },
   ];
 
   return (
@@ -313,33 +385,241 @@ export default function AdminCertificatesPage() {
           {/* Main Studio Grid */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             {/* Left Column: Customization Controls (5 cols) */}
-            <div className="lg:col-span-5 bg-zinc-900 border border-white/10 rounded-2xl p-6 space-y-6">
-              {/* Category Pills */}
-              <div className="flex items-center gap-1 bg-zinc-950 p-1 rounded-xl border border-white/5 overflow-x-auto">
+            <div className="lg:col-span-5 bg-zinc-900 border border-white/10 rounded-2xl p-5 sm:p-6 space-y-6">
+              {/* Category Navigation (Clean 3x2 Grid - No ugly scrollbars!) */}
+              <div className="grid grid-cols-3 gap-2 bg-zinc-950 p-1.5 rounded-2xl border border-white/5">
                 {[
-                  { id: "theme", label: "Theme & Borders" },
-                  { id: "institute", label: "Institute & Title" },
-                  { id: "wording", label: "Wording" },
-                  { id: "signatories", label: "Signatures" },
-                  { id: "seal", label: "Seal & Security" },
-                ].map((cat) => (
-                  <button
-                    key={cat.id}
-                    onClick={() => setDesignerCategory(cat.id as any)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${
-                      designerCategory === cat.id
-                        ? "bg-[#facc15] text-black"
-                        : "text-zinc-400 hover:text-white"
-                    }`}
-                  >
-                    {cat.label}
-                  </button>
-                ))}
+                  { id: "logos", label: "Logos & Academy", icon: Building2 },
+                  { id: "theme", label: "Theme & Framing", icon: Palette },
+                  { id: "wording", label: "Text & Fonts", icon: Type },
+                  { id: "signatories", label: "Signatures", icon: Feather },
+                  { id: "seal", label: "Stamp & Seal", icon: ShieldCheck },
+                  { id: "watermark", label: "Watermark", icon: Sparkles },
+                ].map((cat) => {
+                  const Icon = cat.icon;
+                  const isActive = designerCategory === cat.id;
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setDesignerCategory(cat.id as any)}
+                      className={`px-2 py-2.5 rounded-xl text-xs font-bold transition-all flex flex-col items-center justify-center gap-1.5 text-center ${
+                        isActive
+                          ? "bg-[#facc15] text-black shadow-lg shadow-[#facc15]/20 font-black"
+                          : "text-zinc-400 hover:text-white hover:bg-zinc-800/60"
+                      }`}
+                    >
+                      <Icon className={`w-4 h-4 ${isActive ? "text-black" : "text-[#facc15]"}`} />
+                      <span className="text-[11px] leading-tight truncate">{cat.label}</span>
+                    </button>
+                  );
+                })}
               </div>
 
-              {/* 1. Theme & Borders */}
+              {/* 1. Logos & Academy Identity */}
+              {designerCategory === "logos" && (
+                <div className="space-y-5">
+                  {/* Main Academy Logo Card */}
+                  <div className="p-4 bg-zinc-950/70 border border-white/5 rounded-2xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-[#facc15]">
+                          Main Academy Logo
+                        </label>
+                        <p className="text-[11px] text-zinc-400">
+                          Primary emblem shown at the top center of every certificate.
+                        </p>
+                      </div>
+                      {template.logo_url && (
+                        <button
+                          type="button"
+                          onClick={() => setTemplate({ ...template, logo_url: "" })}
+                          className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 font-semibold transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Reset
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Logo Preview Canvas Box */}
+                    <div className="h-20 bg-zinc-900/90 rounded-xl border border-dashed border-white/10 flex items-center justify-center p-3 relative overflow-hidden">
+                      {template.logo_url ? (
+                        <img
+                          src={template.logo_url}
+                          alt="Academy Logo Preview"
+                          className="h-full object-contain max-w-[200px]"
+                        />
+                      ) : (
+                        <div className="flex items-center gap-2 text-zinc-400 text-xs">
+                          <span className="text-xl">🪔</span>
+                          <span>Classical Golden Diya Emblem Active</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* File Upload Action Button */}
+                    <label className="w-full cursor-pointer py-2.5 px-3 bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-[#facc15]/50 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all">
+                      <Upload className="w-3.5 h-3.5 text-[#facc15]" />
+                      <span>{template.logo_url ? "Upload New / Replace Logo Image" : "Attach / Upload Logo File"}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => handleImageUpload(e, "logo_url")}
+                      />
+                    </label>
+
+                    {/* Fallback Image URL Input */}
+                    <div>
+                      <label className="block text-[10px] text-zinc-500 uppercase tracking-wider mb-1">
+                        Or Paste Logo Image URL:
+                      </label>
+                      <input
+                        type="text"
+                        value={template.logo_url}
+                        onChange={(e) => setTemplate({ ...template, logo_url: e.target.value })}
+                        placeholder="https://... / leave blank for traditional Diya"
+                        className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-xs focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+
+                    {/* Logo Scale Selection */}
+                    <div>
+                      <label className="block text-[11px] font-semibold text-zinc-400 mb-1.5">
+                        Logo Display Size:
+                      </label>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {[
+                          { id: "sm", label: "Small" },
+                          { id: "md", label: "Medium" },
+                          { id: "lg", label: "Large" },
+                          { id: "xl", label: "Extra Large" },
+                        ].map((sz) => (
+                          <button
+                            key={sz.id}
+                            type="button"
+                            onClick={() => setTemplate({ ...template, logo_size: sz.id as any })}
+                            className={`py-1.5 px-2 rounded-lg text-xs font-semibold transition-all ${
+                              (template.logo_size || "md") === sz.id
+                                ? "bg-[#facc15] text-black font-bold shadow-md shadow-[#facc15]/10"
+                                : "bg-zinc-900 text-zinc-400 hover:text-white border border-white/5"
+                            }`}
+                          >
+                            {sz.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Secondary Partner / Accreditation Logo Card */}
+                  <div className="p-4 bg-zinc-950/70 border border-white/5 rounded-2xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-zinc-300">
+                          Secondary Accreditation Logo (Optional)
+                        </label>
+                        <p className="text-[11px] text-zinc-400">
+                          E.g. UNESCO Dance Council, Examination Board, Cultural Foundation.
+                        </p>
+                      </div>
+                      {template.secondary_logo_url && (
+                        <button
+                          type="button"
+                          onClick={() => setTemplate({ ...template, secondary_logo_url: "" })}
+                          className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 font-semibold transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Remove
+                        </button>
+                      )}
+                    </div>
+
+                    {template.secondary_logo_url && (
+                      <div className="h-16 bg-zinc-900/90 rounded-xl border border-white/10 flex items-center justify-center p-2">
+                        <img
+                          src={template.secondary_logo_url}
+                          alt="Secondary Accreditation Logo Preview"
+                          className="h-full object-contain max-w-[160px]"
+                        />
+                      </div>
+                    )}
+
+                    <label className="w-full cursor-pointer py-2.5 px-3 bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-[#facc15]/50 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all">
+                      <Upload className="w-3.5 h-3.5 text-[#facc15]" />
+                      <span>{template.secondary_logo_url ? "Replace Partner Logo" : "Upload Partner / Accreditation Logo"}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => handleImageUpload(e, "secondary_logo_url")}
+                      />
+                    </label>
+
+                    {template.secondary_logo_url && (
+                      <div>
+                        <label className="block text-[11px] font-semibold text-zinc-400 mb-1.5">
+                          Partner Logo Scale:
+                        </label>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {[
+                            { id: "sm", label: "Small" },
+                            { id: "md", label: "Medium" },
+                            { id: "lg", label: "Large" },
+                          ].map((sz) => (
+                            <button
+                              key={sz.id}
+                              type="button"
+                              onClick={() => setTemplate({ ...template, secondary_logo_size: sz.id as any })}
+                              className={`py-1.5 px-2 rounded-lg text-xs font-semibold transition-all ${
+                                (template.secondary_logo_size || "sm") === sz.id
+                                  ? "bg-[#facc15] text-black font-bold shadow-md shadow-[#facc15]/10"
+                                  : "bg-zinc-900 text-zinc-400 hover:text-white border border-white/5"
+                              }`}
+                            >
+                              {sz.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Institute Name & Tagline */}
+                  <div className="p-4 bg-zinc-950/70 border border-white/5 rounded-2xl space-y-3">
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-zinc-300 mb-1">
+                        Institute / Academy Name *
+                      </label>
+                      <input
+                        type="text"
+                        value={template.institute_name}
+                        onChange={(e) => setTemplate({ ...template, institute_name: e.target.value })}
+                        placeholder="e.g. Natya Arts Academy"
+                        className="w-full px-3.5 py-2.5 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-zinc-300 mb-1">
+                        Academy Tagline / Department
+                      </label>
+                      <input
+                        type="text"
+                        value={template.institute_tagline}
+                        onChange={(e) => setTemplate({ ...template, institute_tagline: e.target.value })}
+                        placeholder="e.g. Center for Excellence in Classical Indian Arts & Bharatanatyam"
+                        className="w-full px-3.5 py-2.5 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 2. Theme & Framing */}
               {designerCategory === "theme" && (
-                <div className="space-y-4">
+                <div className="space-y-5">
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-zinc-400 mb-2">
                       Color Palette & Theme
@@ -377,7 +657,7 @@ export default function AdminCertificatesPage() {
                           key={b.id}
                           type="button"
                           onClick={() => setTemplate({ ...template, border_style: b.id })}
-                          className={`px-3 py-2 rounded-xl border text-xs font-semibold transition-all ${
+                          className={`px-3 py-2.5 rounded-xl border text-xs font-semibold transition-all ${
                             template.border_style === b.id
                               ? "border-[#facc15] bg-[#facc15]/10 text-white font-bold"
                               : "border-white/10 bg-zinc-950/60 text-zinc-400 hover:text-white"
@@ -388,69 +668,105 @@ export default function AdminCertificatesPage() {
                       ))}
                     </div>
                   </div>
-                </div>
-              )}
 
-              {/* 2. Institute & Title */}
-              {designerCategory === "institute" && (
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-zinc-400 mb-1">
-                      Institute / Academy Name *
+                  {/* Custom Gold / Accent Color Override */}
+                  <div className="p-4 bg-zinc-950/70 border border-white/5 rounded-2xl space-y-3">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-zinc-300">
+                      Metallic Accent / Gold Color Override
                     </label>
-                    <input
-                      type="text"
-                      value={template.institute_name}
-                      onChange={(e) => setTemplate({ ...template, institute_name: e.target.value })}
-                      placeholder="e.g. Natya Arts Academy"
-                      className="w-full px-3.5 py-2.5 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
-                    />
-                  </div>
+                    <p className="text-[11px] text-zinc-400">
+                      Select a classic gold shade or enter your academy's brand hex code.
+                    </p>
 
-                  <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-zinc-400 mb-1">
-                      Tagline / Department
-                    </label>
-                    <input
-                      type="text"
-                      value={template.institute_tagline}
-                      onChange={(e) => setTemplate({ ...template, institute_tagline: e.target.value })}
-                      placeholder="e.g. Center for Excellence in Bharatanatyam & Traditional Indian Arts"
-                      className="w-full px-3.5 py-2.5 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
-                    />
-                  </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {goldSwatches.map((g) => {
+                        const isSelected = (template.custom_gold_color || "") === g.color;
+                        return (
+                          <button
+                            key={g.name}
+                            type="button"
+                            onClick={() => setTemplate({ ...template, custom_gold_color: g.color })}
+                            className={`p-2 rounded-xl border text-xs font-medium flex items-center gap-2 transition-all ${
+                              isSelected
+                                ? "border-[#facc15] bg-[#facc15]/10 text-white font-bold"
+                                : "border-white/10 bg-zinc-900 text-zinc-400 hover:text-white"
+                            }`}
+                          >
+                            <span
+                              className="w-3.5 h-3.5 rounded-full border border-white/20 shrink-0"
+                              style={{ backgroundColor: g.color || "#d4af37" }}
+                            />
+                            <span className="truncate text-[11px]">{g.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
 
-                  <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-zinc-400 mb-1">
-                      Certificate Heading *
-                    </label>
-                    <input
-                      type="text"
-                      value={template.title}
-                      onChange={(e) => setTemplate({ ...template, title: e.target.value })}
-                      placeholder="e.g. Certificate of Completion / Diploma of Classical Dance"
-                      className="w-full px-3.5 py-2.5 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-zinc-400 mb-1">
-                      Custom Logo URL (Optional)
-                    </label>
-                    <input
-                      type="text"
-                      value={template.logo_url}
-                      onChange={(e) => setTemplate({ ...template, logo_url: e.target.value })}
-                      placeholder="https://... / leave blank for traditional golden diya emblem"
-                      className="w-full px-3.5 py-2.5 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
-                    />
+                    <div className="flex items-center gap-2 pt-1">
+                      <input
+                        type="color"
+                        value={template.custom_gold_color || "#d4af37"}
+                        onChange={(e) => setTemplate({ ...template, custom_gold_color: e.target.value })}
+                        className="w-9 h-9 rounded-xl bg-transparent border border-white/10 cursor-pointer p-0.5"
+                      />
+                      <input
+                        type="text"
+                        value={template.custom_gold_color || ""}
+                        onChange={(e) => setTemplate({ ...template, custom_gold_color: e.target.value })}
+                        placeholder="#d4af37 or leave blank for auto"
+                        className="flex-1 px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-xs font-mono focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
                   </div>
                 </div>
               )}
 
-              {/* 3. Wording */}
+              {/* 3. Text & Typography */}
               {designerCategory === "wording" && (
                 <div className="space-y-4">
+                  {/* Certificate Title */}
+                  <div className="p-4 bg-zinc-950/70 border border-white/5 rounded-2xl space-y-3">
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-zinc-300 mb-1">
+                        Certificate Heading *
+                      </label>
+                      <input
+                        type="text"
+                        value={template.title}
+                        onChange={(e) => setTemplate({ ...template, title: e.target.value })}
+                        placeholder="e.g. Certificate of Completion / Diploma of Classical Dance"
+                        className="w-full px-3.5 py-2.5 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-zinc-400 mb-1.5">
+                        Title Font Scale:
+                      </label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          { id: "sm", label: "Compact" },
+                          { id: "lg", label: "Large (Standard)" },
+                          { id: "xl", label: "Grand Majestic" },
+                        ].map((sz) => (
+                          <button
+                            key={sz.id}
+                            type="button"
+                            onClick={() => setTemplate({ ...template, title_font_size: sz.id as any })}
+                            className={`py-1.5 px-2 rounded-lg text-xs font-semibold transition-all ${
+                              (template.title_font_size || "lg") === sz.id
+                                ? "bg-[#facc15] text-black font-bold shadow-md shadow-[#facc15]/10"
+                                : "bg-zinc-900 text-zinc-400 hover:text-white border border-white/5"
+                            }`}
+                          >
+                            {sz.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Presentation Line */}
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-zinc-400 mb-1">
                       Presentation Line
@@ -464,6 +780,46 @@ export default function AdminCertificatesPage() {
                     />
                   </div>
 
+                  {/* Recipient Name Calligraphy Font Picker */}
+                  <div className="p-4 bg-zinc-950/70 border border-white/5 rounded-2xl space-y-3">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-[#facc15]">
+                      Recipient Name Calligraphy Font
+                    </label>
+                    <p className="text-[11px] text-zinc-400">
+                      Choose the artistic calligraphy style rendered for the student's name:
+                    </p>
+
+                    <div className="space-y-2">
+                      {fontStyles.map((f) => {
+                        const isSelected = (template.name_font_style || "great_vibes") === f.id;
+                        return (
+                          <button
+                            key={f.id}
+                            type="button"
+                            onClick={() => setTemplate({ ...template, name_font_style: f.id as any })}
+                            className={`w-full p-2.5 rounded-xl border text-left flex items-center justify-between transition-all ${
+                              isSelected
+                                ? "border-[#facc15] bg-[#facc15]/10 text-white font-bold"
+                                : "border-white/10 bg-zinc-900 text-zinc-300 hover:border-white/20"
+                            }`}
+                          >
+                            <div>
+                              <p className="text-xs font-semibold">{f.label}</p>
+                              <p className="text-[10px] text-zinc-400">{f.desc}</p>
+                            </div>
+                            <span
+                              className="text-lg text-[#facc15] px-2"
+                              style={{ fontFamily: f.font }}
+                            >
+                              Ananya Ramanathan
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Completion Statement */}
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-zinc-400 mb-1">
                       Completion Statement Description
@@ -472,26 +828,34 @@ export default function AdminCertificatesPage() {
                       rows={3}
                       value={template.description_text}
                       onChange={(e) => setTemplate({ ...template, description_text: e.target.value })}
-                      placeholder="e.g. for successfully completing the rigorous curriculum, practical demonstrations, and examinations for"
+                      placeholder="e.g. for successfully completing the rigorous curriculum, practical demonstrations, and traditional examinations for"
                       className="w-full px-3.5 py-2.5 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15] resize-none"
                     />
-                  </div>
-
-                  <div className="p-3 bg-zinc-950/80 rounded-xl border border-white/5 text-[11px] text-zinc-400 leading-relaxed">
-                    💡 <strong>Tip:</strong> The student name and course title are automatically injected into the
-                    certificate at runtime when a student completes all required lessons and assessments.
                   </div>
                 </div>
               )}
 
-              {/* 4. Signatures */}
+              {/* 4. Signatures & Authorities */}
               {designerCategory === "signatories" && (
-                <div className="space-y-4">
-                  {/* Signatory 1 */}
-                  <div className="p-4 bg-zinc-950/60 border border-white/5 rounded-xl space-y-3">
-                    <p className="text-xs font-bold text-[#facc15] uppercase tracking-wider">
-                      Signatory 1 (Left Authority)
-                    </p>
+                <div className="space-y-5">
+                  {/* Signatory 1 (Left Authority) */}
+                  <div className="p-4 bg-zinc-950/70 border border-white/5 rounded-2xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-bold text-[#facc15] uppercase tracking-wider">
+                        Signatory 1 (Left Authority)
+                      </p>
+                      {template.signatory1_signature && (
+                        <button
+                          type="button"
+                          onClick={() => setTemplate({ ...template, signatory1_signature: "" })}
+                          className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 font-semibold transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Clear Signature
+                        </button>
+                      )}
+                    </div>
+
                     <div>
                       <label className="block text-[11px] text-zinc-400 mb-1">Full Name</label>
                       <input
@@ -502,6 +866,7 @@ export default function AdminCertificatesPage() {
                         className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-xs focus:outline-none focus:border-[#facc15]"
                       />
                     </div>
+
                     <div>
                       <label className="block text-[11px] text-zinc-400 mb-1">Designation / Title</label>
                       <input
@@ -512,13 +877,53 @@ export default function AdminCertificatesPage() {
                         className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-xs focus:outline-none focus:border-[#facc15]"
                       />
                     </div>
+
+                    {/* Signature Image Preview */}
+                    {template.signatory1_signature ? (
+                      <div className="h-16 bg-white/5 rounded-xl border border-white/10 flex items-center justify-center p-2">
+                        <img
+                          src={template.signatory1_signature}
+                          alt="Signatory 1 Signature"
+                          className="h-full object-contain max-w-[160px]"
+                        />
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-zinc-500 italic">
+                        No image uploaded: Rendering calligraphic cursive signature automatically.
+                      </div>
+                    )}
+
+                    {/* File Upload Button for Signature */}
+                    <label className="w-full cursor-pointer py-2 px-3 bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-[#facc15]/50 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all">
+                      <Upload className="w-3.5 h-3.5 text-[#facc15]" />
+                      <span>{template.signatory1_signature ? "Replace Signature Image" : "Attach Digital Signature Image (PNG)"}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => handleImageUpload(e, "signatory1_signature")}
+                      />
+                    </label>
                   </div>
 
-                  {/* Signatory 2 */}
-                  <div className="p-4 bg-zinc-950/60 border border-white/5 rounded-xl space-y-3">
-                    <p className="text-xs font-bold text-[#facc15] uppercase tracking-wider">
-                      Signatory 2 (Right Authority)
-                    </p>
+                  {/* Signatory 2 (Right Authority) */}
+                  <div className="p-4 bg-zinc-950/70 border border-white/5 rounded-2xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-bold text-[#facc15] uppercase tracking-wider">
+                        Signatory 2 (Right Authority)
+                      </p>
+                      {template.signatory2_signature && (
+                        <button
+                          type="button"
+                          onClick={() => setTemplate({ ...template, signatory2_signature: "" })}
+                          className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 font-semibold transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Clear Signature
+                        </button>
+                      )}
+                    </div>
+
                     <div>
                       <label className="block text-[11px] text-zinc-400 mb-1">Full Name</label>
                       <input
@@ -529,6 +934,7 @@ export default function AdminCertificatesPage() {
                         className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-xs focus:outline-none focus:border-[#facc15]"
                       />
                     </div>
+
                     <div>
                       <label className="block text-[11px] text-zinc-400 mb-1">Designation / Title</label>
                       <input
@@ -539,27 +945,122 @@ export default function AdminCertificatesPage() {
                         className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-lg text-white text-xs focus:outline-none focus:border-[#facc15]"
                       />
                     </div>
+
+                    {/* Signature Image Preview */}
+                    {template.signatory2_signature ? (
+                      <div className="h-16 bg-white/5 rounded-xl border border-white/10 flex items-center justify-center p-2">
+                        <img
+                          src={template.signatory2_signature}
+                          alt="Signatory 2 Signature"
+                          className="h-full object-contain max-w-[160px]"
+                        />
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-zinc-500 italic">
+                        No image uploaded: Rendering calligraphic cursive signature automatically.
+                      </div>
+                    )}
+
+                    {/* File Upload Button for Signature */}
+                    <label className="w-full cursor-pointer py-2 px-3 bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-[#facc15]/50 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all">
+                      <Upload className="w-3.5 h-3.5 text-[#facc15]" />
+                      <span>{template.signatory2_signature ? "Replace Signature Image" : "Attach Digital Signature Image (PNG)"}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => handleImageUpload(e, "signatory2_signature")}
+                      />
+                    </label>
                   </div>
                 </div>
               )}
 
-              {/* 5. Seal & Security */}
+              {/* 5. Stamp, Seal & Security */}
               {designerCategory === "seal" && (
                 <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-zinc-400 mb-1">
-                      Gold Medallion Seal Text
+                  {/* Seal Type Selector */}
+                  <div className="p-4 bg-zinc-950/70 border border-white/5 rounded-2xl space-y-3">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-zinc-300">
+                      Center Seal Style
                     </label>
-                    <input
-                      type="text"
-                      value={template.seal_text}
-                      onChange={(e) => setTemplate({ ...template, seal_text: e.target.value })}
-                      placeholder="e.g. NATYA ARTS • VERIFIED CREDENTIAL • EXCELLENCE"
-                      className="w-full px-3.5 py-2.5 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
-                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setTemplate({ ...template, seal_type: "gold_medallion" })}
+                        className={`p-3 rounded-xl border text-xs font-semibold text-left transition-all ${
+                          (template.seal_type || "gold_medallion") === "gold_medallion"
+                            ? "border-[#facc15] bg-[#facc15]/10 text-white font-bold"
+                            : "border-white/10 bg-zinc-900 text-zinc-400 hover:text-white"
+                        }`}
+                      >
+                        <p className="font-bold text-white">Dynamic Gold Medallion</p>
+                        <p className="text-[10px] text-zinc-400 mt-0.5">Embossed 3D medal with ribbon tails</p>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setTemplate({ ...template, seal_type: "custom_seal" })}
+                        className={`p-3 rounded-xl border text-xs font-semibold text-left transition-all ${
+                          template.seal_type === "custom_seal"
+                            ? "border-[#facc15] bg-[#facc15]/10 text-white font-bold"
+                            : "border-white/10 bg-zinc-900 text-zinc-400 hover:text-white"
+                        }`}
+                      >
+                        <p className="font-bold text-white">Custom Stamp / Seal</p>
+                        <p className="text-[10px] text-zinc-400 mt-0.5">Attach custom official seal image</p>
+                      </button>
+                    </div>
+
+                    {/* Seal type specific inputs */}
+                    {template.seal_type === "custom_seal" ? (
+                      <div className="space-y-3 pt-2">
+                        {template.seal_url ? (
+                          <div className="flex items-center justify-between p-3 bg-zinc-900 rounded-xl border border-white/10">
+                            <img src={template.seal_url} alt="Official Seal Preview" className="h-16 object-contain" />
+                            <button
+                              type="button"
+                              onClick={() => setTemplate({ ...template, seal_url: "" })}
+                              className="text-xs text-red-400 hover:text-red-300 font-semibold"
+                            >
+                              Remove Seal
+                            </button>
+                          </div>
+                        ) : null}
+
+                        <label className="w-full cursor-pointer py-2.5 px-3 bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-[#facc15]/50 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all">
+                          <Upload className="w-3.5 h-3.5 text-[#facc15]" />
+                          <span>{template.seal_url ? "Replace Seal Image" : "Upload Custom Official Seal Image (PNG)"}</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => handleImageUpload(e, "seal_url")}
+                          />
+                        </label>
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="block text-[11px] text-zinc-400 mb-1">
+                          Medallion Outer Text
+                        </label>
+                        <input
+                          type="text"
+                          value={template.seal_text}
+                          onChange={(e) => setTemplate({ ...template, seal_text: e.target.value })}
+                          placeholder="e.g. NATYA ARTS • VERIFIED CREDENTIAL • EXCELLENCE"
+                          className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-xs focus:outline-none focus:border-[#facc15]"
+                        />
+                      </div>
+                    )}
                   </div>
 
-                  <div className="space-y-3 pt-2">
+                  {/* Security Toggles */}
+                  <div className="p-4 bg-zinc-950/70 border border-white/5 rounded-2xl space-y-3">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-zinc-300 mb-2">
+                      Credential Security & Metadata
+                    </label>
+
                     <label className="flex items-center gap-3 cursor-pointer">
                       <input
                         type="checkbox"
@@ -589,6 +1090,89 @@ export default function AdminCertificatesPage() {
                       />
                       <span className="text-xs text-zinc-300 font-medium">Display Official Issuance Date</span>
                     </label>
+                  </div>
+                </div>
+              )}
+
+              {/* 6. Watermark & Motif */}
+              {designerCategory === "watermark" && (
+                <div className="space-y-4">
+                  <div className="p-4 bg-zinc-950/70 border border-white/5 rounded-2xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="block text-xs font-bold uppercase tracking-wider text-[#facc15]">
+                          Background Watermark Motif
+                        </label>
+                        <p className="text-[11px] text-zinc-400">
+                          Light motif rendered in the background of the certificate.
+                        </p>
+                      </div>
+                      {template.watermark_url && (
+                        <button
+                          type="button"
+                          onClick={() => setTemplate({ ...template, watermark_url: "" })}
+                          className="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1 font-semibold transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Revert to Default
+                        </button>
+                      )}
+                    </div>
+
+                    {template.watermark_url ? (
+                      <div className="h-20 bg-zinc-900/90 rounded-xl border border-white/10 flex items-center justify-center p-2">
+                        <img
+                          src={template.watermark_url}
+                          alt="Custom Watermark"
+                          className="h-full object-contain opacity-50"
+                        />
+                      </div>
+                    ) : (
+                      <div className="p-3 bg-zinc-900 rounded-xl text-xs text-zinc-400 flex items-center gap-2">
+                        <Sparkles className="w-4 h-4 text-[#facc15]" />
+                        <span>Traditional Sacred Mandala & Nataraja Motif (Built-in)</span>
+                      </div>
+                    )}
+
+                    <label className="w-full cursor-pointer py-2.5 px-3 bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-[#facc15]/50 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-2 transition-all">
+                      <Upload className="w-3.5 h-3.5 text-[#facc15]" />
+                      <span>{template.watermark_url ? "Replace Custom Watermark" : "Upload Custom Watermark Image"}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => handleImageUpload(e, "watermark_url")}
+                      />
+                    </label>
+                  </div>
+
+                  {/* Watermark Opacity Slider */}
+                  <div className="p-4 bg-zinc-950/70 border border-white/5 rounded-2xl space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-bold uppercase tracking-wider text-zinc-300">
+                        Watermark Visibility / Opacity
+                      </label>
+                      <span className="text-xs font-bold text-[#facc15]">
+                        {Math.round((template.watermark_opacity ?? 0.04) * 100)}%
+                      </span>
+                    </div>
+
+                    <input
+                      type="range"
+                      min="0"
+                      max="0.25"
+                      step="0.01"
+                      value={template.watermark_opacity ?? 0.04}
+                      onChange={(e) =>
+                        setTemplate({ ...template, watermark_opacity: parseFloat(e.target.value) })
+                      }
+                      className="w-full accent-[#facc15] cursor-pointer"
+                    />
+                    <div className="flex justify-between text-[10px] text-zinc-500">
+                      <span>0% (Invisible)</span>
+                      <span>4% (Subtle Luxury)</span>
+                      <span>25% (High Visibility)</span>
+                    </div>
                   </div>
                 </div>
               )}
