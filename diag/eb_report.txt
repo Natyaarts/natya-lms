@@ -11,10 +11,10 @@
             "EndpointURL": "13.127.139.111",
             "CNAME": "Natya-lms-backend-env.eba-5tjxp8qg.ap-south-1.elasticbeanstalk.com",
             "DateCreated": "2026-07-24T10:53:46.173000+00:00",
-            "DateUpdated": "2026-10-03T06:19:00.146000+00:00",
-            "Status": "Ready",
-            "AbortableOperationInProgress": false,
-            "Health": "Green",
+            "DateUpdated": "2026-10-03T06:21:32.476000+00:00",
+            "Status": "Updating",
+            "AbortableOperationInProgress": true,
+            "Health": "Grey",
             "Tier": {
                 "Name": "WebServer",
                 "Type": "Standard",
@@ -27,10 +27,377 @@
 }
 === DESCRIBE EVENTS ===
 {
-    "Events": []
+    "Events": [
+        {
+            "EventDate": "2026-10-03T06:21:32.436000+00:00",
+            "Message": "requestEnvironmentInfo is starting.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "eae887f9-262e-4993-b22f-893459b0fe69",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-10-03T06:18:57.327000+00:00",
+            "Message": "During an aborted deployment, some instances may have deployed the new application version. To ensure all instances are running the same version, re-deploy the appropriate application version.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "ERROR"
+        },
+        {
+            "EventDate": "2026-10-03T06:18:57.276000+00:00",
+            "Message": "Failed to deploy application.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "ERROR"
+        },
+        {
+            "EventDate": "2026-10-03T06:18:57.065000+00:00",
+            "Message": "Unsuccessful command execution on instance id(s) 'i-093e945dedce82899'. Aborting the operation.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "ERROR"
+        },
+        {
+            "EventDate": "2026-10-03T06:18:56.977000+00:00",
+            "Message": "Command execution completed on all instances. Summary: [Successful: 0, TimedOut: 1].",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-10-03T06:18:56.925000+00:00",
+            "Message": "The following instances have not responded in the allowed command timeout time (they might still finish eventually on their own): [i-093e945dedce82899].",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "WARN"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:52.356000+00:00",
+            "Message": "Deploying new version to instance(s).",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:48.476000+00:00",
+            "Message": "Environment update is starting.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:27.544000+00:00",
+            "Message": "During an aborted deployment, some instances may have deployed the new application version. To ensure all instances are running the same version, re-deploy the appropriate application version.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "ERROR"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:27.510000+00:00",
+            "Message": "Failed to deploy application.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "ERROR"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:27.337000+00:00",
+            "Message": "Unsuccessful command execution on instance id(s) 'i-093e945dedce82899'. Aborting the operation.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "ERROR"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:27.264000+00:00",
+            "Message": "Command execution completed on all instances. Summary: [Successful: 0, TimedOut: 1].",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:27.217000+00:00",
+            "Message": "The following instances have not responded in the allowed command timeout time (they might still finish eventually on their own): [i-093e945dedce82899].",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "WARN"
+        },
+        {
+            "EventDate": "2026-10-03T05:50:24.365000+00:00",
+            "Message": "Deploying new version to instance(s).",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-10-03T05:50:20.502000+00:00",
+            "Message": "Environment update is starting.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:50:25.087000+00:00",
+            "Message": "Environment update completed successfully.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "3a04c402-7ccb-44df-a6dc-3cbdb3ce5ad7",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:50:25.063000+00:00",
+            "Message": "New application version was deployed to running EC2 instances.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "3a04c402-7ccb-44df-a6dc-3cbdb3ce5ad7",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:50:20.862000+00:00",
+            "Message": "Instance deployment completed successfully.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "3a04c402-7ccb-44df-a6dc-3cbdb3ce5ad7",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:49:55.337000+00:00",
+            "Message": "Instance deployment used the commands in your 'Procfile' to initiate startup of your application.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "3a04c402-7ccb-44df-a6dc-3cbdb3ce5ad7",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:49:51.032000+00:00",
+            "Message": "Deploying new version to instance(s).",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "3a04c402-7ccb-44df-a6dc-3cbdb3ce5ad7",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:49:47.459000+00:00",
+            "Message": "Environment update is starting.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "3a04c402-7ccb-44df-a6dc-3cbdb3ce5ad7",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:09:25.423000+00:00",
+            "Message": "Environment update completed successfully.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "fd74ad01-6db5-401b-bd2e-13d35e684c7e",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:09:25.399000+00:00",
+            "Message": "New application version was deployed to running EC2 instances.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "fd74ad01-6db5-401b-bd2e-13d35e684c7e",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:09:18.516000+00:00",
+            "Message": "Instance deployment completed successfully.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "fd74ad01-6db5-401b-bd2e-13d35e684c7e",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:08:59.334000+00:00",
+            "Message": "Instance deployment used the commands in your 'Procfile' to initiate startup of your application.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "fd74ad01-6db5-401b-bd2e-13d35e684c7e",
+            "Severity": "INFO"
+        }
+    ],
+    "NextToken": "eyJOZXh0VG9rZW4iOiBudWxsLCAiYm90b190cnVuY2F0ZV9hbW91bnQiOiAyNX0="
 }
-=== REQUESTING TAIL LOGS ===
+=== DESCRIBE RESOURCES & REBOOT ===
+Detected Instance ID: i-093e945dedce82899
+Issuing EC2 reboot to instance i-093e945dedce82899...
+Waiting 35 seconds for instance to reboot and initialize...
 === POST-DEPLOY EVENTS ===
 {
-    "Events": []
+    "Events": [
+        {
+            "EventDate": "2026-10-03T06:21:32.436000+00:00",
+            "Message": "requestEnvironmentInfo is starting.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "eae887f9-262e-4993-b22f-893459b0fe69",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-10-03T06:18:57.327000+00:00",
+            "Message": "During an aborted deployment, some instances may have deployed the new application version. To ensure all instances are running the same version, re-deploy the appropriate application version.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "ERROR"
+        },
+        {
+            "EventDate": "2026-10-03T06:18:57.276000+00:00",
+            "Message": "Failed to deploy application.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "ERROR"
+        },
+        {
+            "EventDate": "2026-10-03T06:18:57.065000+00:00",
+            "Message": "Unsuccessful command execution on instance id(s) 'i-093e945dedce82899'. Aborting the operation.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "ERROR"
+        },
+        {
+            "EventDate": "2026-10-03T06:18:56.977000+00:00",
+            "Message": "Command execution completed on all instances. Summary: [Successful: 0, TimedOut: 1].",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-10-03T06:18:56.925000+00:00",
+            "Message": "The following instances have not responded in the allowed command timeout time (they might still finish eventually on their own): [i-093e945dedce82899].",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "WARN"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:52.356000+00:00",
+            "Message": "Deploying new version to instance(s).",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:48.476000+00:00",
+            "Message": "Environment update is starting.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "4e711060-41e6-4268-89a7-6af28de6a913",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:27.544000+00:00",
+            "Message": "During an aborted deployment, some instances may have deployed the new application version. To ensure all instances are running the same version, re-deploy the appropriate application version.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "ERROR"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:27.510000+00:00",
+            "Message": "Failed to deploy application.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "ERROR"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:27.337000+00:00",
+            "Message": "Unsuccessful command execution on instance id(s) 'i-093e945dedce82899'. Aborting the operation.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "ERROR"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:27.264000+00:00",
+            "Message": "Command execution completed on all instances. Summary: [Successful: 0, TimedOut: 1].",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-10-03T06:04:27.217000+00:00",
+            "Message": "The following instances have not responded in the allowed command timeout time (they might still finish eventually on their own): [i-093e945dedce82899].",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "WARN"
+        },
+        {
+            "EventDate": "2026-10-03T05:50:24.365000+00:00",
+            "Message": "Deploying new version to instance(s).",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-10-03T05:50:20.502000+00:00",
+            "Message": "Environment update is starting.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "5740a73a-5e9f-4bae-a4f2-12dc9591b8ef",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:50:25.087000+00:00",
+            "Message": "Environment update completed successfully.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "3a04c402-7ccb-44df-a6dc-3cbdb3ce5ad7",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:50:25.063000+00:00",
+            "Message": "New application version was deployed to running EC2 instances.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "3a04c402-7ccb-44df-a6dc-3cbdb3ce5ad7",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:50:20.862000+00:00",
+            "Message": "Instance deployment completed successfully.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "3a04c402-7ccb-44df-a6dc-3cbdb3ce5ad7",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:49:55.337000+00:00",
+            "Message": "Instance deployment used the commands in your 'Procfile' to initiate startup of your application.",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "3a04c402-7ccb-44df-a6dc-3cbdb3ce5ad7",
+            "Severity": "INFO"
+        },
+        {
+            "EventDate": "2026-09-28T11:49:51.032000+00:00",
+            "Message": "Deploying new version to instance(s).",
+            "ApplicationName": "natya-lms-backend",
+            "EnvironmentName": "Natya-lms-backend-env",
+            "RequestId": "3a04c402-7ccb-44df-a6dc-3cbdb3ce5ad7",
+            "Severity": "INFO"
+        }
+    ],
+    "NextToken": "eyJOZXh0VG9rZW4iOiBudWxsLCAiYm90b190cnVuY2F0ZV9hbW91bnQiOiAyMH0="
 }
