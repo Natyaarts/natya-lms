@@ -1221,11 +1221,11 @@ export default function CourseManager() {
                                 : 'bg-zinc-900/60 border border-white/5 hover:border-white/10'
                             }`}
                           >
-                            <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-start justify-between gap-4">
                               {/* Left: Reorder Stepper + Index + Title & Subtitle */}
-                              <div className="flex items-center gap-3 min-w-0 flex-1">
+                              <div className="flex items-start gap-3 min-w-0 flex-1">
                                 {/* Compact Vertical Stepper */}
-                                <div className="flex flex-col items-center bg-zinc-950/80 border border-white/10 rounded-lg p-0.5 shrink-0">
+                                <div className="flex flex-col items-center bg-zinc-950/80 border border-white/10 rounded-lg p-0.5 shrink-0 mt-0.5">
                                   <button
                                     type="button"
                                     disabled={lIdx === 0}
@@ -1247,40 +1247,40 @@ export default function CourseManager() {
                                 </div>
 
                                 {/* Lesson Number Badge */}
-                                <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-[#facc15]/10 text-[#facc15] font-bold text-xs border border-[#facc15]/20 shrink-0">
+                                <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-[#facc15]/10 text-[#facc15] font-bold text-xs border border-[#facc15]/20 shrink-0 mt-0.5">
                                   {lIdx + 1}
                                 </div>
 
                                 {/* Title and Video Info */}
                                 <div className="min-w-0 flex-1">
-                                  <h4 className="font-semibold text-sm text-white truncate">
-                                    {lesson.title}
+                                  <h4 className="font-bold text-base text-white break-words">
+                                    {lesson.title || `Lesson ${lIdx + 1}`}
                                   </h4>
-                                  <div className="flex items-center gap-2 text-[11px] text-zinc-400 mt-0.5 flex-wrap">
-                                    {cleanFileName ? (
-                                      <span className="flex items-center gap-1 font-mono text-zinc-400 truncate max-w-[280px]" title={lesson.video_file}>
-                                        <span className="text-[#facc15]">🎬</span>
-                                        <span className="truncate">{cleanFileName}</span>
-                                      </span>
-                                    ) : (
-                                      <span className="text-zinc-500">No video uploaded</span>
-                                    )}
-                                    <span className="text-zinc-600">•</span>
-                                    <span className="text-[10px] uppercase tracking-wider text-zinc-400">English Original</span>
+
+                                  {/* Video file name display */}
+                                  <div className="flex items-center gap-1.5 text-xs text-zinc-400 mt-1">
+                                    <span className="text-[#facc15] shrink-0 text-sm">🎬</span>
+                                    <span className="font-mono text-[11px] text-zinc-300 truncate" title={lesson.video_file || ""}>
+                                      {cleanFileName || (lesson.video_file ? String(lesson.video_file).split('/').pop() : "No video file attached")}
+                                    </span>
+                                  </div>
+
+                                  {/* Badges line: English Original + Translated tracks */}
+                                  <div className="flex items-center gap-2 mt-2 flex-wrap">
+                                    <span className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase tracking-wider">
+                                      English · Original
+                                    </span>
                                     {lesson.translated_audios?.filter((a: any) => a.status === 'completed').length > 0 && (
-                                      <>
-                                        <span className="text-zinc-600">•</span>
-                                        <span className="text-[10px] text-[#facc15]">
-                                          {lesson.translated_audios.filter((a: any) => a.status === 'completed').length} Audio Track{lesson.translated_audios.filter((a: any) => a.status === 'completed').length > 1 ? 's' : ''}
-                                        </span>
-                                      </>
+                                      <span className="px-2 py-0.5 bg-[#facc15]/10 border border-[#facc15]/20 rounded text-[10px] font-semibold text-[#facc15]">
+                                        🎧 {lesson.translated_audios.filter((a: any) => a.status === 'completed').length} Audio Track{lesson.translated_audios.filter((a: any) => a.status === 'completed').length > 1 ? 's' : ''}
+                                      </span>
                                     )}
                                   </div>
                                 </div>
                               </div>
 
                               {/* Right: Clean, Balanced Action Buttons */}
-                              <div className="flex items-center gap-2 shrink-0">
+                              <div className="flex items-center gap-2 shrink-0 mt-0.5">
                                 {/* Edit Button */}
                                 <button
                                   type="button"
