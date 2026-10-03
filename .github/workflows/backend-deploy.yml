@@ -28,24 +28,33 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
-      - name: Inspect Current EB Status & Reboot Frozen Instance
+      - name: Inspect EB Status, Abort Stuck Operations & Wait for Ready
         run: |
           mkdir -p diag
           echo "=== DESCRIBE ENVIRONMENTS ===" > diag/eb_report.txt
           aws elasticbeanstalk describe-environments --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
           
-          echo "=== DESCRIBE EVENTS ===" >> diag/eb_report.txt
-          aws elasticbeanstalk describe-events --environment-name Natya-lms-backend-env --max-items 25 --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
-          
-          echo "=== DESCRIBE RESOURCES & REBOOT ===" >> diag/eb_report.txt
-          INSTANCE_ID=$(aws elasticbeanstalk describe-environment-resources --environment-name Natya-lms-backend-env --region ap-south-1 --query 'EnvironmentResources.Instances[0].Id' --output text || echo "")
-          echo "Detected Instance ID: $INSTANCE_ID" >> diag/eb_report.txt
-          if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
-            echo "Issuing EC2 reboot to instance $INSTANCE_ID..." >> diag/eb_report.txt
-            aws ec2 reboot-instances --instance-ids "$INSTANCE_ID" --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
-            echo "Waiting 35 seconds for instance to reboot and initialize..." >> diag/eb_report.txt
-            sleep 35
+          echo "=== CHECKING FOR STUCK OPERATION ===" >> diag/eb_report.txt
+          ABORTABLE=$(aws elasticbeanstalk describe-environments --environment-names Natya-lms-backend-env --region ap-south-1 --query 'Environments[0].AbortableOperationInProgress' --output text 2>/dev/null || echo "false")
+          echo "Abortable operation in progress: $ABORTABLE" >> diag/eb_report.txt
+          if [ "$ABORTABLE" = "True" ] || [ "$ABORTABLE" = "true" ]; then
+            echo "Stuck operation detected. Calling abort-environment-update..." >> diag/eb_report.txt
+            aws elasticbeanstalk abort-environment-update --environment-name Natya-lms-backend-env --region ap-south-1 || true
           fi
+          
+          echo "Waiting for Natya-lms-backend-env to reach Ready state..." >> diag/eb_report.txt
+          for i in $(seq 1 30); do
+            STATUS=$(aws elasticbeanstalk describe-environments --environment-names Natya-lms-backend-env --region ap-south-1 --query 'Environments[0].Status' --output text 2>/dev/null || echo "")
+            echo "[$i/30] Environment Status: $STATUS" >> diag/eb_report.txt
+            if [ "$STATUS" = "Ready" ]; then
+              echo "Environment is Ready for deployment!" >> diag/eb_report.txt
+              break
+            fi
+            sleep 10
+          done
+          
+          echo "=== DESCRIBE EVENTS ===" >> diag/eb_report.txt
+          aws elasticbeanstalk describe-events --environment-name Natya-lms-backend-env --max-items 20 --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
           
           cat diag/eb_report.txt >> $GITHUB_STEP_SUMMARY
 
