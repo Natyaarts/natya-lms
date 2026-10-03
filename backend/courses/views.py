@@ -95,12 +95,30 @@ class CourseViewSet(viewsets.ModelViewSet):
         return Course.objects.filter(is_published=True)
 
     def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
         from django.db.models import ProtectedError
         try:
+            # 1. Unlink nullable protected OrderItem rows (preserves order finance history without blocking course deletion)
+            from orders.models import OrderItem
+            OrderItem.objects.filter(course=instance).update(course=None)
+
+            # 2. Clean up test certificates if any
+            from courses.models import Certificate
+            Certificate.objects.filter(course=instance).delete()
+
+            # 3. Clean up announcement references
+            from notifications.models import Announcement
+            Announcement.objects.filter(course=instance).update(course=None)
+
             return super().destroy(request, *args, **kwargs)
         except ProtectedError:
             return Response(
-                {"error": "Cannot delete this course because it has existing student orders or certificates. You can unpublish it instead."},
+                {"error": "Cannot delete this course because it has permanent financial ledger records. You can unpublish it instead."},
+                status=drf_status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to delete course: {str(e)}"},
                 status=drf_status.HTTP_400_BAD_REQUEST
             )
 

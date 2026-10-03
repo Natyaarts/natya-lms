@@ -28,36 +28,6 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
-      - name: Inspect EB Status, Abort Stuck Operations & Wait for Ready
-        run: |
-          mkdir -p diag
-          echo "=== DESCRIBE ENVIRONMENTS ===" > diag/eb_report.txt
-          aws elasticbeanstalk describe-environments --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
-          
-          echo "=== CHECKING FOR STUCK OPERATION ===" >> diag/eb_report.txt
-          ABORTABLE=$(aws elasticbeanstalk describe-environments --environment-names Natya-lms-backend-env --region ap-south-1 --query 'Environments[0].AbortableOperationInProgress' --output text 2>/dev/null || echo "false")
-          echo "Abortable operation in progress: $ABORTABLE" >> diag/eb_report.txt
-          if [ "$ABORTABLE" = "True" ] || [ "$ABORTABLE" = "true" ]; then
-            echo "Stuck operation detected. Calling abort-environment-update..." >> diag/eb_report.txt
-            aws elasticbeanstalk abort-environment-update --environment-name Natya-lms-backend-env --region ap-south-1 || true
-          fi
-          
-          echo "Waiting for Natya-lms-backend-env to reach Ready state..." >> diag/eb_report.txt
-          for i in $(seq 1 30); do
-            STATUS=$(aws elasticbeanstalk describe-environments --environment-names Natya-lms-backend-env --region ap-south-1 --query 'Environments[0].Status' --output text 2>/dev/null || echo "")
-            echo "[$i/30] Environment Status: $STATUS" >> diag/eb_report.txt
-            if [ "$STATUS" = "Ready" ]; then
-              echo "Environment is Ready for deployment!" >> diag/eb_report.txt
-              break
-            fi
-            sleep 10
-          done
-          
-          echo "=== DESCRIBE EVENTS ===" >> diag/eb_report.txt
-          aws elasticbeanstalk describe-events --environment-name Natya-lms-backend-env --max-items 20 --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
-          
-          cat diag/eb_report.txt >> $GITHUB_STEP_SUMMARY
-
       - name: Generate Deployment Package
         run: |
           cd backend
@@ -69,27 +39,41 @@ jobs:
             -x "*.pyc" \
             -x "static/*"
 
-      - name: Deploy to Elastic Beanstalk
-        uses: einaregilsson/beanstalk-deploy@v22
-        with:
-          aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          application_name: ${{ vars.EB_APP_NAME || 'natya-lms-backend' }}
-          environment_name: ${{ vars.EB_ENV_NAME || 'Natya-lms-backend-env' }}
-          version_label: backend-${{ github.sha }}
-          region: ap-south-1
-          deployment_package: deploy.zip
-          wait_for_deployment: false
-
-      - name: Post-deploy EB Event Check & Report Commit
-        if: always()
+      - name: Wait for EB Ready and Deploy via AWS CLI
         run: |
-          sleep 20
-          echo "=== POST-DEPLOY EVENTS ===" >> diag/eb_report.txt
-          aws elasticbeanstalk describe-events --environment-name Natya-lms-backend-env --max-items 20 --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
+          mkdir -p diag
+          echo "=== CHECKING ENVIRONMENT STATUS ==="
           
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add diag/eb_report.txt
-          git commit -m "chore: record EB diagnostic report [skip ci]" || true
-          git push || true
+          # Wait up to 5 minutes if environment is currently updating
+          for i in $(seq 1 30); do
+            STATUS=$(aws elasticbeanstalk describe-environments --environment-names Natya-lms-backend-env --region ap-south-1 --query 'Environments[0].Status' --output text 2>/dev/null || echo "")
+            echo "[$i/30] Status: $STATUS"
+            if [ "$STATUS" = "Ready" ]; then
+              echo "Environment is Ready for deployment!"
+              break
+            fi
+            sleep 10
+          done
+
+          # Upload artifact to Elastic Beanstalk S3 bucket
+          BUCKET=$(aws elasticbeanstalk create-storage-location --region ap-south-1 --query 'S3Bucket' --output text)
+          S3_KEY="backend-${{ github.sha }}.zip"
+          echo "Uploading deploy.zip to s3://${BUCKET}/${S3_KEY}..."
+          aws s3 cp deploy.zip "s3://${BUCKET}/${S3_KEY}" --region ap-south-1
+
+          # Create application version
+          echo "Creating application version backend-${{ github.sha }}..."
+          aws elasticbeanstalk create-application-version \
+            --application-name natya-lms-backend \
+            --version-label "backend-${{ github.sha }}" \
+            --source-bundle S3Bucket="${BUCKET}",S3Key="${S3_KEY}" \
+            --region ap-south-1 || true
+
+          # Deploy to environment
+          echo "Deploying version backend-${{ github.sha }} to Natya-lms-backend-env..."
+          aws elasticbeanstalk update-environment \
+            --environment-name Natya-lms-backend-env \
+            --version-label "backend-${{ github.sha }}" \
+            --region ap-south-1
+
+          echo "Deployment command sent successfully to AWS Elastic Beanstalk!"
