@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
-from .models import Course, Module, VideoLesson, TranslatedAudio, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, CourseInstructor, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswerOptionSnapshot, Certificate, Assignment, AssignmentSubmission
+from .models import Course, Module, VideoLesson, TranslatedAudio, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, CourseInstructor, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswerOptionSnapshot, Certificate, CertificateTemplate, Assignment, AssignmentSubmission
 from .languages import get_language_name
 
 User = get_user_model()
@@ -846,6 +846,23 @@ class PublicCertificateVerificationSerializer(serializers.ModelSerializer):
         model = Certificate
         fields = ['verification_id', 'learner_name_snapshot', 'course_title_snapshot', 'issued_at']
         read_only_fields = fields
+
+
+class CertificateTemplateSerializer(serializers.ModelSerializer):
+    course_title = serializers.CharField(source='course.title', read_only=True)
+
+    class Meta:
+        model = CertificateTemplate
+        fields = [
+            'id', 'course', 'course_title', 'title', 'institute_name', 'institute_tagline',
+            'presentation_line', 'description_text', 'theme', 'border_style',
+            'signatory1_name', 'signatory1_title', 'signatory1_signature',
+            'signatory2_name', 'signatory2_title', 'signatory2_signature',
+            'logo_url', 'seal_text', 'show_qr', 'show_verification_id', 'show_issue_date',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
 
 
 # =============================================================================

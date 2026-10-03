@@ -4,6 +4,7 @@ from .views import (
     CourseViewSet, ModuleViewSet, VideoLessonViewSet, AdminEnrollmentViewSet, LiveClassViewSet, LiveBatchViewSet,
     TeacherAvailabilityViewSet, AssessmentViewSet, AssessmentAttemptViewSet, CertificateViewSet, AssignmentViewSet,
     AssignmentSubmissionViewSet, AdminCertificateListView, AdminAssignmentListView,
+    CertificateTemplateView,
 )
 
 router = DefaultRouter()
@@ -37,6 +38,8 @@ urlpatterns = [
     # match "admin" as a course pk first (the exact same URL-shadowing
     # pitfall already hit and fixed elsewhere in this codebase, e.g.
     # notifications/urls.py's device-token/ override).
+    path('certificate-template/', CertificateTemplateView.as_view(), name='certificate-template'),
+    path('admin/certificate-template/', CertificateTemplateView.as_view(), name='admin-certificate-template'),
     path('admin/certificates/', AdminCertificateListView.as_view(), name='admin-certificates'),
     path('admin/assignments/', AdminAssignmentListView.as_view(), name='admin-assignments'),
     path('', include(router.urls)),

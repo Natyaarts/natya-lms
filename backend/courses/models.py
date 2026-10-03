@@ -942,6 +942,38 @@ class Certificate(models.Model):
         return f"{self.verification_id} - {self.learner_name_snapshot} - {self.course_title_snapshot}"
 
 
+class CertificateTemplate(models.Model):
+    """
+    Dynamic certificate design/template for Natya LMS.
+    course=None means global academy template; can also be course-specific.
+    """
+    course = models.OneToOneField('Course', related_name='certificate_template', null=True, blank=True, on_delete=models.CASCADE)
+    title = models.CharField(max_length=255, default="Certificate of Completion")
+    institute_name = models.CharField(max_length=255, default="Natya Arts Academy")
+    institute_tagline = models.CharField(max_length=255, default="Center for Excellence in Classical Indian Arts & Bharatanatyam", blank=True)
+    presentation_line = models.CharField(max_length=255, default="This is proudly presented to")
+    description_text = models.TextField(default="has successfully completed the comprehensive training, modules, and practical demonstration for")
+    theme = models.CharField(max_length=50, default="temple_gold")
+    border_style = models.CharField(max_length=50, default="ornate_gold")
+    signatory1_name = models.CharField(max_length=255, default="Guru Smt. Priyadarshini Govind", blank=True)
+    signatory1_title = models.CharField(max_length=255, default="Artistic Director & Chief Mentor", blank=True)
+    signatory1_signature = models.TextField(blank=True, default="")
+    signatory2_name = models.CharField(max_length=255, default="Dr. K. S. Subramanian", blank=True)
+    signatory2_title = models.CharField(max_length=255, default="Dean of Academy & External Examiner", blank=True)
+    signatory2_signature = models.TextField(blank=True, default="")
+    logo_url = models.TextField(blank=True, default="")
+    seal_text = models.CharField(max_length=150, default="NATYA ARTS • VERIFIED CREDENTIAL • EXCELLENCE", blank=True)
+    show_qr = models.BooleanField(default=True)
+    show_verification_id = models.BooleanField(default=True)
+    show_issue_date = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Certificate Template ({self.course.title if self.course else 'Global Default'})"
+
+
+
 # =============================================================================
 # Phase 4.7: Assignments & Grading.
 #

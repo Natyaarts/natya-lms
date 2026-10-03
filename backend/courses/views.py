@@ -1794,8 +1794,8 @@ class TeacherAvailabilityViewSet(viewsets.ModelViewSet):
 # Phase 4.6: Course Completion Certificates.
 # =============================================================================
 
-from .models import Certificate
-from .serializers import AdminCertificateSerializer, CertificateSerializer, PublicCertificateVerificationSerializer
+from .models import Certificate, CertificateTemplate
+from .serializers import AdminCertificateSerializer, CertificateSerializer, PublicCertificateVerificationSerializer, CertificateTemplateSerializer
 from .services.certificates import get_or_create_certificate
 from .throttles import (
     CertificateVerificationThrottle, AssessmentStartRateThrottle,
@@ -1907,6 +1907,95 @@ class AdminCertificateListView(generics.ListAPIView):
             qs = qs.filter(course_id=course_id)
 
         return qs
+
+
+from rest_framework.views import APIView
+
+
+class CertificateTemplateView(APIView):
+    """
+    Endpoint for fetching and updating dynamic certificate designs.
+    GET is public / allowed for all, so learner certificate views and verification pages can render the exact design.
+    POST / PUT / PATCH is restricted to admins (IsSuperAdminOrAdmin).
+    """
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [permissions.AllowAny()]
+        return [IsSuperAdminOrAdmin()]
+
+    def get(self, request):
+        course_id = request.query_params.get('course_id')
+        template = None
+        if course_id:
+            try:
+                template = CertificateTemplate.objects.filter(course_id=course_id).first()
+            except Exception:
+                pass
+        
+        if not template:
+            try:
+                template = CertificateTemplate.objects.filter(course__isnull=True).first()
+            except Exception:
+                pass
+
+        if template:
+            return Response(CertificateTemplateSerializer(template).data)
+
+        # Default fallback config if no database record exists yet
+        default_data = {
+            "id": None,
+            "course": None,
+            "course_title": None,
+            "title": "Certificate of Completion",
+            "institute_name": "Natya Arts Academy",
+            "institute_tagline": "Center for Excellence in Classical Indian Arts & Bharatanatyam",
+            "presentation_line": "This is proudly presented to",
+            "description_text": "has successfully completed the comprehensive training, modules, and practical demonstration for",
+            "theme": "temple_gold",
+            "border_style": "ornate_gold",
+            "signatory1_name": "Guru Smt. Priyadarshini Govind",
+            "signatory1_title": "Artistic Director & Chief Mentor",
+            "signatory1_signature": "",
+            "signatory2_name": "Dr. K. S. Subramanian",
+            "signatory2_title": "Dean of Academy & External Examiner",
+            "signatory2_signature": "",
+            "logo_url": "",
+            "seal_text": "NATYA ARTS • VERIFIED CREDENTIAL • EXCELLENCE",
+            "show_qr": True,
+            "show_verification_id": True,
+            "show_issue_date": True,
+        }
+        return Response(default_data)
+
+    def post(self, request):
+        course_id = request.data.get('course')
+        course = None
+        if course_id:
+            try:
+                course = Course.objects.get(pk=course_id)
+            except Course.DoesNotExist:
+                return Response({"error": "Course not found"}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        # Find existing or create new
+        if course:
+            template, _ = CertificateTemplate.objects.get_or_create(course=course)
+        else:
+            template = CertificateTemplate.objects.filter(course__isnull=True).first()
+            if not template:
+                template = CertificateTemplate(course=None)
+
+        serializer = CertificateTemplateSerializer(template, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=drf_status.HTTP_200_OK)
+        return Response(serializer.errors, status=drf_status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request):
+        return self.post(request)
+
+    def patch(self, request):
+        return self.post(request)
+
 
 
 # =============================================================================

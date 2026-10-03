@@ -1,20 +1,9 @@
 "use client";
 
-/**
- * Phase 4.6 -- the learner's own certificate view/print page. Fetches
- * (and lazily generates, server-side, if this is the first visit)
- * GET /api/courses/certificates/course/<courseId>/ -- eligibility is
- * NEVER computed here; a 404 simply means "not eligible yet" per the
- * backend's own authoritative Phase 4.5 completion check.
- *
- * "Download" is the browser's own Print -> Save as PDF (see the
- * @media print rules below) -- no server-side PDF file exists, by
- * deliberate design (see the Phase 4.6 report).
- */
-
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import CertificateRenderer, { CertificateTemplateData, DEFAULT_TEMPLATE } from "@/components/CertificateRenderer";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -27,27 +16,47 @@ interface Certificate {
   issued_at: string;
 }
 
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
-}
-
 export default function CertificatePage() {
   const { courseId } = useParams();
   const [certificate, setCertificate] = useState<Certificate | null>(null);
+  const [template, setTemplate] = useState<CertificateTemplateData>(DEFAULT_TEMPLATE);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
       try {
+        // 1. Fetch certificate
         const res = await fetch(`${API_BASE}/api/courses/certificates/course/${courseId}/`, {
           credentials: "include",
         });
+
         if (res.ok) {
-          setCertificate(await res.json());
+          const certData = await res.json();
+          setCertificate(certData);
+
+          // 2. Fetch dynamic template
+          try {
+            const cached = localStorage.getItem("natya_certificate_template");
+            if (cached) {
+              setTemplate(JSON.parse(cached));
+            }
+            const tRes = await fetch(`${API_BASE}/api/courses/certificate-template/?course_id=${courseId}`, {
+              credentials: "include",
+            });
+            if (tRes.ok) {
+              const tData = await tRes.json();
+              setTemplate(tData);
+            }
+          } catch (e) {
+            console.error("Using default certificate template", e);
+          }
         } else if (res.status === 404) {
           const body = await res.json().catch(() => ({}));
-          setError(body.error || "This course is not yet complete -- finish every lesson and pass every required assessment to earn your certificate.");
+          setError(
+            body.error ||
+              "This course is not yet complete -- finish every lesson and pass every required assessment to earn your certificate."
+          );
         } else if (res.status === 401 || res.status === 403) {
           setError("Please log in to view your certificate.");
         } else {
@@ -75,7 +84,7 @@ export default function CertificatePage() {
       <div className="min-h-screen bg-black text-white flex items-center justify-center px-6">
         <div className="bg-zinc-900 border border-white/10 rounded-3xl p-8 text-center max-w-md">
           <p className="text-zinc-300 mb-4">{error}</p>
-          <Link href="/dashboard" className="text-[#facc15] hover:text-white transition-colors text-sm">
+          <Link href="/dashboard" className="text-[#facc15] hover:text-white transition-colors text-sm font-semibold">
             Back to Dashboard
           </Link>
         </div>
@@ -84,52 +93,48 @@ export default function CertificatePage() {
   }
 
   return (
-    <div className="min-h-screen bg-black text-white font-sans px-6 py-12 print:bg-white print:p-0">
+    <div className="min-h-screen bg-black text-white font-sans px-4 sm:px-6 py-10 print:bg-white print:p-0">
       <style>{`
         @media print {
-          body { background: white !important; }
+          @page { size: landscape A4; margin: 0; }
+          body { background: white !important; margin: 0 !important; padding: 0 !important; }
           .no-print { display: none !important; }
-          .certificate-card { box-shadow: none !important; border: 2px solid #d4af37 !important; }
         }
       `}</style>
 
-      <div className="max-w-3xl mx-auto no-print flex items-center justify-between mb-6">
-        <Link href="/dashboard" className="text-sm text-zinc-400 hover:text-white transition-colors">
+      {/* Top Action Bar */}
+      <div className="max-w-4xl mx-auto no-print flex items-center justify-between mb-6">
+        <Link href="/dashboard" className="text-sm text-zinc-400 hover:text-white transition-colors font-medium">
           &larr; Back to Dashboard
         </Link>
         <button
           onClick={() => window.print()}
-          className="px-5 py-2 rounded-full bg-[#facc15] text-black text-sm font-semibold hover:scale-[1.02] transition-transform"
+          className="px-6 py-2.5 rounded-full bg-[#facc15] text-black text-sm font-bold hover:scale-[1.02] transition-transform shadow-lg shadow-[#facc15]/20 flex items-center gap-2"
         >
-          Print / Save as PDF
+          <span>🖨️</span>
+          <span>Print / Save as PDF</span>
         </button>
       </div>
 
-      <div className="certificate-card max-w-3xl mx-auto bg-white text-black rounded-2xl border-4 border-[#d4af37] p-12 text-center relative overflow-hidden">
-        <div className="absolute inset-0 border-[10px] border-double border-[#d4af37]/40 m-3 pointer-events-none rounded-xl" />
-        <p className="text-xs uppercase tracking-[0.3em] text-zinc-500 mb-2">Natya LMS</p>
-        <h1 className="text-3xl font-serif font-bold mb-8">Certificate of Completion</h1>
-
-        <p className="text-sm text-zinc-500 mb-2">This certifies that</p>
-        <p className="text-4xl font-serif font-bold mb-8 text-[#8a6d1a]">{certificate.learner_name_snapshot}</p>
-
-        <p className="text-sm text-zinc-500 mb-2">has successfully completed the course</p>
-        <p className="text-2xl font-semibold mb-8">{certificate.course_title_snapshot}</p>
-
-        <p className="text-sm text-zinc-500 mb-10">Issued on {formatDate(certificate.issued_at)}</p>
-
-        <div className="flex items-center justify-between text-xs text-zinc-500 border-t border-zinc-200 pt-4 mt-4">
-          <span>Certificate ID: {certificate.verification_id}</span>
-          <span>Verify at: /verify/{certificate.verification_id}</span>
-        </div>
+      {/* Dynamic Certificate Canvas */}
+      <div className="max-w-4xl mx-auto">
+        <CertificateRenderer
+          template={template}
+          learnerName={certificate.learner_name_snapshot}
+          courseTitle={certificate.course_title_snapshot}
+          issuedAt={certificate.issued_at}
+          verificationId={certificate.verification_id}
+          isPrintMode={false}
+        />
       </div>
 
-      <div className="max-w-3xl mx-auto no-print mt-6 text-center">
+      {/* Verification Link */}
+      <div className="max-w-4xl mx-auto no-print mt-6 text-center">
         <Link
           href={`/verify/${certificate.verification_id}`}
-          className="text-sm text-zinc-500 hover:text-[#facc15] transition-colors"
+          className="text-xs text-zinc-500 hover:text-[#facc15] transition-colors"
         >
-          View public verification page
+          Verify certificate authenticity at /verify/{certificate.verification_id} ↗
         </Link>
       </div>
     </div>
