@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
+import { ChevronUp, ChevronDown } from "lucide-react";
 
 // Canonical language list for manual audio-track uploads. Kept in sync with
 // backend/courses/languages.py (SUPPORTED_LANGUAGES). Base codes only -- the
@@ -85,11 +86,13 @@ export default function CourseManager() {
     description: string;
     transcript: string;
     timed_transcript: string;
+    moduleId: number | null;
   }>({
     title: "",
     description: "",
     transcript: "",
-    timed_transcript: ""
+    timed_transcript: "",
+    moduleId: null
   });
   const [editLessonLoading, setEditLessonLoading] = useState(false);
 
@@ -363,37 +366,32 @@ export default function CourseManager() {
 
   const handleMoveModule = async (index: number, direction: 'up' | 'down') => {
     const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    if (targetIndex < 0 || targetIndex >= course.modules.length) return;
-    
-    const currentModule = course.modules[index];
-    const swapModule = course.modules[targetIndex];
-    
+    if (targetIndex < 0 || targetIndex >= (course?.modules?.length || 0)) return;
+
+    const reordered = [...course.modules];
+    const [moved] = reordered.splice(index, 1);
+    reordered.splice(targetIndex, 0, moved);
+
+    // Optimistically update the UI instantly
+    setCourse({ ...course, modules: reordered });
+
     try {
-      // Swap order tags
-      const p1 = fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/modules/${currentModule.id}/`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRFToken": getCsrfToken()
-        },
-        body: JSON.stringify({ order: swapModule.order }),
-        credentials: "include"
-      });
-      
-      const p2 = fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/modules/${swapModule.id}/`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRFToken": getCsrfToken()
-        },
-        body: JSON.stringify({ order: currentModule.order }),
-        credentials: "include"
-      });
-      
-      await Promise.all([p1, p2]);
+      const updates = reordered.map((mod, newOrder) =>
+        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/modules/${mod.id}/`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": getCsrfToken()
+          },
+          body: JSON.stringify({ order: newOrder }),
+          credentials: "include"
+        })
+      );
+      await Promise.all(updates);
       fetchCourse();
     } catch (err) {
       console.error(err);
+      fetchCourse();
     }
   };
 
@@ -510,13 +508,23 @@ export default function CourseManager() {
 
     setEditLessonLoading(true);
     try {
+      const payload: any = {
+        title: editLessonData.title,
+        description: editLessonData.description,
+        transcript: editLessonData.transcript,
+        timed_transcript: editLessonData.timed_transcript
+      };
+      if (editLessonData.moduleId) {
+        payload.module = editLessonData.moduleId;
+      }
+
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lessonId}/`, {
         method: "PATCH",
         headers: { 
           "Content-Type": "application/json",
           "X-CSRFToken": getCsrfToken()
         },
-        body: JSON.stringify(editLessonData),
+        body: JSON.stringify(payload),
         credentials: "include"
       });
 
@@ -556,38 +564,38 @@ export default function CourseManager() {
   };
 
   const handleMoveLesson = async (moduleIndex: number, lessonIndex: number, direction: 'up' | 'down') => {
-    const moduleObj = course.modules[moduleIndex];
+    const moduleObj = course?.modules?.[moduleIndex];
+    if (!moduleObj || !moduleObj.lessons) return;
+
     const targetIndex = direction === 'up' ? lessonIndex - 1 : lessonIndex + 1;
     if (targetIndex < 0 || targetIndex >= moduleObj.lessons.length) return;
-    
-    const currentLesson = moduleObj.lessons[lessonIndex];
-    const swapLesson = moduleObj.lessons[targetIndex];
-    
+
+    const reordered = [...moduleObj.lessons];
+    const [moved] = reordered.splice(lessonIndex, 1);
+    reordered.splice(targetIndex, 0, moved);
+
+    // Optimistically update the UI instantly
+    const updatedModules = [...course.modules];
+    updatedModules[moduleIndex] = { ...moduleObj, lessons: reordered };
+    setCourse({ ...course, modules: updatedModules });
+
     try {
-      const p1 = fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${currentLesson.id}/`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRFToken": getCsrfToken()
-        },
-        body: JSON.stringify({ order: swapLesson.order }),
-        credentials: "include"
-      });
-      
-      const p2 = fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${swapLesson.id}/`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRFToken": getCsrfToken()
-        },
-        body: JSON.stringify({ order: currentLesson.order }),
-        credentials: "include"
-      });
-      
-      await Promise.all([p1, p2]);
+      const updates = reordered.map((lesson, newOrder) =>
+        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lesson.id}/`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": getCsrfToken()
+          },
+          body: JSON.stringify({ order: newOrder }),
+          credentials: "include"
+        })
+      );
+      await Promise.all(updates);
       fetchCourse();
     } catch (err) {
       console.error(err);
+      fetchCourse();
     }
   };
 
@@ -1129,30 +1137,35 @@ export default function CourseManager() {
                         </h3>
                       )}
                       
-                      <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-3">
                         {/* Module Order Arrows */}
-                        <div className="flex gap-1 items-center">
+                        <div className="flex items-center bg-zinc-900 border border-white/10 rounded-xl p-0.5">
                           <button
+                            type="button"
                             disabled={idx === 0}
                             onClick={() => handleMoveModule(idx, 'up')}
-                            className="text-zinc-500 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-500 p-1"
-                            title="Move Up"
+                            className="px-2.5 py-1 text-xs font-semibold rounded-lg text-zinc-300 hover:text-white hover:bg-white/10 disabled:opacity-20 disabled:hover:bg-transparent transition-all flex items-center gap-1"
+                            title="Move Module Up"
                           >
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+                            <ChevronUp className="w-3.5 h-3.5 text-zinc-400" />
+                            <span>Up</span>
                           </button>
+                          <div className="w-[1px] h-3.5 bg-white/10" />
                           <button
-                            disabled={idx === (course.modules?.length || 1) - 1}
+                            type="button"
+                            disabled={idx === (course?.modules?.length || 1) - 1}
                             onClick={() => handleMoveModule(idx, 'down')}
-                            className="text-zinc-500 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-500 p-1"
-                            title="Move Down"
+                            className="px-2.5 py-1 text-xs font-semibold rounded-lg text-zinc-300 hover:text-white hover:bg-white/10 disabled:opacity-20 disabled:hover:bg-transparent transition-all flex items-center gap-1"
+                            title="Move Module Down"
                           >
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                            <ChevronDown className="w-3.5 h-3.5 text-zinc-400" />
+                            <span>Down</span>
                           </button>
                         </div>
 
                         <button 
                           onClick={() => setAddingLessonToModule(addingLessonToModule === module.id ? null : module.id)}
-                          className="text-xs font-bold text-zinc-400 hover:text-white transition-colors"
+                          className="text-xs font-bold px-3 py-1.5 bg-[#facc15]/10 text-[#facc15] hover:bg-[#facc15]/20 rounded-xl transition-colors"
                         >
                           + Add Video
                         </button>
@@ -1163,30 +1176,10 @@ export default function CourseManager() {
                       {module.lessons?.map((lesson: any, lIdx: number) => (
                         <div key={lesson.id} className="bg-zinc-900/50 border border-white/5 p-4 rounded-xl hover:border-white/10 transition-colors">
                           <div className="flex items-start gap-4">
-                            <div className="mt-1 flex flex-col items-center gap-2">
-                              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[#facc15]">
+                            <div className="mt-1 flex items-center justify-center w-8 h-8 rounded-full bg-[#facc15]/10 border border-[#facc15]/20 shrink-0">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#facc15] translate-x-0.5">
                                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
                               </svg>
-                              
-                              {/* Lesson Reordering Arrows */}
-                              <div className="flex flex-col gap-0.5">
-                                <button
-                                  disabled={lIdx === 0}
-                                  onClick={() => handleMoveLesson(idx, lIdx, 'up')}
-                                  className="text-zinc-600 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-600"
-                                  title="Move Up"
-                                >
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
-                                </button>
-                                <button
-                                  disabled={lIdx === (module.lessons?.length || 1) - 1}
-                                  onClick={() => handleMoveLesson(idx, lIdx, 'down')}
-                                  className="text-zinc-600 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-600"
-                                  title="Move Down"
-                                >
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-                                </button>
-                              </div>
                             </div>
                             <div className="flex-1 min-w-0">
                               <h4 className="font-semibold text-sm truncate text-white">{lIdx + 1}. {lesson.title}</h4>
@@ -1202,8 +1195,33 @@ export default function CourseManager() {
                                 ))}
                               </div>
                             </div>
-                            <div className="flex flex-col gap-2 items-end">
-                              <div className="flex gap-2">
+                            <div className="flex flex-col gap-2 items-end shrink-0">
+                              <div className="flex items-center gap-2">
+                                {/* Lesson Reorder Up/Down Buttons */}
+                                <div className="flex items-center bg-zinc-800/80 border border-white/10 rounded-xl p-0.5">
+                                  <button
+                                    type="button"
+                                    disabled={lIdx === 0}
+                                    onClick={() => handleMoveLesson(idx, lIdx, 'up')}
+                                    className="px-2.5 py-1 text-xs font-semibold rounded-lg text-zinc-300 hover:text-white hover:bg-white/10 disabled:opacity-20 disabled:hover:bg-transparent transition-all flex items-center gap-1"
+                                    title="Move Lesson Up"
+                                  >
+                                    <ChevronUp className="w-3.5 h-3.5 text-[#facc15]" />
+                                    <span>Up</span>
+                                  </button>
+                                  <div className="w-[1px] h-3.5 bg-white/10" />
+                                  <button
+                                    type="button"
+                                    disabled={lIdx === (module.lessons?.length || 1) - 1}
+                                    onClick={() => handleMoveLesson(idx, lIdx, 'down')}
+                                    className="px-2.5 py-1 text-xs font-semibold rounded-lg text-zinc-300 hover:text-white hover:bg-white/10 disabled:opacity-20 disabled:hover:bg-transparent transition-all flex items-center gap-1"
+                                    title="Move Lesson Down"
+                                  >
+                                    <ChevronDown className="w-3.5 h-3.5 text-[#facc15]" />
+                                    <span>Down</span>
+                                  </button>
+                                </div>
+
                                 <button
                                   onClick={() => {
                                     setEditingLessonId(lesson.id);
@@ -1211,7 +1229,8 @@ export default function CourseManager() {
                                       title: lesson.title,
                                       description: lesson.description || "",
                                       transcript: lesson.transcript || "",
-                                      timed_transcript: lesson.timed_transcript || ""
+                                      timed_transcript: lesson.timed_transcript || "",
+                                      moduleId: module.id
                                     });
                                   }}
                                   className="text-xs font-bold px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl transition-colors"
@@ -1383,6 +1402,21 @@ export default function CourseManager() {
                                     onChange={(e) => setEditLessonData({...editLessonData, title: e.target.value})}
                                     className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
                                   />
+                                </div>
+
+                                <div>
+                                  <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Module (Section)</label>
+                                  <select
+                                    value={editLessonData.moduleId || module.id}
+                                    onChange={(e) => setEditLessonData({...editLessonData, moduleId: Number(e.target.value)})}
+                                    className="w-full px-3 py-2 bg-zinc-900 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                                  >
+                                    {course?.modules?.map((m: any, mIdx: number) => (
+                                      <option key={m.id} value={m.id}>
+                                        Module {mIdx + 1}: {m.title}
+                                      </option>
+                                    ))}
+                                  </select>
                                 </div>
 
                                 <div>
