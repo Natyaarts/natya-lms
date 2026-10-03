@@ -25,6 +25,40 @@
         }
     ]
 }
+=== CHECKING FOR STUCK OPERATION ===
+Abortable operation in progress: True
+Stuck operation detected. Calling abort-environment-update...
+Waiting for Natya-lms-backend-env to reach Ready state...
+[1/30] Environment Status: Updating
+[2/30] Environment Status: Updating
+[3/30] Environment Status: Updating
+[4/30] Environment Status: Updating
+[5/30] Environment Status: Updating
+[6/30] Environment Status: Updating
+[7/30] Environment Status: Updating
+[8/30] Environment Status: Updating
+[9/30] Environment Status: Updating
+[10/30] Environment Status: Updating
+[11/30] Environment Status: Updating
+[12/30] Environment Status: Updating
+[13/30] Environment Status: Updating
+[14/30] Environment Status: Updating
+[15/30] Environment Status: Updating
+[16/30] Environment Status: Updating
+[17/30] Environment Status: Updating
+[18/30] Environment Status: Updating
+[19/30] Environment Status: Updating
+[20/30] Environment Status: Updating
+[21/30] Environment Status: Updating
+[22/30] Environment Status: Updating
+[23/30] Environment Status: Updating
+[24/30] Environment Status: Updating
+[25/30] Environment Status: Updating
+[26/30] Environment Status: Updating
+[27/30] Environment Status: Updating
+[28/30] Environment Status: Updating
+[29/30] Environment Status: Updating
+[30/30] Environment Status: Updating
 === DESCRIBE EVENTS ===
 {
     "Events": [
@@ -187,54 +221,10 @@
             "EnvironmentName": "Natya-lms-backend-env",
             "RequestId": "3a04c402-7ccb-44df-a6dc-3cbdb3ce5ad7",
             "Severity": "INFO"
-        },
-        {
-            "EventDate": "2026-09-28T11:49:47.459000+00:00",
-            "Message": "Environment update is starting.",
-            "ApplicationName": "natya-lms-backend",
-            "EnvironmentName": "Natya-lms-backend-env",
-            "RequestId": "3a04c402-7ccb-44df-a6dc-3cbdb3ce5ad7",
-            "Severity": "INFO"
-        },
-        {
-            "EventDate": "2026-09-28T11:09:25.423000+00:00",
-            "Message": "Environment update completed successfully.",
-            "ApplicationName": "natya-lms-backend",
-            "EnvironmentName": "Natya-lms-backend-env",
-            "RequestId": "fd74ad01-6db5-401b-bd2e-13d35e684c7e",
-            "Severity": "INFO"
-        },
-        {
-            "EventDate": "2026-09-28T11:09:25.399000+00:00",
-            "Message": "New application version was deployed to running EC2 instances.",
-            "ApplicationName": "natya-lms-backend",
-            "EnvironmentName": "Natya-lms-backend-env",
-            "RequestId": "fd74ad01-6db5-401b-bd2e-13d35e684c7e",
-            "Severity": "INFO"
-        },
-        {
-            "EventDate": "2026-09-28T11:09:18.516000+00:00",
-            "Message": "Instance deployment completed successfully.",
-            "ApplicationName": "natya-lms-backend",
-            "EnvironmentName": "Natya-lms-backend-env",
-            "RequestId": "fd74ad01-6db5-401b-bd2e-13d35e684c7e",
-            "Severity": "INFO"
-        },
-        {
-            "EventDate": "2026-09-28T11:08:59.334000+00:00",
-            "Message": "Instance deployment used the commands in your 'Procfile' to initiate startup of your application.",
-            "ApplicationName": "natya-lms-backend",
-            "EnvironmentName": "Natya-lms-backend-env",
-            "RequestId": "fd74ad01-6db5-401b-bd2e-13d35e684c7e",
-            "Severity": "INFO"
         }
     ],
-    "NextToken": "eyJOZXh0VG9rZW4iOiBudWxsLCAiYm90b190cnVuY2F0ZV9hbW91bnQiOiAyNX0="
+    "NextToken": "eyJOZXh0VG9rZW4iOiBudWxsLCAiYm90b190cnVuY2F0ZV9hbW91bnQiOiAyMH0="
 }
-=== DESCRIBE RESOURCES & REBOOT ===
-Detected Instance ID: i-093e945dedce82899
-Issuing EC2 reboot to instance i-093e945dedce82899...
-Waiting 35 seconds for instance to reboot and initialize...
 === POST-DEPLOY EVENTS ===
 {
     "Events": [
