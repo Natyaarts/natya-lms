@@ -456,7 +456,7 @@ export default function CourseManager() {
         };
 
         xhr.onerror = () => {
-          reject(new Error("Direct upload to AWS S3 failed. Please verify network connectivity."));
+          reject(new Error("Direct upload to AWS S3 was blocked by browser security (CORS). Please ensure CORS is enabled on the S3 bucket 'natyalms-media-2026' in AWS Console."));
         };
 
         xhr.send(lessonData.video_file);

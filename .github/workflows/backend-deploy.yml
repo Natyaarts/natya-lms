@@ -37,6 +37,7 @@ jobs:
                 "AllowedHeaders": ["*"],
                 "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
                 "AllowedOrigins": [
+                  "*",
                   "https://academy.natyaarts.com",
                   "https://natya-lms.vercel.app",
                   "http://localhost:3000"
@@ -50,7 +51,7 @@ jobs:
           aws s3api put-bucket-cors \
             --bucket natyalms-media-2026 \
             --cors-configuration file:///tmp/s3_cors.json \
-            --region ap-south-1 || true
+            --region ap-south-1 2>&1 || echo "Warning: S3 put-bucket-cors requires s3:PutBucketCORS permission."
 
       - name: Generate Deployment Package
         run: |

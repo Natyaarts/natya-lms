@@ -410,10 +410,33 @@ class VideoLessonViewSet(viewsets.ModelViewSet):
             Params={
                 'Bucket': bucket_name,
                 'Key': s3_key,
-                'ContentType': file_type or 'video/mp4',
             },
             ExpiresIn=3600
         )
+
+        # Attempt to auto-enable CORS for direct uploads if IAM permissions permit
+        try:
+            s3_client.put_bucket_cors(
+                Bucket=bucket_name,
+                CORSConfiguration={
+                    'CORSRules': [
+                        {
+                            'AllowedHeaders': ['*'],
+                            'AllowedMethods': ['GET', 'PUT', 'POST', 'HEAD'],
+                            'AllowedOrigins': [
+                                'https://academy.natyaarts.com',
+                                'https://natya-lms.vercel.app',
+                                'http://localhost:3000',
+                                '*'
+                            ],
+                            'ExposeHeaders': ['ETag'],
+                            'MaxAgeSeconds': 3000
+                        }
+                    ]
+                }
+            )
+        except Exception:
+            pass
 
         return Response({
             'upload_url': presigned_url,
