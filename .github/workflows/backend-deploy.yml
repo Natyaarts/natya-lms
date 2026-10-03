@@ -1,4 +1,4 @@
-﻿name: Deploy Backend to AWS Elastic Beanstalk
+name: Deploy Backend to AWS Elastic Beanstalk
 
 on:
   push:
@@ -9,6 +9,9 @@ on:
       - '.github/workflows/backend-deploy.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -17,6 +20,35 @@ jobs:
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Inspect Current EB Status
+        run: |
+          mkdir -p diag
+          echo "=== DESCRIBE ENVIRONMENTS ===" > diag/eb_report.txt
+          aws elasticbeanstalk describe-environments --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
+          echo "=== DESCRIBE EVENTS ===" >> diag/eb_report.txt
+          aws elasticbeanstalk describe-events --environment-name natya-lms-backend-env --max-items 25 --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
+          
+          echo "=== REQUESTING TAIL LOGS ===" >> diag/eb_report.txt
+          aws elasticbeanstalk request-environment-info --environment-name natya-lms-backend-env --info-type tail --region ap-south-1 || true
+          sleep 12
+          aws elasticbeanstalk retrieve-environment-info --environment-name natya-lms-backend-env --info-type tail --region ap-south-1 > diag/tail_info.json || true
+          
+          LOG_URL=$(jq -r '.EnvironmentInfo[0].Message' diag/tail_info.json 2>/dev/null || echo "")
+          if [ -n "$LOG_URL" ] && [ "$LOG_URL" != "null" ]; then
+            curl -s "$LOG_URL" > diag/eb_tail.log || true
+            echo "=== LAST 150 LINES OF TAIL LOGS ===" >> diag/eb_report.txt
+            tail -n 150 diag/eb_tail.log >> diag/eb_report.txt || true
+          fi
+          
+          cat diag/eb_report.txt >> $GITHUB_STEP_SUMMARY
 
       - name: Generate Deployment Package
         run: |
@@ -40,3 +72,16 @@ jobs:
           region: ap-south-1
           deployment_package: deploy.zip
           wait_for_deployment: false
+
+      - name: Post-deploy EB Event Check & Report Commit
+        if: always()
+        run: |
+          sleep 15
+          echo "=== POST-DEPLOY EVENTS ===" >> diag/eb_report.txt
+          aws elasticbeanstalk describe-events --environment-name natya-lms-backend-env --max-items 15 --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add diag/eb_report.txt
+          git commit -m "chore: record EB diagnostic report [skip ci]" || true
+          git push || true
