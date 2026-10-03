@@ -28,24 +28,23 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
-      - name: Inspect Current EB Status
+      - name: Inspect Current EB Status & Reboot Frozen Instance
         run: |
           mkdir -p diag
           echo "=== DESCRIBE ENVIRONMENTS ===" > diag/eb_report.txt
           aws elasticbeanstalk describe-environments --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
+          
           echo "=== DESCRIBE EVENTS ===" >> diag/eb_report.txt
-          aws elasticbeanstalk describe-events --environment-name natya-lms-backend-env --max-items 25 --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
+          aws elasticbeanstalk describe-events --environment-name Natya-lms-backend-env --max-items 25 --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
           
-          echo "=== REQUESTING TAIL LOGS ===" >> diag/eb_report.txt
-          aws elasticbeanstalk request-environment-info --environment-name natya-lms-backend-env --info-type tail --region ap-south-1 || true
-          sleep 12
-          aws elasticbeanstalk retrieve-environment-info --environment-name natya-lms-backend-env --info-type tail --region ap-south-1 > diag/tail_info.json || true
-          
-          LOG_URL=$(jq -r '.EnvironmentInfo[0].Message' diag/tail_info.json 2>/dev/null || echo "")
-          if [ -n "$LOG_URL" ] && [ "$LOG_URL" != "null" ]; then
-            curl -s "$LOG_URL" > diag/eb_tail.log || true
-            echo "=== LAST 150 LINES OF TAIL LOGS ===" >> diag/eb_report.txt
-            tail -n 150 diag/eb_tail.log >> diag/eb_report.txt || true
+          echo "=== DESCRIBE RESOURCES & REBOOT ===" >> diag/eb_report.txt
+          INSTANCE_ID=$(aws elasticbeanstalk describe-environment-resources --environment-name Natya-lms-backend-env --region ap-south-1 --query 'EnvironmentResources.Instances[0].Id' --output text || echo "")
+          echo "Detected Instance ID: $INSTANCE_ID" >> diag/eb_report.txt
+          if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+            echo "Issuing EC2 reboot to instance $INSTANCE_ID..." >> diag/eb_report.txt
+            aws ec2 reboot-instances --instance-ids "$INSTANCE_ID" --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
+            echo "Waiting 35 seconds for instance to reboot and initialize..." >> diag/eb_report.txt
+            sleep 35
           fi
           
           cat diag/eb_report.txt >> $GITHUB_STEP_SUMMARY
@@ -67,7 +66,7 @@ jobs:
           aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           application_name: ${{ vars.EB_APP_NAME || 'natya-lms-backend' }}
-          environment_name: ${{ vars.EB_ENV_NAME || 'natya-lms-backend-env' }}
+          environment_name: ${{ vars.EB_ENV_NAME || 'Natya-lms-backend-env' }}
           version_label: backend-${{ github.sha }}
           region: ap-south-1
           deployment_package: deploy.zip
@@ -76,9 +75,9 @@ jobs:
       - name: Post-deploy EB Event Check & Report Commit
         if: always()
         run: |
-          sleep 15
+          sleep 20
           echo "=== POST-DEPLOY EVENTS ===" >> diag/eb_report.txt
-          aws elasticbeanstalk describe-events --environment-name natya-lms-backend-env --max-items 15 --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
+          aws elasticbeanstalk describe-events --environment-name Natya-lms-backend-env --max-items 20 --region ap-south-1 >> diag/eb_report.txt 2>&1 || true
           
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
