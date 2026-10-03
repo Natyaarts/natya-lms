@@ -698,6 +698,33 @@ export default function CourseManager() {
     }
   };
 
+  const handleDeleteCourse = async () => {
+    if (!course) return;
+    if (!window.confirm(`Are you sure you want to delete "${course.title}"? This will permanently delete the course, its modules, and lessons.`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/${course.id}/`, {
+        method: "DELETE",
+        headers: {
+          "X-CSRFToken": getCsrfToken()
+        },
+        credentials: "include"
+      });
+
+      if (res.ok || res.status === 204) {
+        router.push("/admin/courses");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || data.detail || "Failed to delete course.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Network error deleting course.");
+    }
+  };
+
   if (loading) return <div className="text-zinc-500 p-8">Loading course details...</div>;
   if (!course) return <div className="text-red-500 p-8">Course not found</div>;
 
@@ -823,6 +850,13 @@ export default function CourseManager() {
                   className="w-full mt-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-white rounded-xl text-xs font-semibold transition-colors"
                 >
                   Edit Course Details
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeleteCourse}
+                  className="w-full mt-2 py-2 bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 text-red-400 rounded-xl text-xs font-semibold transition-colors"
+                >
+                  Delete Course
                 </button>
               </>
             )}

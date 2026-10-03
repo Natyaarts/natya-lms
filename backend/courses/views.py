@@ -94,6 +94,16 @@ class CourseViewSet(viewsets.ModelViewSet):
             ).distinct()
         return Course.objects.filter(is_published=True)
 
+    def destroy(self, request, *args, **kwargs):
+        from django.db.models import ProtectedError
+        try:
+            return super().destroy(request, *args, **kwargs)
+        except ProtectedError:
+            return Response(
+                {"error": "Cannot delete this course because it has existing student orders or certificates. You can unpublish it instead."},
+                status=drf_status.HTTP_400_BAD_REQUEST
+            )
+
     def get_serializer_context(self):
         """
         Course-content security follow-up (post-3.4.4): computed ONCE per
