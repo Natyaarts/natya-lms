@@ -606,8 +606,7 @@ export default function CourseManager() {
     setHighlightedLessonId(moved.id);
     setTimeout(() => setHighlightedLessonId(null), 1800);
 
-    const videoName = getCleanVideoFileName(moved.video_file);
-    showToast(`✓ Moved "${moved.title}" ${videoName ? `(${videoName})` : ''} to position #${targetIndex + 1}`);
+    showToast(`✓ Moved "${moved.title}" to position #${targetIndex + 1}`);
 
     try {
       const updates = reordered.map((lesson, newOrder) =>
@@ -634,74 +633,6 @@ export default function CourseManager() {
     handleMoveLessonToIndex(moduleIndex, lessonIndex, targetIndex);
   };
 
-  const handleMoveLessonToModule = async (lessonId: number, targetModuleId: number) => {
-    if (!targetModuleId) return;
-    try {
-      showToast("Moving lesson to new section...");
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lessonId}/`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRFToken": getCsrfToken()
-        },
-        body: JSON.stringify({ module: targetModuleId }),
-        credentials: "include"
-      });
-      if (res.ok) {
-        showToast("✓ Lesson moved to new section successfully");
-        fetchCourse();
-      } else {
-        alert("Failed to move lesson to section");
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Network error moving lesson");
-    }
-  };
-
-  const handleAutoNumberLessons = async (moduleIndex: number) => {
-    const moduleObj = course?.modules?.[moduleIndex];
-    if (!moduleObj || !moduleObj.lessons || moduleObj.lessons.length === 0) return;
-
-    const defaultBase = moduleObj.title.trim() || moduleObj.lessons[0].title.replace(/\s*\d+$/, '').trim() || "Lesson";
-    const baseName = window.prompt(
-      `Number all ${moduleObj.lessons.length} lessons in "${moduleObj.title}" sequentially?\nEnter title base:`,
-      defaultBase
-    );
-    if (!baseName) return;
-
-    const updatedLessons = moduleObj.lessons.map((lesson: any, i: number) => ({
-      ...lesson,
-      title: `${baseName.trim()} ${i + 1}`
-    }));
-
-    // Optimistically update
-    const updatedModules = [...course.modules];
-    updatedModules[moduleIndex] = { ...moduleObj, lessons: updatedLessons };
-    setCourse({ ...course, modules: updatedModules });
-
-    showToast(`Numbering ${updatedLessons.length} lessons...`);
-
-    try {
-      const updates = updatedLessons.map((lesson: any) =>
-        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lesson.id}/`, {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-            "X-CSRFToken": getCsrfToken()
-          },
-          body: JSON.stringify({ title: lesson.title }),
-          credentials: "include"
-        })
-      );
-      await Promise.all(updates);
-      showToast(`✓ All ${updatedLessons.length} lessons numbered: "${baseName.trim()} 1" to "${baseName.trim()} ${updatedLessons.length}"`);
-      fetchCourse();
-    } catch (err) {
-      console.error(err);
-      fetchCourse();
-    }
-  };
 
   // --- Manual Audio Track management ---
   // The admin uploads audio dubbed/translated externally (AI service, human
@@ -1245,19 +1176,6 @@ export default function CourseManager() {
                       )}
                       
                       <div className="flex items-center gap-2">
-                        {/* Auto-number lessons button */}
-                        {(module.lessons?.length || 0) > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => handleAutoNumberLessons(idx)}
-                            className="text-xs font-semibold px-2.5 py-1.5 bg-zinc-900 border border-white/10 hover:border-[#facc15]/40 text-zinc-300 hover:text-white rounded-xl transition-all flex items-center gap-1.5"
-                            title="Auto-number all lessons in this section sequentially (e.g. Paravaladavu 1, Paravaladavu 2...)"
-                          >
-                            <span className="text-[#facc15]">⚡</span>
-                            <span>Auto-Number</span>
-                          </button>
-                        )}
-
                         {/* Module Order Arrows */}
                         <div className="flex items-center bg-zinc-900 border border-white/10 rounded-xl p-0.5">
                           <button
@@ -1315,7 +1233,7 @@ export default function CourseManager() {
                                     className="p-1 text-zinc-400 hover:text-[#facc15] disabled:opacity-20 disabled:hover:text-zinc-600 transition-colors"
                                     title="Move Lesson Up"
                                   >
-                                    <ChevronUp className="w-3 h-3" />
+                                    <ChevronUp className="w-3.5 h-3.5" />
                                   </button>
                                   <button
                                     type="button"
@@ -1324,7 +1242,7 @@ export default function CourseManager() {
                                     className="p-1 text-zinc-400 hover:text-[#facc15] disabled:opacity-20 disabled:hover:text-zinc-600 transition-colors"
                                     title="Move Lesson Down"
                                   >
-                                    <ChevronDown className="w-3 h-3" />
+                                    <ChevronDown className="w-3.5 h-3.5" />
                                   </button>
                                 </div>
 
@@ -1362,45 +1280,7 @@ export default function CourseManager() {
                               </div>
 
                               {/* Right: Clean, Balanced Action Buttons */}
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                {/* Position Selector */}
-                                {(module.lessons?.length || 0) > 2 && (
-                                  <select
-                                    value={lIdx + 1}
-                                    onChange={(e) => handleMoveLessonToIndex(idx, lIdx, Number(e.target.value) - 1)}
-                                    className="bg-zinc-800/80 border border-white/10 hover:border-white/20 text-zinc-300 rounded-lg px-2 py-1 text-xs font-medium cursor-pointer focus:outline-none focus:border-[#facc15]"
-                                    title="Jump to position"
-                                  >
-                                    {module.lessons.map((_: any, pIdx: number) => (
-                                      <option key={pIdx} value={pIdx + 1} className="bg-zinc-900 text-white">
-                                        Pos #{pIdx + 1}
-                                      </option>
-                                    ))}
-                                  </select>
-                                )}
-
-                                {/* Move Section Dropdown */}
-                                {(course?.modules?.length || 0) > 1 && (
-                                  <select
-                                    value={module.id}
-                                    onChange={(e) => {
-                                      const targetModId = Number(e.target.value);
-                                      if (targetModId !== module.id) {
-                                        handleMoveLessonToModule(lesson.id, targetModId);
-                                      }
-                                    }}
-                                    className="bg-zinc-800/80 border border-white/10 hover:border-white/20 text-zinc-300 rounded-lg px-2 py-1 text-xs cursor-pointer focus:outline-none focus:border-[#facc15]"
-                                    title="Move lesson to another section"
-                                  >
-                                    <option value={module.id} disabled>Move...</option>
-                                    {course.modules.map((m: any, mIdx: number) => (
-                                      <option key={m.id} value={m.id} className="bg-zinc-900 text-white">
-                                        → Module {mIdx + 1}: {m.title}
-                                      </option>
-                                    ))}
-                                  </select>
-                                )}
-
+                              <div className="flex items-center gap-2 shrink-0">
                                 {/* Edit Button */}
                                 <button
                                   type="button"
@@ -1414,7 +1294,7 @@ export default function CourseManager() {
                                       moduleId: module.id
                                     });
                                   }}
-                                  className="px-2.5 py-1 text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg border border-white/5 transition-colors"
+                                  className="px-3 py-1.5 text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg border border-white/5 transition-colors"
                                 >
                                   Edit
                                 </button>
@@ -1423,10 +1303,11 @@ export default function CourseManager() {
                                 <button
                                   type="button"
                                   onClick={() => audioManagerLessonId === lesson.id ? closeAudioManager() : openAudioManager(lesson.id)}
-                                  className="px-2.5 py-1 text-xs font-medium bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] rounded-lg border border-[#facc15]/20 transition-colors flex items-center gap-1"
+                                  className="px-3 py-1.5 text-xs font-medium bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] rounded-lg border border-[#facc15]/20 transition-colors flex items-center gap-1.5"
                                   title="Manage audio tracks"
                                 >
-                                  🎧 Audio
+                                  <span>🎧</span>
+                                  <span>Audio</span>
                                 </button>
 
                                 {/* Delete Button */}
