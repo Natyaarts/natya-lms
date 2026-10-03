@@ -8,6 +8,42 @@ export default function AdminCourses() {
   const [courses, setCourses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  const handleDeleteCourse = async (courseId: number, title: string) => {
+    if (!window.confirm(`Are you sure you want to delete "${title}"? This will permanently delete the course, its modules, and lessons.`)) {
+      return;
+    }
+
+    setDeletingId(courseId);
+    try {
+      const getCsrfToken = () => {
+        if (typeof document === 'undefined') return '';
+        const match = document.cookie.match(new RegExp('(^| )csrftoken=([^;]+)'));
+        return match ? match[2] : '';
+      };
+
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/${courseId}/`, {
+        method: "DELETE",
+        headers: {
+          "X-CSRFToken": getCsrfToken()
+        },
+        credentials: "include"
+      });
+
+      if (res.ok || res.status === 204) {
+        setCourses((prev) => prev.filter((c) => c.id !== courseId));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || data.detail || "Failed to delete course.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Network error deleting course.");
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const fetchCourses = async () => {
     try {
@@ -110,12 +146,23 @@ export default function AdminCourses() {
                 
                 <div className="flex items-center justify-between pt-3 border-t border-white/5">
                   <div className="text-sm font-semibold text-white tracking-tight">₹{parseFloat(course.price).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
-                  <Link 
-                    href={`/admin/courses/${course.id}`}
-                    className="text-xs font-medium text-white hover:text-zinc-300 flex items-center gap-1 transition-colors bg-white/5 px-2.5 py-1.5 rounded hover:bg-white/10"
-                  >
-                    Manage
-                  </Link>
+                  <div className="flex items-center gap-2">
+                    <Link 
+                      href={`/admin/courses/${course.id}`}
+                      className="text-xs font-medium text-white hover:text-zinc-300 flex items-center gap-1 transition-colors bg-white/5 px-2.5 py-1.5 rounded hover:bg-white/10"
+                    >
+                      Manage
+                    </Link>
+                    <button 
+                      type="button"
+                      disabled={deletingId === course.id}
+                      onClick={() => handleDeleteCourse(course.id, course.title)}
+                      className="text-xs font-medium text-red-400 hover:text-red-300 transition-colors bg-red-500/10 hover:bg-red-500/20 px-2.5 py-1.5 rounded disabled:opacity-50"
+                      title="Delete Course"
+                    >
+                      {deletingId === course.id ? "Deleting..." : "Delete"}
+                    </button>
+                  </div>
                 </div>
               </div>
             </motion.div>
