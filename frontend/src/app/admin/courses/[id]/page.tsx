@@ -865,7 +865,7 @@ export default function CourseManager() {
   if (!course) return <div className="text-red-500 p-8">Course not found</div>;
 
   return (
-    <div className="max-w-4xl mx-auto pb-20">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-20">
       <div className="flex items-center justify-between mb-8">
         <div className="flex items-center gap-4">
           <Link href="/admin/courses" className="w-10 h-10 bg-zinc-900 rounded-full flex items-center justify-center hover:bg-zinc-800 transition-colors">
@@ -878,9 +878,9 @@ export default function CourseManager() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Left Column: Course Details */}
-        <div className="md:col-span-1 space-y-6">
+        <div className="lg:col-span-4 space-y-6">
           <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 sticky top-6">
             <div className="aspect-video bg-black rounded-lg mb-4 overflow-hidden flex items-center justify-center border border-white/5 relative group">
               {course.thumbnail ? (
@@ -1128,7 +1128,7 @@ export default function CourseManager() {
         </div>
 
         {/* Right Column: Curriculum Builder */}
-        <div className="md:col-span-2">
+        <div className="lg:col-span-8">
           <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6">
             <div className="flex items-center justify-between mb-8">
               <h2 className="text-xl font-bold">Curriculum Builder</h2>
@@ -1191,57 +1191,60 @@ export default function CourseManager() {
                   <div key={module.id} className="border border-white/10 rounded-xl overflow-hidden">
                     <div className="bg-black/50 px-5 py-4 border-b border-white/10 flex items-center justify-between flex-wrap gap-4">
                       {editingModuleId === module.id ? (
-                        <div className="flex gap-2 items-center flex-1">
+                        <div className="flex items-center gap-2 flex-1">
                           <input
                             type="text"
                             value={editModuleTitle}
-                            onChange={e => setEditModuleTitle(e.target.value)}
-                            className="flex-1 px-3 py-1.5 bg-zinc-900 border border-[#facc15]/30 rounded-xl text-sm text-white focus:outline-none focus:border-[#facc15]"
+                            onChange={(e) => setEditModuleTitle(e.target.value)}
+                            className="bg-zinc-950 border border-white/20 rounded-xl px-3 py-1.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                            autoFocus
                           />
                           <button
                             onClick={() => handleRenameModule(module.id)}
-                            className="px-3 py-1.5 bg-[#facc15] text-black text-xs font-bold rounded-xl hover:bg-yellow-500"
+                            className="text-xs font-bold px-3 py-1.5 bg-[#facc15] text-black rounded-xl hover:bg-yellow-500 transition-colors"
                           >
                             Save
                           </button>
                           <button
                             onClick={() => setEditingModuleId(null)}
-                            className="px-2 py-1.5 text-xs text-zinc-400 hover:text-white"
+                            className="text-xs text-zinc-400 hover:text-white px-2 py-1.5"
                           >
                             Cancel
                           </button>
                         </div>
                       ) : (
-                        <h3 className="font-semibold flex items-center gap-3">
-                          <span className="w-6 h-6 bg-white/10 text-xs flex items-center justify-center rounded-full text-zinc-400">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className="w-7 h-7 rounded-lg bg-zinc-800 text-zinc-300 font-bold text-xs flex items-center justify-center border border-white/5 shrink-0">
                             {idx + 1}
                           </span>
-                          <span className="text-sm font-bold text-white">{module.title}</span>
+                          <span className="text-sm font-bold text-white tracking-wide truncate">
+                            {module.title}
+                          </span>
                           
                           {/* Rename / Delete Module Triggers */}
-                          <div className="flex gap-1 items-center">
+                          <div className="flex items-center gap-0.5 ml-1">
                             <button
                               onClick={() => {
                                 setEditingModuleId(module.id);
                                 setEditModuleTitle(module.title);
                               }}
-                              className="text-zinc-500 hover:text-[#facc15] p-1 transition-colors"
+                              className="text-zinc-500 hover:text-[#facc15] p-1.5 transition-colors rounded-lg hover:bg-white/5"
                               title="Rename module"
                             >
-                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
                             </button>
                             <button
                               onClick={() => handleDeleteModule(module.id, module.title)}
-                              className="text-zinc-500 hover:text-red-500 p-1 transition-colors"
+                              className="text-zinc-500 hover:text-red-500 p-1.5 transition-colors rounded-lg hover:bg-white/5"
                               title="Delete module"
                             >
-                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
                             </button>
                           </div>
-                        </h3>
+                        </div>
                       )}
                       
-                      <div className="flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-2">
                         {/* Auto-number lessons button */}
                         {(module.lessons?.length || 0) > 1 && (
                           <button
@@ -1261,22 +1264,20 @@ export default function CourseManager() {
                             type="button"
                             disabled={idx === 0}
                             onClick={() => handleMoveModule(idx, 'up')}
-                            className="px-2.5 py-1 text-xs font-semibold rounded-lg text-zinc-300 hover:text-white hover:bg-white/10 disabled:opacity-20 disabled:hover:bg-transparent transition-all flex items-center gap-1"
-                            title="Move Module Up"
+                            className="p-1 text-zinc-400 hover:text-white disabled:opacity-20 disabled:hover:text-zinc-600 transition-all"
+                            title="Move Section Up"
                           >
-                            <ChevronUp className="w-3.5 h-3.5 text-zinc-400" />
-                            <span>Up</span>
+                            <ChevronUp className="w-3.5 h-3.5" />
                           </button>
-                          <div className="w-[1px] h-3.5 bg-white/10" />
+                          <div className="w-[1px] h-3 bg-white/10" />
                           <button
                             type="button"
                             disabled={idx === (course?.modules?.length || 1) - 1}
                             onClick={() => handleMoveModule(idx, 'down')}
-                            className="px-2.5 py-1 text-xs font-semibold rounded-lg text-zinc-300 hover:text-white hover:bg-white/10 disabled:opacity-20 disabled:hover:bg-transparent transition-all flex items-center gap-1"
-                            title="Move Module Down"
+                            className="p-1 text-zinc-400 hover:text-white disabled:opacity-20 disabled:hover:text-zinc-600 transition-all"
+                            title="Move Section Down"
                           >
-                            <ChevronDown className="w-3.5 h-3.5 text-zinc-400" />
-                            <span>Down</span>
+                            <ChevronDown className="w-3.5 h-3.5" />
                           </button>
                         </div>
 
@@ -1289,146 +1290,153 @@ export default function CourseManager() {
                       </div>
                     </div>
 
-                    <div className="p-4 space-y-3">
+                    <div className="p-3.5 space-y-2.5">
                       {module.lessons?.map((lesson: any, lIdx: number) => {
                         const isHighlighted = highlightedLessonId === lesson.id;
                         const cleanFileName = getCleanVideoFileName(lesson.video_file);
                         return (
                           <div 
                             key={lesson.id} 
-                            className={`p-4 rounded-xl transition-all duration-300 ${
+                            className={`p-3.5 rounded-xl transition-all duration-300 ${
                               isHighlighted 
                                 ? 'bg-[#facc15]/10 border-2 border-[#facc15] shadow-lg shadow-[#facc15]/10 scale-[1.005]' 
-                                : 'bg-zinc-900/50 border border-white/5 hover:border-white/10'
+                                : 'bg-zinc-900/60 border border-white/5 hover:border-white/10'
                             }`}
                           >
-                            <div className="flex items-start gap-4">
-                              <div className="mt-1 flex items-center justify-center w-8 h-8 rounded-full bg-[#facc15]/10 border border-[#facc15]/20 shrink-0">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#facc15] translate-x-0.5">
-                                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                                </svg>
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <h4 className="font-semibold text-sm text-white">{lIdx + 1}. {lesson.title}</h4>
-                                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-white/5">
-                                    ID: #{lesson.id}
-                                  </span>
+                            <div className="flex items-center justify-between gap-3">
+                              {/* Left: Reorder Stepper + Index + Title & Subtitle */}
+                              <div className="flex items-center gap-3 min-w-0 flex-1">
+                                {/* Compact Vertical Stepper */}
+                                <div className="flex flex-col items-center bg-zinc-950/80 border border-white/10 rounded-lg p-0.5 shrink-0">
+                                  <button
+                                    type="button"
+                                    disabled={lIdx === 0}
+                                    onClick={() => handleMoveLesson(idx, lIdx, 'up')}
+                                    className="p-1 text-zinc-400 hover:text-[#facc15] disabled:opacity-20 disabled:hover:text-zinc-600 transition-colors"
+                                    title="Move Lesson Up"
+                                  >
+                                    <ChevronUp className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={lIdx === (module.lessons?.length || 1) - 1}
+                                    onClick={() => handleMoveLesson(idx, lIdx, 'down')}
+                                    className="p-1 text-zinc-400 hover:text-[#facc15] disabled:opacity-20 disabled:hover:text-zinc-600 transition-colors"
+                                    title="Move Lesson Down"
+                                  >
+                                    <ChevronDown className="w-3 h-3" />
+                                  </button>
                                 </div>
 
-                                {cleanFileName ? (
-                                  <div className="text-xs text-zinc-400 mt-1 flex items-center gap-1.5 font-mono truncate" title={lesson.video_file}>
-                                    <span className="text-[#facc15]">🎬</span>
-                                    <span className="truncate">{cleanFileName}</span>
+                                {/* Lesson Number Badge */}
+                                <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-[#facc15]/10 text-[#facc15] font-bold text-xs border border-[#facc15]/20 shrink-0">
+                                  {lIdx + 1}
+                                </div>
+
+                                {/* Title and Video Info */}
+                                <div className="min-w-0 flex-1">
+                                  <h4 className="font-semibold text-sm text-white truncate">
+                                    {lesson.title}
+                                  </h4>
+                                  <div className="flex items-center gap-2 text-[11px] text-zinc-400 mt-0.5 flex-wrap">
+                                    {cleanFileName ? (
+                                      <span className="flex items-center gap-1 font-mono text-zinc-400 truncate max-w-[280px]" title={lesson.video_file}>
+                                        <span className="text-[#facc15]">🎬</span>
+                                        <span className="truncate">{cleanFileName}</span>
+                                      </span>
+                                    ) : (
+                                      <span className="text-zinc-500">No video uploaded</span>
+                                    )}
+                                    <span className="text-zinc-600">•</span>
+                                    <span className="text-[10px] uppercase tracking-wider text-zinc-400">English Original</span>
+                                    {lesson.translated_audios?.filter((a: any) => a.status === 'completed').length > 0 && (
+                                      <>
+                                        <span className="text-zinc-600">•</span>
+                                        <span className="text-[10px] text-[#facc15]">
+                                          {lesson.translated_audios.filter((a: any) => a.status === 'completed').length} Audio Track{lesson.translated_audios.filter((a: any) => a.status === 'completed').length > 1 ? 's' : ''}
+                                        </span>
+                                      </>
+                                    )}
                                   </div>
-                                ) : (
-                                  <div className="text-xs text-zinc-500 mt-1">No video uploaded</div>
+                                </div>
+                              </div>
+
+                              {/* Right: Clean, Balanced Action Buttons */}
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {/* Position Selector */}
+                                {(module.lessons?.length || 0) > 2 && (
+                                  <select
+                                    value={lIdx + 1}
+                                    onChange={(e) => handleMoveLessonToIndex(idx, lIdx, Number(e.target.value) - 1)}
+                                    className="bg-zinc-800/80 border border-white/10 hover:border-white/20 text-zinc-300 rounded-lg px-2 py-1 text-xs font-medium cursor-pointer focus:outline-none focus:border-[#facc15]"
+                                    title="Jump to position"
+                                  >
+                                    {module.lessons.map((_: any, pIdx: number) => (
+                                      <option key={pIdx} value={pIdx + 1} className="bg-zinc-900 text-white">
+                                        Pos #{pIdx + 1}
+                                      </option>
+                                    ))}
+                                  </select>
                                 )}
 
-                                <div className="flex gap-2 mt-2 flex-wrap">
-                                  <span className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase">
-                                    English · Original
-                                  </span>
-                                  {lesson.translated_audios?.filter((a: any) => a.status === 'completed').map((audio: any) => (
-                                    <span key={audio.id} className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase">
-                                      {audio.language_name || languageDisplayName(audio.language_code)} · Uploaded
-                                    </span>
-                                  ))}
-                                </div>
-                              </div>
-                              <div className="flex flex-col gap-2 items-end shrink-0">
-                                <div className="flex items-center gap-2 flex-wrap justify-end">
-                                  {/* Position Jump Dropdown */}
-                                  <div className="flex items-center gap-1 bg-zinc-800/90 border border-white/10 rounded-xl px-2 py-1 text-xs" title="Select position in this section">
-                                    <span className="text-zinc-400 text-[11px] font-medium">Pos:</span>
-                                    <select
-                                      value={lIdx + 1}
-                                      onChange={(e) => handleMoveLessonToIndex(idx, lIdx, Number(e.target.value) - 1)}
-                                      className="bg-transparent text-[#facc15] font-bold focus:outline-none cursor-pointer text-xs"
-                                    >
-                                      {module.lessons.map((_: any, pIdx: number) => (
-                                        <option key={pIdx} value={pIdx + 1} className="bg-zinc-900 text-white font-normal">
-                                          #{pIdx + 1}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </div>
-
-                                  {/* Lesson Reorder Up/Down Buttons */}
-                                  <div className="flex items-center bg-zinc-800/80 border border-white/10 rounded-xl p-0.5">
-                                    <button
-                                      type="button"
-                                      disabled={lIdx === 0}
-                                      onClick={() => handleMoveLesson(idx, lIdx, 'up')}
-                                      className="px-2.5 py-1 text-xs font-semibold rounded-lg text-zinc-300 hover:text-white hover:bg-white/10 disabled:opacity-20 disabled:hover:bg-transparent transition-all flex items-center gap-1"
-                                      title="Move Lesson Up"
-                                    >
-                                      <ChevronUp className="w-3.5 h-3.5 text-[#facc15]" />
-                                      <span>Up</span>
-                                    </button>
-                                    <div className="w-[1px] h-3.5 bg-white/10" />
-                                    <button
-                                      type="button"
-                                      disabled={lIdx === (module.lessons?.length || 1) - 1}
-                                      onClick={() => handleMoveLesson(idx, lIdx, 'down')}
-                                      className="px-2.5 py-1 text-xs font-semibold rounded-lg text-zinc-300 hover:text-white hover:bg-white/10 disabled:opacity-20 disabled:hover:bg-transparent transition-all flex items-center gap-1"
-                                      title="Move Lesson Down"
-                                    >
-                                      <ChevronDown className="w-3.5 h-3.5 text-[#facc15]" />
-                                      <span>Down</span>
-                                    </button>
-                                  </div>
-
-                                  {/* Move to another module dropdown */}
-                                  {(course?.modules?.length || 0) > 1 && (
-                                    <select
-                                      value={module.id}
-                                      onChange={(e) => {
-                                        const targetModId = Number(e.target.value);
-                                        if (targetModId !== module.id) {
-                                          handleMoveLessonToModule(lesson.id, targetModId);
-                                        }
-                                      }}
-                                      className="text-[11px] bg-zinc-800/80 border border-white/10 rounded-xl px-2 py-1 text-zinc-300 hover:text-white focus:outline-none focus:border-[#facc15] cursor-pointer"
-                                      title="Move this lesson to another section"
-                                    >
-                                      <option value={module.id} disabled>Move Section...</option>
-                                      {course.modules.map((m: any, mIdx: number) => (
-                                        <option key={m.id} value={m.id} className="bg-zinc-900 text-white">
-                                          Section {mIdx + 1}: {m.title}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  )}
-
-                                  <button
-                                    onClick={() => {
-                                      setEditingLessonId(lesson.id);
-                                      setEditLessonData({
-                                        title: lesson.title,
-                                        description: lesson.description || "",
-                                        transcript: lesson.transcript || "",
-                                        timed_transcript: lesson.timed_transcript || "",
-                                        moduleId: module.id
-                                      });
+                                {/* Move Section Dropdown */}
+                                {(course?.modules?.length || 0) > 1 && (
+                                  <select
+                                    value={module.id}
+                                    onChange={(e) => {
+                                      const targetModId = Number(e.target.value);
+                                      if (targetModId !== module.id) {
+                                        handleMoveLessonToModule(lesson.id, targetModId);
+                                      }
                                     }}
-                                    className="text-xs font-bold px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl transition-colors"
+                                    className="bg-zinc-800/80 border border-white/10 hover:border-white/20 text-zinc-300 rounded-lg px-2 py-1 text-xs cursor-pointer focus:outline-none focus:border-[#facc15]"
+                                    title="Move lesson to another section"
                                   >
-                                    Edit
-                                  </button>
-                                  <button
-                                    onClick={() => handleDeleteLesson(lesson.id, lesson.title)}
-                                    className="text-xs font-bold px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl transition-colors"
-                                  >
-                                    Delete
-                                  </button>
-                                </div>
+                                    <option value={module.id} disabled>Move...</option>
+                                    {course.modules.map((m: any, mIdx: number) => (
+                                      <option key={m.id} value={m.id} className="bg-zinc-900 text-white">
+                                        → Module {mIdx + 1}: {m.title}
+                                      </option>
+                                    ))}
+                                  </select>
+                                )}
+
+                                {/* Edit Button */}
                                 <button
-                                  onClick={() => audioManagerLessonId === lesson.id ? closeAudioManager() : openAudioManager(lesson.id)}
-                                  className="text-xs font-medium px-3 py-1.5 bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] rounded-xl transition-colors flex items-center gap-1"
-                                  title="Manage multilingual audio tracks for this lesson"
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingLessonId(editingLessonId === lesson.id ? null : lesson.id);
+                                    setEditLessonData({
+                                      title: lesson.title,
+                                      description: lesson.description || "",
+                                      transcript: lesson.transcript || "",
+                                      timed_transcript: lesson.timed_transcript || "",
+                                      moduleId: module.id
+                                    });
+                                  }}
+                                  className="px-2.5 py-1 text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg border border-white/5 transition-colors"
                                 >
-                                  🎧 Audio Tracks
+                                  Edit
+                                </button>
+
+                                {/* Audio Tracks Button */}
+                                <button
+                                  type="button"
+                                  onClick={() => audioManagerLessonId === lesson.id ? closeAudioManager() : openAudioManager(lesson.id)}
+                                  className="px-2.5 py-1 text-xs font-medium bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] rounded-lg border border-[#facc15]/20 transition-colors flex items-center gap-1"
+                                  title="Manage audio tracks"
+                                >
+                                  🎧 Audio
+                                </button>
+
+                                {/* Delete Button */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteLesson(lesson.id, lesson.title)}
+                                  className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                                  title="Delete lesson"
+                                >
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
                                 </button>
                               </div>
                             </div>
