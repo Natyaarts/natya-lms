@@ -118,6 +118,17 @@ export default function CourseManager() {
   const [instructorError, setInstructorError] = useState("");
   const [removingInstructorId, setRemovingInstructorId] = useState<number | null>(null);
 
+  // Reordering visual feedback & toasts
+  const [highlightedLessonId, setHighlightedLessonId] = useState<number | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage((cur) => (cur === msg ? null : cur));
+    }, 4000);
+  };
+
   const getCsrfToken = () => {
     let csrfToken = "";
     if (typeof document !== 'undefined' && document.cookie) {
@@ -374,6 +385,7 @@ export default function CourseManager() {
 
     // Optimistically update the UI instantly
     setCourse({ ...course, modules: reordered });
+    showToast(`✓ Moved Section "${moved.title}" to position #${targetIndex + 1}`);
 
     try {
       const updates = reordered.map((mod, newOrder) =>
@@ -563,21 +575,39 @@ export default function CourseManager() {
     }
   };
 
-  const handleMoveLesson = async (moduleIndex: number, lessonIndex: number, direction: 'up' | 'down') => {
+  const getCleanVideoFileName = (videoUrlOrPath: string | null | undefined): string => {
+    if (!videoUrlOrPath) return "";
+    try {
+      const cleanUrl = videoUrlOrPath.split('?')[0];
+      const rawFileName = cleanUrl.split('/').pop() || videoUrlOrPath;
+      const decoded = decodeURIComponent(rawFileName);
+      // Strip 12-char hex UUID prefix generated during direct S3 upload (e.g. "a1b2c3d4e5f6_")
+      const cleaned = decoded.replace(/^[a-f0-9]{12}_/i, '');
+      return cleaned;
+    } catch (e) {
+      return videoUrlOrPath;
+    }
+  };
+
+  const handleMoveLessonToIndex = async (moduleIndex: number, currentLessonIndex: number, targetIndex: number) => {
     const moduleObj = course?.modules?.[moduleIndex];
     if (!moduleObj || !moduleObj.lessons) return;
-
-    const targetIndex = direction === 'up' ? lessonIndex - 1 : lessonIndex + 1;
-    if (targetIndex < 0 || targetIndex >= moduleObj.lessons.length) return;
+    if (targetIndex < 0 || targetIndex >= moduleObj.lessons.length || targetIndex === currentLessonIndex) return;
 
     const reordered = [...moduleObj.lessons];
-    const [moved] = reordered.splice(lessonIndex, 1);
+    const [moved] = reordered.splice(currentLessonIndex, 1);
     reordered.splice(targetIndex, 0, moved);
 
     // Optimistically update the UI instantly
     const updatedModules = [...course.modules];
     updatedModules[moduleIndex] = { ...moduleObj, lessons: reordered };
     setCourse({ ...course, modules: updatedModules });
+
+    setHighlightedLessonId(moved.id);
+    setTimeout(() => setHighlightedLessonId(null), 1800);
+
+    const videoName = getCleanVideoFileName(moved.video_file);
+    showToast(`✓ Moved "${moved.title}" ${videoName ? `(${videoName})` : ''} to position #${targetIndex + 1}`);
 
     try {
       const updates = reordered.map((lesson, newOrder) =>
@@ -592,6 +622,80 @@ export default function CourseManager() {
         })
       );
       await Promise.all(updates);
+      fetchCourse();
+    } catch (err) {
+      console.error(err);
+      fetchCourse();
+    }
+  };
+
+  const handleMoveLesson = (moduleIndex: number, lessonIndex: number, direction: 'up' | 'down') => {
+    const targetIndex = direction === 'up' ? lessonIndex - 1 : lessonIndex + 1;
+    handleMoveLessonToIndex(moduleIndex, lessonIndex, targetIndex);
+  };
+
+  const handleMoveLessonToModule = async (lessonId: number, targetModuleId: number) => {
+    if (!targetModuleId) return;
+    try {
+      showToast("Moving lesson to new section...");
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lessonId}/`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCsrfToken()
+        },
+        body: JSON.stringify({ module: targetModuleId }),
+        credentials: "include"
+      });
+      if (res.ok) {
+        showToast("✓ Lesson moved to new section successfully");
+        fetchCourse();
+      } else {
+        alert("Failed to move lesson to section");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Network error moving lesson");
+    }
+  };
+
+  const handleAutoNumberLessons = async (moduleIndex: number) => {
+    const moduleObj = course?.modules?.[moduleIndex];
+    if (!moduleObj || !moduleObj.lessons || moduleObj.lessons.length === 0) return;
+
+    const defaultBase = moduleObj.title.trim() || moduleObj.lessons[0].title.replace(/\s*\d+$/, '').trim() || "Lesson";
+    const baseName = window.prompt(
+      `Number all ${moduleObj.lessons.length} lessons in "${moduleObj.title}" sequentially?\nEnter title base:`,
+      defaultBase
+    );
+    if (!baseName) return;
+
+    const updatedLessons = moduleObj.lessons.map((lesson: any, i: number) => ({
+      ...lesson,
+      title: `${baseName.trim()} ${i + 1}`
+    }));
+
+    // Optimistically update
+    const updatedModules = [...course.modules];
+    updatedModules[moduleIndex] = { ...moduleObj, lessons: updatedLessons };
+    setCourse({ ...course, modules: updatedModules });
+
+    showToast(`Numbering ${updatedLessons.length} lessons...`);
+
+    try {
+      const updates = updatedLessons.map((lesson: any) =>
+        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lesson.id}/`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": getCsrfToken()
+          },
+          body: JSON.stringify({ title: lesson.title }),
+          credentials: "include"
+        })
+      );
+      await Promise.all(updates);
+      showToast(`✓ All ${updatedLessons.length} lessons numbered: "${baseName.trim()} 1" to "${baseName.trim()} ${updatedLessons.length}"`);
       fetchCourse();
     } catch (err) {
       console.error(err);
@@ -1137,7 +1241,20 @@ export default function CourseManager() {
                         </h3>
                       )}
                       
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {/* Auto-number lessons button */}
+                        {(module.lessons?.length || 0) > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleAutoNumberLessons(idx)}
+                            className="text-xs font-semibold px-2.5 py-1.5 bg-zinc-900 border border-white/10 hover:border-[#facc15]/40 text-zinc-300 hover:text-white rounded-xl transition-all flex items-center gap-1.5"
+                            title="Auto-number all lessons in this section sequentially (e.g. Paravaladavu 1, Paravaladavu 2...)"
+                          >
+                            <span className="text-[#facc15]">⚡</span>
+                            <span>Auto-Number</span>
+                          </button>
+                        )}
+
                         {/* Module Order Arrows */}
                         <div className="flex items-center bg-zinc-900 border border-white/10 rounded-xl p-0.5">
                           <button
@@ -1173,86 +1290,148 @@ export default function CourseManager() {
                     </div>
 
                     <div className="p-4 space-y-3">
-                      {module.lessons?.map((lesson: any, lIdx: number) => (
-                        <div key={lesson.id} className="bg-zinc-900/50 border border-white/5 p-4 rounded-xl hover:border-white/10 transition-colors">
-                          <div className="flex items-start gap-4">
-                            <div className="mt-1 flex items-center justify-center w-8 h-8 rounded-full bg-[#facc15]/10 border border-[#facc15]/20 shrink-0">
-                              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#facc15] translate-x-0.5">
-                                <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                              </svg>
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <h4 className="font-semibold text-sm truncate text-white">{lIdx + 1}. {lesson.title}</h4>
-                              <div className="text-xs text-zinc-500 mt-1 truncate">{lesson.video_file || "No video file"}</div>
-                              <div className="flex gap-2 mt-2 flex-wrap">
-                                <span className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase">
-                                  English · Original
-                                </span>
-                                {lesson.translated_audios?.filter((a: any) => a.status === 'completed').map((audio: any) => (
-                                  <span key={audio.id} className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase">
-                                    {audio.language_name || languageDisplayName(audio.language_code)} · Uploaded
-                                  </span>
-                                ))}
+                      {module.lessons?.map((lesson: any, lIdx: number) => {
+                        const isHighlighted = highlightedLessonId === lesson.id;
+                        const cleanFileName = getCleanVideoFileName(lesson.video_file);
+                        return (
+                          <div 
+                            key={lesson.id} 
+                            className={`p-4 rounded-xl transition-all duration-300 ${
+                              isHighlighted 
+                                ? 'bg-[#facc15]/10 border-2 border-[#facc15] shadow-lg shadow-[#facc15]/10 scale-[1.005]' 
+                                : 'bg-zinc-900/50 border border-white/5 hover:border-white/10'
+                            }`}
+                          >
+                            <div className="flex items-start gap-4">
+                              <div className="mt-1 flex items-center justify-center w-8 h-8 rounded-full bg-[#facc15]/10 border border-[#facc15]/20 shrink-0">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#facc15] translate-x-0.5">
+                                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                                </svg>
                               </div>
-                            </div>
-                            <div className="flex flex-col gap-2 items-end shrink-0">
-                              <div className="flex items-center gap-2">
-                                {/* Lesson Reorder Up/Down Buttons */}
-                                <div className="flex items-center bg-zinc-800/80 border border-white/10 rounded-xl p-0.5">
-                                  <button
-                                    type="button"
-                                    disabled={lIdx === 0}
-                                    onClick={() => handleMoveLesson(idx, lIdx, 'up')}
-                                    className="px-2.5 py-1 text-xs font-semibold rounded-lg text-zinc-300 hover:text-white hover:bg-white/10 disabled:opacity-20 disabled:hover:bg-transparent transition-all flex items-center gap-1"
-                                    title="Move Lesson Up"
-                                  >
-                                    <ChevronUp className="w-3.5 h-3.5 text-[#facc15]" />
-                                    <span>Up</span>
-                                  </button>
-                                  <div className="w-[1px] h-3.5 bg-white/10" />
-                                  <button
-                                    type="button"
-                                    disabled={lIdx === (module.lessons?.length || 1) - 1}
-                                    onClick={() => handleMoveLesson(idx, lIdx, 'down')}
-                                    className="px-2.5 py-1 text-xs font-semibold rounded-lg text-zinc-300 hover:text-white hover:bg-white/10 disabled:opacity-20 disabled:hover:bg-transparent transition-all flex items-center gap-1"
-                                    title="Move Lesson Down"
-                                  >
-                                    <ChevronDown className="w-3.5 h-3.5 text-[#facc15]" />
-                                    <span>Down</span>
-                                  </button>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <h4 className="font-semibold text-sm text-white">{lIdx + 1}. {lesson.title}</h4>
+                                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-white/5">
+                                    ID: #{lesson.id}
+                                  </span>
                                 </div>
 
+                                {cleanFileName ? (
+                                  <div className="text-xs text-zinc-400 mt-1 flex items-center gap-1.5 font-mono truncate" title={lesson.video_file}>
+                                    <span className="text-[#facc15]">🎬</span>
+                                    <span className="truncate">{cleanFileName}</span>
+                                  </div>
+                                ) : (
+                                  <div className="text-xs text-zinc-500 mt-1">No video uploaded</div>
+                                )}
+
+                                <div className="flex gap-2 mt-2 flex-wrap">
+                                  <span className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase">
+                                    English · Original
+                                  </span>
+                                  {lesson.translated_audios?.filter((a: any) => a.status === 'completed').map((audio: any) => (
+                                    <span key={audio.id} className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase">
+                                      {audio.language_name || languageDisplayName(audio.language_code)} · Uploaded
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                              <div className="flex flex-col gap-2 items-end shrink-0">
+                                <div className="flex items-center gap-2 flex-wrap justify-end">
+                                  {/* Position Jump Dropdown */}
+                                  <div className="flex items-center gap-1 bg-zinc-800/90 border border-white/10 rounded-xl px-2 py-1 text-xs" title="Select position in this section">
+                                    <span className="text-zinc-400 text-[11px] font-medium">Pos:</span>
+                                    <select
+                                      value={lIdx + 1}
+                                      onChange={(e) => handleMoveLessonToIndex(idx, lIdx, Number(e.target.value) - 1)}
+                                      className="bg-transparent text-[#facc15] font-bold focus:outline-none cursor-pointer text-xs"
+                                    >
+                                      {module.lessons.map((_: any, pIdx: number) => (
+                                        <option key={pIdx} value={pIdx + 1} className="bg-zinc-900 text-white font-normal">
+                                          #{pIdx + 1}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+
+                                  {/* Lesson Reorder Up/Down Buttons */}
+                                  <div className="flex items-center bg-zinc-800/80 border border-white/10 rounded-xl p-0.5">
+                                    <button
+                                      type="button"
+                                      disabled={lIdx === 0}
+                                      onClick={() => handleMoveLesson(idx, lIdx, 'up')}
+                                      className="px-2.5 py-1 text-xs font-semibold rounded-lg text-zinc-300 hover:text-white hover:bg-white/10 disabled:opacity-20 disabled:hover:bg-transparent transition-all flex items-center gap-1"
+                                      title="Move Lesson Up"
+                                    >
+                                      <ChevronUp className="w-3.5 h-3.5 text-[#facc15]" />
+                                      <span>Up</span>
+                                    </button>
+                                    <div className="w-[1px] h-3.5 bg-white/10" />
+                                    <button
+                                      type="button"
+                                      disabled={lIdx === (module.lessons?.length || 1) - 1}
+                                      onClick={() => handleMoveLesson(idx, lIdx, 'down')}
+                                      className="px-2.5 py-1 text-xs font-semibold rounded-lg text-zinc-300 hover:text-white hover:bg-white/10 disabled:opacity-20 disabled:hover:bg-transparent transition-all flex items-center gap-1"
+                                      title="Move Lesson Down"
+                                    >
+                                      <ChevronDown className="w-3.5 h-3.5 text-[#facc15]" />
+                                      <span>Down</span>
+                                    </button>
+                                  </div>
+
+                                  {/* Move to another module dropdown */}
+                                  {(course?.modules?.length || 0) > 1 && (
+                                    <select
+                                      value={module.id}
+                                      onChange={(e) => {
+                                        const targetModId = Number(e.target.value);
+                                        if (targetModId !== module.id) {
+                                          handleMoveLessonToModule(lesson.id, targetModId);
+                                        }
+                                      }}
+                                      className="text-[11px] bg-zinc-800/80 border border-white/10 rounded-xl px-2 py-1 text-zinc-300 hover:text-white focus:outline-none focus:border-[#facc15] cursor-pointer"
+                                      title="Move this lesson to another section"
+                                    >
+                                      <option value={module.id} disabled>Move Section...</option>
+                                      {course.modules.map((m: any, mIdx: number) => (
+                                        <option key={m.id} value={m.id} className="bg-zinc-900 text-white">
+                                          Section {mIdx + 1}: {m.title}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+
+                                  <button
+                                    onClick={() => {
+                                      setEditingLessonId(lesson.id);
+                                      setEditLessonData({
+                                        title: lesson.title,
+                                        description: lesson.description || "",
+                                        transcript: lesson.transcript || "",
+                                        timed_transcript: lesson.timed_transcript || "",
+                                        moduleId: module.id
+                                      });
+                                    }}
+                                    className="text-xs font-bold px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl transition-colors"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteLesson(lesson.id, lesson.title)}
+                                    className="text-xs font-bold px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl transition-colors"
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
                                 <button
-                                  onClick={() => {
-                                    setEditingLessonId(lesson.id);
-                                    setEditLessonData({
-                                      title: lesson.title,
-                                      description: lesson.description || "",
-                                      transcript: lesson.transcript || "",
-                                      timed_transcript: lesson.timed_transcript || "",
-                                      moduleId: module.id
-                                    });
-                                  }}
-                                  className="text-xs font-bold px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl transition-colors"
+                                  onClick={() => audioManagerLessonId === lesson.id ? closeAudioManager() : openAudioManager(lesson.id)}
+                                  className="text-xs font-medium px-3 py-1.5 bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] rounded-xl transition-colors flex items-center gap-1"
+                                  title="Manage multilingual audio tracks for this lesson"
                                 >
-                                  Edit
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteLesson(lesson.id, lesson.title)}
-                                  className="text-xs font-bold px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl transition-colors"
-                                >
-                                  Delete
+                                  🎧 Audio Tracks
                                 </button>
                               </div>
-                              <button
-                                onClick={() => audioManagerLessonId === lesson.id ? closeAudioManager() : openAudioManager(lesson.id)}
-                                className="text-xs font-medium px-3 py-1.5 bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] rounded-xl transition-colors flex items-center gap-1"
-                                title="Manage multilingual audio tracks for this lesson"
-                              >
-                                🎧 Audio Tracks
-                              </button>
                             </div>
-                          </div>
 
                           {/* Audio Track Manager Panel */}
                           <AnimatePresence>
@@ -1498,7 +1677,8 @@ export default function CourseManager() {
                             )}
                           </AnimatePresence>
                         </div>
-                      ))}
+                      );
+                    })}
 
                       {module.lessons?.length === 0 && addingLessonToModule !== module.id && (
                         <div className="text-center py-6 text-zinc-600 text-sm">
@@ -1693,6 +1873,20 @@ export default function CourseManager() {
           </div>
         </div>
       </div>
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 px-4 py-3 bg-zinc-900/95 border border-[#facc15]/40 text-white rounded-2xl shadow-2xl shadow-black/80 text-sm backdrop-blur-md">
+          <span className="text-[#facc15] font-bold text-base">✓</span>
+          <span className="font-medium text-zinc-200">{toastMessage}</span>
+          <button 
+            type="button"
+            onClick={() => setToastMessage(null)}
+            className="ml-2 text-zinc-400 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-white/10 transition-colors"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </div>
   );
 }
