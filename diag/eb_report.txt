@@ -1,0 +1,36 @@
+=== DESCRIBE ENVIRONMENTS ===
+{
+    "Environments": [
+        {
+            "EnvironmentName": "Natya-lms-backend-env",
+            "EnvironmentId": "e-ksdiv2sx9r",
+            "ApplicationName": "natya-lms-backend",
+            "VersionLabel": "backend-28076cc282656c43ea67f48bbb859534c00e9506",
+            "SolutionStackName": "64bit Amazon Linux 2023 v4.13.4 running Python 3.14",
+            "PlatformArn": "arn:aws:elasticbeanstalk:ap-south-1::platform/Python 3.14 running on 64bit Amazon Linux 2023/4.13.4",
+            "EndpointURL": "13.127.139.111",
+            "CNAME": "Natya-lms-backend-env.eba-5tjxp8qg.ap-south-1.elasticbeanstalk.com",
+            "DateCreated": "2026-07-24T10:53:46.173000+00:00",
+            "DateUpdated": "2026-10-03T06:19:00.146000+00:00",
+            "Status": "Ready",
+            "AbortableOperationInProgress": false,
+            "Health": "Green",
+            "Tier": {
+                "Name": "WebServer",
+                "Type": "Standard",
+                "Version": "1.0"
+            },
+            "EnvironmentLinks": [],
+            "EnvironmentArn": "arn:aws:elasticbeanstalk:ap-south-1:703671910601:environment/natya-lms-backend/Natya-lms-backend-env"
+        }
+    ]
+}
+=== DESCRIBE EVENTS ===
+{
+    "Events": []
+}
+=== REQUESTING TAIL LOGS ===
+=== POST-DEPLOY EVENTS ===
+{
+    "Events": []
+}
