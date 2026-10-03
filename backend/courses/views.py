@@ -366,6 +366,61 @@ class VideoLessonViewSet(viewsets.ModelViewSet):
         context['bypass_content_lock'] = True
         return context
 
+    @action(detail=False, methods=['post'], url_path='get-upload-url')
+    def get_upload_url(self, request):
+        """
+        Generate a presigned S3 PUT URL for direct browser-to-S3 video uploads.
+        Bypasses Cloudflare's 100 MB proxy cutoff and eliminates backend memory spikes.
+        """
+        user = request.user
+        if not (user.is_authenticated and (user.is_superuser or user.is_staff or getattr(user, 'is_teacher', False))):
+            return Response({'error': 'Permission denied.'}, status=drf_status.HTTP_403_FORBIDDEN)
+
+        filename = request.data.get('filename')
+        file_type = request.data.get('file_type', 'video/mp4')
+        if not filename:
+            return Response({'error': 'filename is required.'}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        import os
+        import re
+        import uuid
+        import boto3
+        from botocore.config import Config
+        from django.conf import settings
+
+        ext = os.path.splitext(filename)[1].lower() or '.mp4'
+        clean_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', os.path.splitext(filename)[0])
+        unique_filename = f"{uuid.uuid4().hex[:12]}_{clean_name}{ext}"
+        s3_key = f"videos/lessons/{unique_filename}"
+
+        bucket_name = settings.AWS_STORAGE_BUCKET_NAME
+        if not bucket_name:
+            return Response({'error': 'AWS S3 storage is not configured on this server.'}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+            region_name=settings.AWS_S3_REGION_NAME or 'ap-south-1',
+            config=Config(signature_version='s3v4')
+        )
+
+        presigned_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': bucket_name,
+                'Key': s3_key,
+                'ContentType': file_type or 'video/mp4',
+            },
+            ExpiresIn=3600
+        )
+
+        return Response({
+            'upload_url': presigned_url,
+            's3_key': s3_key,
+            'file_name': unique_filename
+        })
+
     @action(detail=True, methods=['post'])
     def generate_ai_audio(self, request, pk=None):
         from django.db import transaction

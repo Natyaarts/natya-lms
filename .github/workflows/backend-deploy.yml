@@ -28,6 +28,30 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
+      - name: Configure S3 Bucket CORS for Direct Uploads
+        run: |
+          cat << 'EOF' > /tmp/s3_cors.json
+          {
+            "CORSRules": [
+              {
+                "AllowedHeaders": ["*"],
+                "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
+                "AllowedOrigins": [
+                  "https://academy.natyaarts.com",
+                  "https://natya-lms.vercel.app",
+                  "http://localhost:3000"
+                ],
+                "ExposeHeaders": ["ETag"],
+                "MaxAgeSeconds": 3000
+              }
+            ]
+          }
+          EOF
+          aws s3api put-bucket-cors \
+            --bucket natyalms-media-2026 \
+            --cors-configuration file:///tmp/s3_cors.json \
+            --region ap-south-1 || true
+
       - name: Generate Deployment Package
         run: |
           cd backend

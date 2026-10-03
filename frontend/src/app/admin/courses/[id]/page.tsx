@@ -410,24 +410,35 @@ export default function CourseManager() {
     setUploadProgress(0);
     try {
       const moduleObj = course.modules.find((m: any) => m.id === moduleId);
-      
-      const formData = new FormData();
-      formData.append("title", lessonData.title);
-      formData.append("description", lessonData.description);
-      formData.append("transcript", lessonData.transcript);
-      formData.append("timed_transcript", lessonData.timed_transcript);
-      formData.append("video_file", lessonData.video_file);
-      formData.append("module", moduleId.toString());
-      formData.append("order", (moduleObj?.lessons?.length || 0).toString());
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const csrf = getCsrfToken();
 
+      // Step 1: Request presigned S3 PUT URL from backend
+      const urlRes = await fetch(`${apiUrl}/api/courses/lessons/get-upload-url/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": csrf
+        },
+        body: JSON.stringify({
+          filename: lessonData.video_file.name,
+          file_type: lessonData.video_file.type || "video/mp4"
+        }),
+        credentials: "include"
+      });
+
+      if (!urlRes.ok) {
+        const errorData = await urlRes.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to authorize direct S3 upload from backend.");
+      }
+
+      const { upload_url, s3_key } = await urlRes.json();
+
+      // Step 2: Upload video directly to AWS S3 (completely bypasses Cloudflare 100 MB proxy cutoff)
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-        xhr.open("POST", `${apiUrl}/api/courses/lessons/`);
-        xhr.withCredentials = true;
-
-        const csrf = getCsrfToken();
-        if (csrf) xhr.setRequestHeader("X-CSRFToken", csrf);
+        xhr.open("PUT", upload_url);
+        xhr.setRequestHeader("Content-Type", lessonData.video_file?.type || "video/mp4");
 
         xhr.upload.onprogress = (event) => {
           if (event.lengthComputable) {
@@ -440,27 +451,40 @@ export default function CourseManager() {
           if (xhr.status >= 200 && xhr.status < 300) {
             resolve();
           } else {
-            let errorMsg = `Server returned status ${xhr.status}`;
-            if (xhr.status === 413) {
-              errorMsg = "File is too large (413 Payload Too Large). Cloudflare proxy caps uploads at 100 MB. Please set academy-api.natyaarts.com to 'DNS Only' (Grey Cloud) in Cloudflare DNS to allow up to 2 GB uploads.";
-            } else {
-              try {
-                const parsed = JSON.parse(xhr.responseText);
-                errorMsg = JSON.stringify(parsed);
-              } catch {
-                if (xhr.responseText) errorMsg = xhr.responseText.slice(0, 300);
-              }
-            }
-            reject(new Error(errorMsg));
+            reject(new Error(`S3 direct upload returned status ${xhr.status}`));
           }
         };
 
         xhr.onerror = () => {
-          reject(new Error("Network connection error. If uploading a video larger than 100 MB, Cloudflare cuts off the connection unless 'academy-api' is set to DNS Only (Grey Cloud) in Cloudflare DNS."));
+          reject(new Error("Direct upload to AWS S3 failed. Please verify network connectivity."));
         };
 
-        xhr.send(formData);
+        xhr.send(lessonData.video_file);
       });
+
+      // Step 3: Register the lesson in Django with the verified S3 key
+      const createRes = await fetch(`${apiUrl}/api/courses/lessons/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": csrf
+        },
+        body: JSON.stringify({
+          title: lessonData.title,
+          description: lessonData.description,
+          transcript: lessonData.transcript,
+          timed_transcript: lessonData.timed_transcript,
+          video_file: s3_key,
+          module: moduleId,
+          order: moduleObj?.lessons?.length || 0
+        }),
+        credentials: "include"
+      });
+
+      if (!createRes.ok) {
+        const createErr = await createRes.text();
+        throw new Error("Failed to create lesson record: " + createErr);
+      }
 
       setAddingLessonToModule(null);
       setLessonData({
@@ -1501,13 +1525,9 @@ export default function CourseManager() {
                                     <span className="text-red-400 bg-red-400/10 px-2 py-0.5 rounded text-[11px] border border-red-400/20 font-medium">
                                       ❌ Exceeds 2 GB limit ({(lessonData.video_file.size / (1024 * 1024 * 1024)).toFixed(2)} GB). Please compress or select a video under 2 GB.
                                     </span>
-                                  ) : lessonData.video_file.size > 100 * 1024 * 1024 ? (
-                                    <span className="text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded text-[11px] border border-amber-400/20 font-medium">
-                                      ⚠️ &gt;100 MB: Ensure Cloudflare DNS for academy-api is &quot;DNS Only&quot;
-                                    </span>
                                   ) : (
                                     <span className="text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded text-[11px] border border-emerald-400/20 font-medium">
-                                      ✓ Ready to upload (max 2 GB)
+                                      ⚡ Direct S3 Upload enabled (up to 2 GB)
                                     </span>
                                   )}
                                 </div>

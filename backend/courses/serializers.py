@@ -106,6 +106,17 @@ class VideoLessonSerializer(serializers.ModelSerializer):
         model = VideoLesson
         fields = ['id', 'title', 'description', 'transcript', 'timed_transcript', 'video_file', 'order', 'module', 'translated_audios']
 
+    def to_internal_value(self, data):
+        # Support direct S3 presigned upload where video_file is already uploaded to S3 as a key string
+        if isinstance(data, dict) and 'video_file' in data and isinstance(data['video_file'], str):
+            video_file_str = data['video_file']
+            data = data.copy()
+            data.pop('video_file')
+            ret = super().to_internal_value(data)
+            ret['video_file'] = video_file_str
+            return ret
+        return super().to_internal_value(data)
+
 def _serialize_assessment_summary_for_student(assessment, attempts):
     """
     Phase 4.3. Safe assessment summary for the module learning-discovery
