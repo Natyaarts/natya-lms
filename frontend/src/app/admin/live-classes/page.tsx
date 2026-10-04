@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Video, Plus, X, Repeat, Users as UsersIcon, Calendar as CalendarIcon, List as ListIcon } from "lucide-react";
+import { Video, Plus, X, Repeat, Users as UsersIcon, Calendar as CalendarIcon, List as ListIcon, ExternalLink, Trash2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
 
@@ -54,7 +54,7 @@ const btnGhost = "px-4 py-2 text-zinc-400 hover:text-white text-sm";
 
 export default function LiveClassesPage() {
   const [currentUser, setCurrentUser] = useState<any>(null);
-  const [tab, setTab] = useState<"today" | "upcoming" | "history" | "cancelled">("upcoming");
+  const [tab, setTab] = useState<"today" | "upcoming" | "history" | "cancelled" | "batches">("upcoming");
   const [view, setView] = useState<"list" | "calendar">("list");
   const [classes, setClasses] = useState<any[]>([]);
   const [calendarClasses, setCalendarClasses] = useState<any[]>([]);
@@ -73,9 +73,26 @@ export default function LiveClassesPage() {
     });
   }, []);
 
+  const fetchBatches = async () => {
+    try {
+      const res = await authedFetch("/api/courses/live-batches/?page_size=200");
+      if (res.ok) {
+        const data = await res.json();
+        setBatches(Array.isArray(data) ? data : data.results || []);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const fetchClasses = async () => {
     setLoading(true);
     setError("");
+    if (tab === "batches") {
+      await fetchBatches();
+      setLoading(false);
+      return;
+    }
     try {
       const path = tab === "cancelled"
         ? "/api/courses/live-classes/?status=CANCELLED&page_size=100"
@@ -96,6 +113,7 @@ export default function LiveClassesPage() {
   };
 
   useEffect(() => { fetchClasses(); }, [tab]);
+  useEffect(() => { fetchBatches(); }, []);
 
   // Calendar view pulls a broader, unfiltered-by-tab window (upcoming +
   // history) so the month grid can show everything at a glance.
@@ -428,7 +446,39 @@ export default function LiveClassesPage() {
     await authedFetch(`/api/courses/live-classes/${lc.id}/start/`, { method: "POST" });
     setBusyId(null);
     fetchClasses();
+    if (lc.meeting_url) {
+      window.open(lc.meeting_url, "_blank");
+    }
   };
+
+  const openScheduleForBatch = (b: any) => {
+    setForm({
+      ...emptyForm,
+      courseId: String(b.course),
+      batchChoice: String(b.id),
+      instructorId: b.instructor ? String(b.instructor) : "",
+    });
+    setScheduleError("");
+    setZoomSuccess("");
+    setShowSchedule(true);
+    loadDependencies();
+  };
+
+  const handleDeleteBatch = async (batchId: number) => {
+    if (!confirm("Are you sure you want to delete this batch? All assigned student batch records will be unlinked.")) return;
+    try {
+      const res = await authedFetch(`/api/courses/live-batches/${batchId}/`, { method: "DELETE" });
+      if (res.ok) {
+        setBanner("Batch deleted successfully.");
+        await fetchBatches();
+      } else {
+        alert("Failed to delete batch.");
+      }
+    } catch (err) {
+      alert("Error deleting batch.");
+    }
+  };
+
   const endClass = async (lc: any) => {
     setBusyId(lc.id);
     await authedFetch(`/api/courses/live-classes/${lc.id}/end/`, { method: "POST" });
@@ -557,7 +607,7 @@ export default function LiveClassesPage() {
 
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div className="flex gap-2 p-1 bg-zinc-950 border border-white/5 rounded-xl w-max">
-          {(["today", "upcoming", "history", "cancelled"] as const).map((t) => (
+          {(["today", "upcoming", "history", "cancelled", "batches"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -565,7 +615,7 @@ export default function LiveClassesPage() {
                 tab === t ? "bg-[#facc15] text-black shadow-sm" : "text-zinc-400 hover:text-white"
               }`}
             >
-              {t}
+              {t === "batches" ? `Batches (${batches.length})` : t}
             </button>
           ))}
         </div>
@@ -589,7 +639,66 @@ export default function LiveClassesPage() {
         <MonthCalendar classes={calendarClasses} />
       ) : (
         <div className="bg-zinc-900 border border-white/10 rounded-2xl overflow-hidden">
-          {loading ? (
+          {tab === "batches" ? (
+            loading ? (
+              <div className="text-center py-20 text-zinc-500 text-sm">Loading batches...</div>
+            ) : batches.length === 0 ? (
+              <div className="text-center py-20 text-zinc-500 text-sm space-y-2">
+                <p>No batches created yet.</p>
+                <button onClick={openCreateBatch} className="px-4 py-2 bg-[#facc15] text-black font-bold text-xs rounded-xl hover:bg-yellow-500">
+                  + Create Your First Batch
+                </button>
+              </div>
+            ) : (
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
+                    <th className="p-4 font-semibold">Course</th>
+                    <th className="p-4 font-semibold">Batch Type</th>
+                    <th className="p-4 font-semibold">Instructor</th>
+                    <th className="p-4 font-semibold">Students Enrolled</th>
+                    <th className="p-4 font-semibold">Created Date</th>
+                    <th className="p-4 font-semibold text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5 text-zinc-300">
+                  {batches.map((b: any) => (
+                    <tr key={b.id} className="hover:bg-white/5 transition-colors">
+                      <td className="p-4 text-white font-bold">{b.course_title || `Course #${b.course}`}</td>
+                      <td className="p-4">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${b.batch_type === 'ONE_TO_ONE' ? 'bg-purple-500/20 text-purple-300' : 'bg-blue-500/20 text-blue-300'}`}>
+                          {b.batch_type === 'ONE_TO_ONE' ? '1-on-1' : 'Group'}
+                        </span>
+                      </td>
+                      <td className="p-4 text-zinc-300">{b.instructor_username || "Unassigned"}</td>
+                      <td className="p-4">
+                        <span className="font-semibold text-white">{b.student_count || 0}</span>
+                        {b.max_participants ? <span className="text-zinc-500"> / {b.max_participants} max</span> : <span className="text-zinc-500"> enrolled</span>}
+                      </td>
+                      <td className="p-4 text-zinc-400">{new Date(b.created_at).toLocaleDateString()}</td>
+                      <td className="p-4">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => openScheduleForBatch(b)}
+                            className="px-2.5 py-1.5 rounded-lg bg-[#facc15] text-black text-[10px] font-bold hover:bg-yellow-400 transition-colors flex items-center gap-1 shadow-sm"
+                          >
+                            <Plus className="w-3 h-3" /> Schedule Class
+                          </button>
+                          <button
+                            onClick={() => handleDeleteBatch(b.id)}
+                            className="px-2 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold transition-colors"
+                            title="Delete Batch"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          ) : loading ? (
             <div className="text-center py-20 text-zinc-500 text-sm">Loading...</div>
           ) : error ? (
             <div className="text-center py-20 text-red-400 text-sm">{error}</div>
@@ -624,15 +733,25 @@ export default function LiveClassesPage() {
                     </td>
                     <td className="p-4">
                       <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                        {lc.meeting_url && (
+                          <a
+                            href={lc.meeting_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-2.5 py-1 rounded-lg bg-[#facc15]/10 text-[#facc15] border border-[#facc15]/20 hover:bg-[#facc15]/20 text-[10px] font-bold flex items-center gap-1"
+                          >
+                            <ExternalLink className="w-3 h-3" /> Join {PROVIDER_LABEL[lc.meeting_provider] || "Zoom"}
+                          </a>
+                        )}
                         {lc.status === "SCHEDULED" && (
                           <>
-                            <button disabled={busyId === lc.id} onClick={() => startClass(lc)} className="px-2.5 py-1 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 text-[10px] font-bold disabled:opacity-50">Start</button>
+                            <button disabled={busyId === lc.id} onClick={() => startClass(lc)} className="px-2.5 py-1 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 text-[10px] font-bold disabled:opacity-50">Start Class</button>
                             <button onClick={() => { setRescheduleTarget(lc); setRescheduleDate(""); setRescheduleTime(""); }} className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold">Reschedule</button>
                             <button onClick={() => { setCancelTarget(lc); setCancelReason(""); setCancelSeries(false); }} className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold">Cancel</button>
                           </>
                         )}
                         {lc.status === "LIVE" && (
-                          <button disabled={busyId === lc.id} onClick={() => endClass(lc)} className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 text-[10px] font-bold disabled:opacity-50">End</button>
+                          <button disabled={busyId === lc.id} onClick={() => endClass(lc)} className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 text-[10px] font-bold disabled:opacity-50">End Class</button>
                         )}
                         <button onClick={() => openAttendance(lc)} className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold flex items-center gap-1"><UsersIcon className="w-3 h-3" /> Attendance</button>
                         {lc.status === "COMPLETED" && (
@@ -746,8 +865,9 @@ export default function LiveClassesPage() {
                   <input required type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} className={inputCls} />
                 </div>
                 <div>
-                  <label className={labelCls}>Time</label>
+                  <label className={labelCls}>Time (24-Hour)</label>
                   <input required type="time" value={form.time} onChange={(e) => setForm((f) => ({ ...f, time: e.target.value }))} className={inputCls} />
+                  <p className="text-[9px] text-zinc-500 mt-1">e.g. 13:00 = 1:00 PM</p>
                 </div>
                 <div>
                   <label className={labelCls}>Duration (min)</label>
