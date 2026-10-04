@@ -173,7 +173,7 @@ export default function LiveClassesPage() {
       const cRes = await authedFetch("/api/courses/");
       if (cRes.ok) {
         const all = await cRes.json();
-        setCourses((Array.isArray(all) ? all : all.results || []).filter((c: any) => c.course_type === "LIVE"));
+        setCourses(Array.isArray(all) ? all : all.results || []);
       }
       const bRes = await authedFetch("/api/courses/live-batches/?page_size=200");
       if (bRes.ok) {
@@ -664,8 +664,12 @@ export default function LiveClassesPage() {
               <div>
                 <label className={labelCls}>Course</label>
                 <select required value={form.courseId} onChange={(e) => setForm((f) => ({ ...f, courseId: e.target.value, batchChoice: "new" }))} className={inputCls}>
-                  <option value="" disabled>Select a live course</option>
-                  {courses.map((c: any) => <option key={c.id} value={c.id}>{c.title}</option>)}
+                  <option value="" disabled>Select a course</option>
+                  {courses.map((c: any) => (
+                    <option key={c.id} value={c.id}>
+                      {c.title}{c.course_type === "LIVE" ? " (Live)" : ""}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -952,16 +956,18 @@ export default function LiveClassesPage() {
               )}
 
               <div>
-                <label className={labelCls}>Live Course *</label>
+                <label className={labelCls}>Course *</label>
                 <select
                   required
                   value={batchForm.courseId}
                   onChange={(e) => setBatchForm(f => ({ ...f, courseId: e.target.value }))}
                   className={inputCls}
                 >
-                  <option value="" disabled>Select a live course</option>
+                  <option value="" disabled>Select a course</option>
                   {courses.map((c: any) => (
-                    <option key={c.id} value={c.id}>{c.title}</option>
+                    <option key={c.id} value={c.id}>
+                      {c.title}{c.course_type === "LIVE" ? " (Live)" : ""}
+                    </option>
                   ))}
                 </select>
               </div>

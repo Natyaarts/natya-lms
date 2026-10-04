@@ -12,7 +12,8 @@ export default function CreateCourse() {
   const [formData, setFormData] = useState({
     title: "",
     description: "",
-    price: "0.00"
+    price: "0.00",
+    course_type: "RECORDED"
   });
 
   const [thumbnail, setThumbnail] = useState<File | null>(null);
@@ -55,6 +56,7 @@ export default function CreateCourse() {
       data.append('title', formData.title);
       data.append('description', formData.description);
       data.append('price', formData.price);
+      data.append('course_type', formData.course_type);
       if (thumbnail) {
         data.append('thumbnail', thumbnail);
       }
@@ -133,20 +135,34 @@ export default function CreateCourse() {
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Price (₹)</label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-sm font-medium">₹</span>
-              <input 
-                type="number" 
-                name="price"
-                step="0.01"
-                min="0"
-                required
-                value={formData.price}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Price (₹)</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-sm font-medium">₹</span>
+                <input 
+                  type="number" 
+                  name="price"
+                  step="0.01"
+                  min="0"
+                  required
+                  value={formData.price}
+                  onChange={handleChange}
+                  className="w-full pl-7 pr-3 py-2 bg-[#09090b] border border-white/10 rounded-lg text-sm text-white focus:outline-none focus:border-white/30 transition-colors"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Course Type</label>
+              <select
+                name="course_type"
+                value={formData.course_type}
                 onChange={handleChange}
-                className="w-full pl-7 pr-3 py-2 bg-[#09090b] border border-white/10 rounded-lg text-sm text-white focus:outline-none focus:border-white/30 transition-colors"
-              />
+                className="w-full px-3 py-2 bg-[#09090b] border border-white/10 rounded-lg text-sm text-white focus:outline-none focus:border-white/30 transition-colors"
+              >
+                <option value="RECORDED">Recorded</option>
+                <option value="LIVE">Live Interactive</option>
+              </select>
             </div>
           </div>
 
