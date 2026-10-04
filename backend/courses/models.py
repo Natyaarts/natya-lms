@@ -397,7 +397,8 @@ class LiveBatch(models.Model):
     def clean(self):
         super().clean()
         if self.course and self.course.course_type != Course.CourseType.LIVE:
-            raise ValidationError("A LiveBatch can only be created for a Course with type LIVE.")
+            self.course.course_type = Course.CourseType.LIVE
+            self.course.save(update_fields=['course_type'])
         if self.instructor and not (
             self.instructor.is_superuser or self.instructor.is_staff
             or getattr(self.instructor, 'is_teacher', False)

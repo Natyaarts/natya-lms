@@ -313,8 +313,23 @@ export default function LiveClassesPage() {
     }
   };
 
+  const getNextAvailableSlot = () => {
+    const d = new Date();
+    d.setMinutes(d.getMinutes() + 15);
+    const dateStr = d.toISOString().split("T")[0];
+    const timeStr = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    return { date: dateStr, time: timeStr };
+  };
+
+  const isTimeInPast = useMemo(() => {
+    if (!form.date || !form.time) return false;
+    const selected = new Date(`${form.date}T${form.time}`).getTime();
+    return selected < Date.now();
+  }, [form.date, form.time]);
+
   const openSchedule = async () => {
-    setForm(emptyForm);
+    const slot = getNextAvailableSlot();
+    setForm({ ...emptyForm, date: slot.date, time: slot.time });
     setScheduleError("");
     setZoomSuccess("");
     setShowSchedule(true);
@@ -452,11 +467,14 @@ export default function LiveClassesPage() {
   };
 
   const openScheduleForBatch = (b: any) => {
+    const slot = getNextAvailableSlot();
     setForm({
       ...emptyForm,
       courseId: String(b.course),
       batchChoice: String(b.id),
       instructorId: b.instructor ? String(b.instructor) : "",
+      date: slot.date,
+      time: slot.time,
     });
     setScheduleError("");
     setZoomSuccess("");
@@ -865,15 +883,47 @@ export default function LiveClassesPage() {
                   <input required type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} className={inputCls} />
                 </div>
                 <div>
-                  <label className={labelCls}>Time (24-Hour)</label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className={`${labelCls} mb-0`}>Time</label>
+                    {form.time && (
+                      <span className="text-[10px] text-[#facc15] font-semibold">
+                        {parseInt(form.time.split(":")[0], 10) >= 12 ? "PM (Afternoon/Eve)" : "AM (Night/Morning)"}
+                      </span>
+                    )}
+                  </div>
                   <input required type="time" value={form.time} onChange={(e) => setForm((f) => ({ ...f, time: e.target.value }))} className={inputCls} />
-                  <p className="text-[9px] text-zinc-500 mt-1">e.g. 13:00 = 1:00 PM</p>
                 </div>
                 <div>
                   <label className={labelCls}>Duration (min)</label>
                   <input required type="number" min={1} value={form.durationMinutes} onChange={(e) => setForm((f) => ({ ...f, durationMinutes: Number(e.target.value) }))} className={inputCls} />
                 </div>
               </div>
+
+              {/* Past time alert & auto-switch to PM helper */}
+              {isTimeInPast && (
+                <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-xl text-amber-300 text-xs flex items-center justify-between gap-3">
+                  <div>
+                    <span className="font-bold">⚠️ Selected time is in the past!</span>
+                    <p className="text-[11px] text-amber-400/80 mt-0.5">
+                      {form.time} is interpreted as {parseInt(form.time.split(":")[0], 10) < 12 ? `${parseInt(form.time.split(":")[0], 10) || 12}:${form.time.split(":")[1]} AM` : form.time}.
+                    </p>
+                  </div>
+                  {parseInt(form.time.split(":")[0], 10) < 12 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const [h, m] = form.time.split(":");
+                        const numH = parseInt(h, 10);
+                        const pmH = String(numH + 12).padStart(2, "0");
+                        setForm((f) => ({ ...f, time: `${pmH}:${m}` }));
+                      }}
+                      className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-black text-xs font-bold rounded-lg transition-colors shrink-0 shadow-sm"
+                    >
+                      Switch to {parseInt(form.time.split(":")[0], 10) || 12}:{form.time.split(":")[1]} PM
+                    </button>
+                  )}
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -947,6 +997,19 @@ export default function LiveClassesPage() {
                   </div>
                 )}
               </div>
+
+              {scheduleError && (
+                <div className="p-3 bg-red-500/15 border border-red-500/30 rounded-xl text-red-300 text-xs font-semibold">
+                  ⚠️ {typeof scheduleError === "string" ? scheduleError : (
+                    scheduleError.scheduled_start?.[0] ||
+                    scheduleError.batch?.[0] ||
+                    scheduleError.batch ||
+                    scheduleError.detail ||
+                    scheduleError.non_field_errors?.[0] ||
+                    JSON.stringify(scheduleError)
+                  )}
+                </div>
+              )}
 
               <div className="flex justify-end gap-3 pt-2">
                 <button type="button" onClick={() => setShowSchedule(false)} className={btnGhost}>Cancel</button>

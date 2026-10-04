@@ -450,9 +450,10 @@ class LiveClassSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"batch": "batch is required for new LiveClass creation."})
 
         if batch:
-            # Verify batch.course is LIVE
+            # Promote batch.course to LIVE if not already
             if batch.course.course_type != 'LIVE':
-                raise serializers.ValidationError({"batch": "A LiveClass can only be created for a Course with type LIVE."})
+                batch.course.course_type = Course.CourseType.LIVE
+                batch.course.save(update_fields=['course_type'])
 
             # Verify batch has a valid instructor
             if not batch.instructor:
