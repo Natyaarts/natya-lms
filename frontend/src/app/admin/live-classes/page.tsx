@@ -125,6 +125,8 @@ export default function LiveClassesPage() {
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [scheduling, setScheduling] = useState(false);
   const [scheduleError, setScheduleError] = useState<any>("");
+  const [generatingZoom, setGeneratingZoom] = useState(false);
+  const [zoomSuccess, setZoomSuccess] = useState("");
 
   const emptyForm = {
     courseId: "",
@@ -256,9 +258,47 @@ export default function LiveClassesPage() {
     }
   };
 
+  const handleAutoGenerateZoom = async () => {
+    setGeneratingZoom(true);
+    setZoomSuccess("");
+    try {
+      let startTimeIso: string | undefined = undefined;
+      if (form.date && form.time) {
+        startTimeIso = new Date(`${form.date}T${form.time}`).toISOString();
+      }
+
+      const res = await authedFetch("/api/courses/admin/zoom/create-meeting/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic: form.title || "Natya LMS Live Session",
+          start_time: startTimeIso,
+          duration: form.durationMinutes || 60,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.join_url) {
+          setForm((f) => ({ ...f, meetingUrl: data.join_url }));
+          setZoomSuccess(`✓ Meeting Created! ID: ${data.meeting_id} (Password: ${data.password || "Auto-set"})`);
+          setTimeout(() => setZoomSuccess(""), 6000);
+        }
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to auto-generate Zoom meeting.");
+      }
+    } catch (e: any) {
+      alert("Error connecting to Zoom API service.");
+    } finally {
+      setGeneratingZoom(false);
+    }
+  };
+
   const openSchedule = async () => {
     setForm(emptyForm);
     setScheduleError("");
+    setZoomSuccess("");
     setShowSchedule(true);
     await loadDependencies();
   };
@@ -320,6 +360,29 @@ export default function LiveClassesPage() {
       }
 
       const scheduledStart = new Date(`${form.date}T${form.time}`).toISOString();
+      let meetingUrl = form.meetingUrl;
+      if (form.provider === "ZOOM" && !meetingUrl) {
+        try {
+          const zRes = await authedFetch("/api/courses/admin/zoom/create-meeting/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              topic: form.title || "Natya LMS Live Session",
+              start_time: scheduledStart,
+              duration: form.durationMinutes || 60,
+            }),
+          });
+          if (zRes.ok) {
+            const zData = await zRes.json();
+            if (zData.join_url) {
+              meetingUrl = zData.join_url;
+            }
+          }
+        } catch (zErr) {
+          console.error("Zoom auto-generation error:", zErr);
+        }
+      }
+
       const payload: any = {
         title: form.title,
         description: form.description,
@@ -327,7 +390,7 @@ export default function LiveClassesPage() {
         scheduled_start: scheduledStart,
         duration_minutes: form.durationMinutes,
         meeting_provider: form.provider,
-        meeting_url: form.meetingUrl,
+        meeting_url: meetingUrl,
       };
       if (form.recurrenceEnabled && form.frequency !== "ONE_TIME") {
         payload.recurrence = {
@@ -696,8 +759,30 @@ export default function LiveClassesPage() {
                   </select>
                 </div>
                 <div>
-                  <label className={labelCls}>Meeting URL</label>
-                  <input required type="url" value={form.meetingUrl} onChange={(e) => setForm((f) => ({ ...f, meetingUrl: e.target.value }))} placeholder="https://..." className={inputCls} />
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className={`${labelCls} mb-0`}>Meeting URL</label>
+                    {form.provider === "ZOOM" && (
+                      <button
+                        type="button"
+                        onClick={handleAutoGenerateZoom}
+                        disabled={generatingZoom}
+                        className="text-[11px] text-[#facc15] hover:text-[#fde047] font-semibold flex items-center gap-1 transition-colors disabled:opacity-50"
+                      >
+                        {generatingZoom ? "Generating..." : "⚡ Auto-Generate Zoom"}
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    required={form.provider !== "ZOOM"}
+                    type="url"
+                    value={form.meetingUrl}
+                    onChange={(e) => setForm((f) => ({ ...f, meetingUrl: e.target.value }))}
+                    placeholder={form.provider === "ZOOM" ? "Auto-generates if empty, or paste URL" : "https://..."}
+                    className={inputCls}
+                  />
+                  {zoomSuccess && (
+                    <p className="text-[11px] text-emerald-400 mt-1 font-medium">{zoomSuccess}</p>
+                  )}
                 </div>
               </div>
 

@@ -2262,3 +2262,25 @@ class AssignmentSubmissionViewSet(mixins.RetrieveModelMixin, viewsets.GenericVie
         feedback = request.data.get('feedback', '')
         return_for_revision(submission, request.user, feedback)
         return Response(AssignmentSubmissionSerializer(submission).data)
+
+
+class AdminZoomMeetingCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if not (user.is_superuser or user.is_staff or getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False)):
+            return Response({"error": "Only admins, teachers, and mentors can generate Zoom meetings."}, status=drf_status.HTTP_403_FORBIDDEN)
+
+        from courses.services.zoom import ZoomService
+
+        topic = request.data.get('topic') or "Natya Arts Live Session"
+        start_time = request.data.get('start_time')
+        duration = request.data.get('duration', 60)
+
+        try:
+            meeting_info = ZoomService.create_meeting(topic=topic, start_time_iso=start_time, duration_minutes=duration)
+            return Response(meeting_info, status=drf_status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response({"error": f"Zoom API Error: {str(e)}"}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
+
