@@ -142,9 +142,10 @@ class ZoomRecordingService:
 
         import tempfile
         tmp_path = None
+        s3_url = None
 
-        # Stream download into a temporary file to avoid partial/corrupt uploads
         try:
+            # Stream download into a temporary file to avoid partial/corrupt uploads
             with requests.get(target_url, headers=headers, stream=True, timeout=300) as res:
                 if res.status_code != 200:
                     logger.error(f"[ZoomRecording] Download failed with status {res.status_code}: {res.text[:200]}")
@@ -170,19 +171,17 @@ class ZoomRecordingService:
             with open(tmp_path, 'rb') as f:
                 s3_url = cls.upload_file_to_s3(f, s3_key, content_type='video/mp4')
 
+            if not s3_url:
+                logger.error(f"[ZoomRecording] Failed to upload recording to S3 for LiveClass #{live_class_id}.")
+                return None
+
             live_class.recording_url = s3_url
             live_class.recording_uploaded_at = timezone.now()
             if live_class.status != LiveClass.ClassStatus.COMPLETED:
                 live_class.status = LiveClass.ClassStatus.COMPLETED
             live_class.save(update_fields=['recording_url', 'recording_uploaded_at', 'status'])
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
 
-            # Automatically populate attendance for enrolled students
+            # Automatically populate attendance for enrolled students who did not attend as ABSENT (0 min)
             try:
                 from courses.models import Attendance, Enrollment
                 students = set()
@@ -200,8 +199,9 @@ class ZoomRecordingService:
                         live_class=live_class,
                         student=st,
                         defaults={
-                            'status': Attendance.Status.PRESENT,
-                            'notes': 'Automatically marked on session completion',
+                            'status': Attendance.Status.ABSENT,
+                            'duration_minutes': 0,
+                            'notes': 'Automatically marked ABSENT on session completion',
                             'marked_by': instructor
                         }
                     )
@@ -229,9 +229,16 @@ class ZoomRecordingService:
 
             logger.info(f"[ZoomRecording] Successfully saved recording for LiveClass #{live_class_id} to S3: {s3_url}")
             return s3_url
+
         except Exception as e:
             logger.exception(f"[ZoomRecording] Error streaming recording to S3 for LiveClass #{live_class_id}: {e}")
             return None
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
 
     @classmethod
     def handle_recording_completed_webhook(cls, payload):
@@ -290,45 +297,55 @@ class ZoomRecordingService:
         """
         Manually checks Zoom Cloud Recordings API for this LiveClass and transfers to S3.
         """
-        import re
-        mid_match = re.search(r'/(?:j|s)/(\d+)', f"{live_class.meeting_url} {live_class.host_url}")
-        if not mid_match:
-            return False, "Could not extract Zoom meeting ID from meeting URL."
+        try:
+            import re
+            mid_match = re.search(r'/(?:j|s)/(\d+)', f"{live_class.meeting_url or ''} {live_class.host_url or ''}")
+            if not mid_match:
+                return False, "Could not extract Zoom meeting ID from meeting URL."
 
-        meeting_id = mid_match.group(1)
-        token = ZoomService.get_access_token()
-        headers = {"Authorization": f"Bearer {token}"}
+            meeting_id = mid_match.group(1)
+            token = ZoomService.get_access_token()
+            headers = {"Authorization": f"Bearer {token}"}
 
-        url = f"https://api.zoom.us/v2/meetings/{meeting_id}/recordings"
-        res = requests.get(url, headers=headers, timeout=12)
+            url = f"https://api.zoom.us/v2/meetings/{meeting_id}/recordings"
+            res = requests.get(url, headers=headers, timeout=15)
 
-        if res.status_code == 404:
-            return False, "No cloud recording found on Zoom for this meeting yet. It may take a few minutes after the meeting ends to process."
-        elif res.status_code in (400, 401, 403):
-            err_data = {}
-            try:
-                err_data = res.json()
-            except Exception:
-                pass
-            if err_data.get('code') == 4711 or 'scope' in err_data.get('message', '').lower():
-                return False, "Zoom API token is missing 'recording:read:admin' scope. Please add 'Recording -> View all user recordings' in your Zoom App Marketplace app."
-            if err_data.get('code') == 3301 or 'in progress' in err_data.get('message', '').lower():
-                return False, "This meeting is currently still in progress. Please click 'End Meeting for All' in Zoom, then wait 1–2 minutes for Zoom to finish encoding the video."
-            return False, err_data.get('message', f'Zoom API error (HTTP {res.status_code}).')
-        elif res.status_code != 200:
-            return False, f"Zoom API returned status {res.status_code}"
+            if res.status_code == 404:
+                return False, "No cloud recording found on Zoom for this meeting yet. If the meeting just ended, please wait 1–2 minutes for Zoom to finish encoding."
+            elif res.status_code in (400, 401, 403):
+                err_data = {}
+                try:
+                    err_data = res.json()
+                except Exception:
+                    pass
+                if err_data.get('code') == 4711 or 'scope' in err_data.get('message', '').lower():
+                    return False, "Zoom API token is missing 'recording:read:admin' scope. Please add 'Recording -> View all user recordings' in your Zoom App Marketplace app."
+                if err_data.get('code') == 3301 or 'in progress' in err_data.get('message', '').lower():
+                    return False, "This meeting is currently still in progress. Please click 'End Meeting for All' in Zoom, then wait 1–2 minutes for Zoom to finish encoding the video."
+                return False, err_data.get('message', f'Zoom API error (HTTP {res.status_code}).')
+            elif res.status_code != 200:
+                return False, f"Zoom API returned status {res.status_code}"
 
-        data = res.json()
-        recording_files = data.get('recording_files', [])
-        mp4_file = next((f for f in recording_files if str(f.get('file_type', '')).upper() == 'MP4' and f.get('download_url')), None)
+            data = res.json()
+            recording_files = data.get('recording_files', [])
 
-        if not mp4_file:
-            return False, "Zoom returned recording metadata, but no MP4 video file was found."
+            # Check if files are still processing on Zoom side
+            processing = any(f.get('status') == 'processing' or not f.get('download_url') for f in recording_files if str(f.get('file_type', '')).upper() == 'MP4')
+            if processing:
+                return False, "Zoom is currently encoding the cloud recording. Please wait 1–2 minutes and click 'Sync to S3' again."
 
-        s3_url = cls.download_and_save_to_s3(live_class.id, mp4_file.get('download_url'))
-        if s3_url:
-            return True, s3_url
-        return False, "Failed to download recording and upload to S3."
+            mp4_file = next((f for f in recording_files if str(f.get('file_type', '')).upper() == 'MP4' and f.get('download_url')), None)
+
+            if not mp4_file:
+                return False, "Zoom returned recording metadata, but no MP4 video file is ready yet. Please wait 1–2 minutes."
+
+            s3_url = cls.download_and_save_to_s3(live_class.id, mp4_file.get('download_url'))
+            if s3_url:
+                return True, s3_url
+            return False, "Failed to download recording from Zoom and upload to AWS S3. Please verify AWS S3 bucket permissions."
+        except Exception as e:
+            logger.exception(f"Exception during sync_meeting_recordings for LiveClass #{getattr(live_class, 'id', 'unknown')}: {e}")
+            return False, f"Error syncing Zoom recording: {str(e)}"
 
     @classmethod
     def handle_participant_webhook(cls, payload, event_type):

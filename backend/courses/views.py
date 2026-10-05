@@ -1796,19 +1796,23 @@ class LiveClassViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='sync-recording')
     def sync_recording(self, request, pk=None):
-        live_class = self.get_object()
-        from courses.services.recording import ZoomRecordingService
-        success, result = ZoomRecordingService.sync_meeting_recordings(live_class)
-        if success:
-            live_class.refresh_from_db()
-            serializer = self.get_serializer(live_class)
-            return Response({
-                "message": "Zoom recording successfully downloaded and saved to AWS S3.",
-                "recording_url": result,
-                "data": serializer.data
-            }, status=drf_status.HTTP_200_OK)
-        else:
-            return Response({"error": result}, status=drf_status.HTTP_400_BAD_REQUEST)
+        try:
+            live_class = self.get_object()
+            from courses.services.recording import ZoomRecordingService
+            success, result = ZoomRecordingService.sync_meeting_recordings(live_class)
+            if success:
+                live_class.refresh_from_db()
+                serializer = self.get_serializer(live_class)
+                return Response({
+                    "message": "Zoom recording successfully downloaded and saved to AWS S3.",
+                    "recording_url": result,
+                    "data": serializer.data
+                }, status=drf_status.HTTP_200_OK)
+            else:
+                return Response({"error": result}, status=drf_status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception(f"Error syncing Zoom recording for LiveClass #{pk}: {e}")
+            return Response({"error": f"Failed to sync recording: {str(e)}"}, status=drf_status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['post'], url_path='upload-recording')
     def upload_recording(self, request, pk=None):
