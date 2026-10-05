@@ -200,7 +200,7 @@ export default function AdminLayout({
           </Link>
         </div>
         
-        <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto">
+        <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto custom-scrollbar">
           {sections.map((section) => (
             <div key={section.title}>
               <div className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3 px-3">{section.title}</div>
@@ -283,7 +283,7 @@ export default function AdminLayout({
         </header>
 
         {/* Scrollable Content */}
-        <main className="flex-1 overflow-y-auto p-8">
+        <main className="flex-1 overflow-y-auto p-8 custom-scrollbar">
           <div className="max-w-6xl mx-auto">
             {children}
           </div>
