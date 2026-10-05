@@ -52,9 +52,10 @@ class ZoomService:
             "settings": {
                 "host_video": True,
                 "participant_video": True,
-                "join_before_host": False,
+                "join_before_host": True,
+                "jbh_time": 0,
                 "mute_upon_entry": True,
-                "waiting_room": True
+                "waiting_room": False
             }
         }
         if start_time_iso:

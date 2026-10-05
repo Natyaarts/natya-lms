@@ -425,6 +425,7 @@ class LiveClassSerializer(serializers.ModelSerializer):
             'duration_minutes',
             'meeting_provider',
             'meeting_url',
+            'host_url',
             'status',
             'cancellation_reason',
             'recording_url',
@@ -593,6 +594,18 @@ class LiveClassSerializer(serializers.ModelSerializer):
                     ret['meeting_url'] = None
         else:
             ret['meeting_url'] = None
+
+        # Secure host_url: only superuser, staff, or the batch's instructor can see it
+        can_host = False
+        if request and request.user:
+            user = request.user
+            if user.is_superuser or user.is_staff:
+                can_host = True
+            elif getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False):
+                if instance.batch and instance.batch.instructor == user:
+                    can_host = True
+        if not can_host:
+            ret.pop('host_url', None)
 
         # Nest the recurrence rule (instead of a bare id) so the frontend can
         # render a "recurring series" badge without an extra request per class.

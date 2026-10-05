@@ -159,16 +159,16 @@ export default function StudentLiveClassesPage() {
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {(lc.status === "LIVE" || lc.status === "SCHEDULED") && lc.meeting_url && (
+                  {(lc.status === "LIVE" || lc.status === "SCHEDULED") && (lc.host_url || lc.meeting_url) && (
                     <a
-                      href={canJoin(lc) ? lc.meeting_url : undefined}
+                      href={canJoin(lc) ? (lc.host_url || lc.meeting_url) : undefined}
                       target="_blank"
                       rel="noopener noreferrer"
                       className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-colors ${
                         canJoin(lc) ? "bg-[#facc15] text-black hover:bg-yellow-400" : "bg-zinc-800 text-zinc-500 cursor-not-allowed pointer-events-none"
                       }`}
                     >
-                      <PlayCircle className="w-4 h-4" /> {lc.status === "LIVE" ? "Join Now" : "Join"}
+                      <PlayCircle className="w-4 h-4" /> {lc.status === "LIVE" ? (lc.host_url ? "Start as Host" : "Join Now") : (lc.host_url ? "Start Class" : "Join")}
                     </a>
                   )}
                   {lc.status === "COMPLETED" && lc.recording_url && (

@@ -1386,17 +1386,78 @@ class LiveClassViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         live_class = serializer.save()
+        if live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM and not live_class.meeting_url:
+            try:
+                from courses.services.zoom import ZoomService
+                z_res = ZoomService.create_meeting(
+                    topic=live_class.title or "Natya Arts Live Session",
+                    start_time_iso=live_class.scheduled_start.isoformat() if live_class.scheduled_start else None,
+                    duration_minutes=live_class.duration_minutes or 60
+                )
+                live_class.meeting_url = z_res.get('join_url', '')
+                live_class.host_url = z_res.get('start_url', '')
+                live_class.save(update_fields=['meeting_url', 'host_url'])
+            except Exception as e:
+                logger.error(f"Failed to auto-generate Zoom meeting on backend: {e}")
         self._dispatch_scheduled_notifications(live_class)
+
+    @action(detail=True, methods=['post'], url_path='generate-zoom')
+    def generate_zoom(self, request, pk=None):
+        live_class = self.get_object()
+        from courses.services.zoom import ZoomService
+        try:
+            z_res = ZoomService.create_meeting(
+                topic=live_class.title or "Natya Arts Live Session",
+                start_time_iso=live_class.scheduled_start.isoformat() if live_class.scheduled_start else None,
+                duration_minutes=live_class.duration_minutes or 60
+            )
+            live_class.meeting_url = z_res.get('join_url', '')
+            live_class.host_url = z_res.get('start_url', '')
+            live_class.meeting_provider = LiveClass.MeetingProvider.ZOOM
+            live_class.save(update_fields=['meeting_url', 'host_url', 'meeting_provider'])
+            serializer = self.get_serializer(live_class)
+            return Response(serializer.data)
+        except Exception as e:
+            return Response({"error": f"Zoom error: {str(e)}"}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=True, methods=['post'])
     def start(self, request, pk=None):
         live_class = self.get_object()
         if live_class.status != LiveClass.ClassStatus.SCHEDULED:
+            if live_class.status == LiveClass.ClassStatus.LIVE:
+                # If already LIVE and Zoom host_url missing, backfill it
+                if live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM and not live_class.host_url:
+                    try:
+                        from courses.services.zoom import ZoomService
+                        z_res = ZoomService.create_meeting(
+                            topic=live_class.title or "Natya Arts Live Session",
+                            start_time_iso=live_class.scheduled_start.isoformat() if live_class.scheduled_start else None,
+                            duration_minutes=live_class.duration_minutes or 60
+                        )
+                        live_class.meeting_url = z_res.get('join_url', '')
+                        live_class.host_url = z_res.get('start_url', '')
+                        live_class.save(update_fields=['meeting_url', 'host_url'])
+                    except Exception as e:
+                        logger.error(f"Failed to auto-generate Zoom host link: {e}")
+                serializer = self.get_serializer(live_class)
+                return Response(serializer.data)
             return Response(
                 {"error": f"Cannot transition to LIVE from {live_class.status}."},
-                status=status.HTTP_400_BAD_REQUEST
+                status=drf_status.HTTP_400_BAD_REQUEST
             )
         live_class.status = LiveClass.ClassStatus.LIVE
+        if live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM and not live_class.host_url:
+            try:
+                from courses.services.zoom import ZoomService
+                z_res = ZoomService.create_meeting(
+                    topic=live_class.title or "Natya Arts Live Session",
+                    start_time_iso=live_class.scheduled_start.isoformat() if live_class.scheduled_start else None,
+                    duration_minutes=live_class.duration_minutes or 60
+                )
+                live_class.meeting_url = z_res.get('join_url', '')
+                live_class.host_url = z_res.get('start_url', '')
+            except Exception as e:
+                logger.error(f"Failed to auto-generate Zoom host link: {e}")
         live_class.save()
         serializer = self.get_serializer(live_class)
         return Response(serializer.data)

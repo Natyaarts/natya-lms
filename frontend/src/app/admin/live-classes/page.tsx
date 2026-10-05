@@ -160,6 +160,7 @@ export default function LiveClassesPage() {
     durationMinutes: 60,
     provider: "ZOOM",
     meetingUrl: "",
+    hostUrl: "",
     recurrenceEnabled: false,
     frequency: "WEEKLY",
     weekdays: [] as number[],
@@ -298,7 +299,11 @@ export default function LiveClassesPage() {
       if (res.ok) {
         const data = await res.json();
         if (data.join_url) {
-          setForm((f) => ({ ...f, meetingUrl: data.join_url }));
+          setForm((f) => ({
+            ...f,
+            meetingUrl: data.join_url,
+            hostUrl: data.start_url || "",
+          }));
           setZoomSuccess(`✓ Meeting Created! ID: ${data.meeting_id} (Password: ${data.password || "Auto-set"})`);
           setTimeout(() => setZoomSuccess(""), 6000);
         }
@@ -394,6 +399,7 @@ export default function LiveClassesPage() {
 
       const scheduledStart = new Date(`${form.date}T${form.time}`).toISOString();
       let meetingUrl = form.meetingUrl;
+      let hostUrl = form.hostUrl;
       if (form.provider === "ZOOM" && !meetingUrl) {
         try {
           const zRes = await authedFetch("/api/courses/admin/zoom/create-meeting/", {
@@ -409,6 +415,7 @@ export default function LiveClassesPage() {
             const zData = await zRes.json();
             if (zData.join_url) {
               meetingUrl = zData.join_url;
+              hostUrl = zData.start_url || "";
             }
           }
         } catch (zErr) {
@@ -424,6 +431,7 @@ export default function LiveClassesPage() {
         duration_minutes: form.durationMinutes,
         meeting_provider: form.provider,
         meeting_url: meetingUrl,
+        host_url: hostUrl || form.hostUrl || "",
       };
       if (form.recurrenceEnabled && form.frequency !== "ONE_TIME") {
         payload.recurrence = {
@@ -458,11 +466,31 @@ export default function LiveClassesPage() {
 
   const startClass = async (lc: any) => {
     setBusyId(lc.id);
-    await authedFetch(`/api/courses/live-classes/${lc.id}/start/`, { method: "POST" });
+    const res = await authedFetch(`/api/courses/live-classes/${lc.id}/start/`, { method: "POST" });
+    const updated = res.ok ? await res.json().catch(() => null) : null;
     setBusyId(null);
     fetchClasses();
-    if (lc.meeting_url) {
-      window.open(lc.meeting_url, "_blank");
+    const hostLink = updated?.host_url || lc.host_url || updated?.meeting_url || lc.meeting_url;
+    if (hostLink) {
+      window.open(hostLink, "_blank");
+    }
+  };
+
+  const regenerateZoom = async (lc: any) => {
+    setBusyId(lc.id);
+    const res = await authedFetch(`/api/courses/live-classes/${lc.id}/generate-zoom/`, { method: "POST" });
+    setBusyId(null);
+    if (res.ok) {
+      const data = await res.json();
+      setBanner("Zoom host link generated successfully!");
+      fetchClasses();
+      const hostLink = data.host_url || data.meeting_url;
+      if (hostLink) {
+        window.open(hostLink, "_blank");
+      }
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert(err.error || "Failed to generate Zoom meeting.");
     }
   };
 
@@ -751,15 +779,39 @@ export default function LiveClassesPage() {
                     </td>
                     <td className="p-4">
                       <div className="flex items-center justify-end gap-1.5 flex-wrap">
-                        {lc.meeting_url && (
+                        {(lc.host_url || lc.meeting_url) && (
                           <a
-                            href={lc.meeting_url}
+                            href={lc.host_url || lc.meeting_url}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="px-2.5 py-1 rounded-lg bg-[#facc15]/10 text-[#facc15] border border-[#facc15]/20 hover:bg-[#facc15]/20 text-[10px] font-bold flex items-center gap-1"
+                            title={lc.host_url ? "Launch meeting directly with host privileges" : "Join meeting"}
                           >
-                            <ExternalLink className="w-3 h-3" /> Join {PROVIDER_LABEL[lc.meeting_provider] || "Zoom"}
+                            <ExternalLink className="w-3 h-3" /> {lc.host_url ? "Start as Host (Zoom)" : `Join ${PROVIDER_LABEL[lc.meeting_provider] || "Zoom"}`}
                           </a>
+                        )}
+                        {!lc.host_url && lc.meeting_provider === "ZOOM" && (
+                          <button
+                            disabled={busyId === lc.id}
+                            onClick={() => regenerateZoom(lc)}
+                            className="px-2.5 py-1 rounded-lg bg-[#facc15]/20 text-[#facc15] border border-[#facc15]/40 hover:bg-[#facc15]/30 text-[10px] font-bold disabled:opacity-50 flex items-center gap-1"
+                            title="Generate host link with ZAK token so you enter Zoom as host instead of waiting"
+                          >
+                            Get Host Link
+                          </button>
+                        )}
+                        {lc.meeting_url && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(lc.meeting_url);
+                              alert("Student join link copied to clipboard!");
+                            }}
+                            className="px-2 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-300 text-[10px] font-medium"
+                            title="Copy student join link"
+                          >
+                            Copy Link
+                          </button>
                         )}
                         {lc.status === "SCHEDULED" && (
                           <>

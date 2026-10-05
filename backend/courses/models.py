@@ -322,6 +322,7 @@ class LiveClass(models.Model):
         default=MeetingProvider.OTHER
     )
     meeting_url = models.URLField(max_length=1000)
+    host_url = models.TextField(blank=True, default='', help_text="Host start_url with ZAK token for instructor/admin to launch meeting as host.")
     status = models.CharField(
         max_length=20,
         choices=ClassStatus.choices,
