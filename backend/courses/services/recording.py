@@ -250,12 +250,15 @@ class ZoomRecordingService:
 
         if res.status_code == 404:
             return False, "No cloud recording found on Zoom for this meeting yet. It may take a few minutes after the meeting ends to process."
-        elif res.status_code == 400:
-            err_data = res.json()
-            # If scope is missing
-            if err_data.get('code') == 4711:
-                return False, "Zoom API token is missing 'cloud_recording:read' scope. Please add this scope in Zoom App Marketplace or wait for the automatic webhook."
-            return False, err_data.get('message', 'Zoom API error.')
+        elif res.status_code in (400, 401, 403):
+            err_data = {}
+            try:
+                err_data = res.json()
+            except Exception:
+                pass
+            if err_data.get('code') == 4711 or 'scope' in err_data.get('message', '').lower():
+                return False, "Zoom API token is missing 'recording:read:admin' scope. Please add 'Recording -> View all user recordings' in your Zoom App Marketplace app."
+            return False, err_data.get('message', f'Zoom API error (HTTP {res.status_code}).')
         elif res.status_code != 200:
             return False, f"Zoom API returned status {res.status_code}"
 
