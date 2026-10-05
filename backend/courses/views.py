@@ -1314,7 +1314,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                             pass
 
         for student in students:
-            Attendance.objects.get_or_create(
+            att, created = Attendance.objects.get_or_create(
                 live_class=live_class,
                 student=student,
                 defaults={
@@ -1324,6 +1324,13 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                     'marked_by': instructor
                 }
             )
+            # If student joined earlier and was PRESENT, but closed browser tab so heartbeat paused:
+            if not created and att.status in (Attendance.Status.PRESENT, Attendance.Status.LATE):
+                if att.duration_minutes <= 1 and att.joined_at:
+                    planned_duration = live_class.duration_minutes or 60
+                    elapsed = int((now - att.joined_at).total_seconds() / 60)
+                    att.duration_minutes = min(max(elapsed, 1), planned_duration)
+                    att.save(update_fields=['duration_minutes'])
 
     def _auto_complete_expired_classes(self):
         from datetime import timedelta
@@ -1952,8 +1959,13 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         user = request.user
         try:
             att = Attendance.objects.get(live_class=live_class, student=user)
-            att.left_at = timezone.now()
-            att.save(update_fields=['left_at'])
+            now = timezone.now()
+            att.left_at = now
+            if att.joined_at:
+                elapsed = int((now - att.joined_at).total_seconds() / 60)
+                planned_duration = (live_class.duration_minutes or 60) + 15
+                att.duration_minutes = min(max(elapsed, 1), planned_duration)
+            att.save(update_fields=['left_at', 'duration_minutes'])
             return Response({"status": "left", "duration_minutes": att.duration_minutes})
         except Attendance.DoesNotExist:
             return Response({"status": "not_joined"}, status=drf_status.HTTP_404_NOT_FOUND)
