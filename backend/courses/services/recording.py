@@ -67,6 +67,32 @@ class ZoomRecordingService:
             return f"{media_url.rstrip('/')}/{s3_key}"
 
     @classmethod
+    def generate_presigned_download_url(cls, s3_url, expires_in=86400):
+        """
+        Takes an S3 URL like https://bucket.s3.region.amazonaws.com/recordings/...
+        and generates a presigned GET URL so browser video players can stream it
+        even if the S3 bucket is private.
+        """
+        import re
+        bucket_name = getattr(settings, 'AWS_STORAGE_BUCKET_NAME', '') or os.environ.get('AWS_STORAGE_BUCKET_NAME', '')
+        if not bucket_name or not getattr(settings, 'AWS_ACCESS_KEY_ID', ''):
+            return s3_url
+        match = re.search(r'amazonaws\.com/(.+)$', s3_url)
+        if not match:
+            return s3_url
+        s3_key = match.group(1)
+        try:
+            s3_client = cls.get_s3_client()
+            return s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': bucket_name, 'Key': s3_key},
+                ExpiresIn=expires_in
+            )
+        except Exception as e:
+            logger.warning(f"[ZoomRecording] Failed to generate presigned download URL for {s3_key}: {e}")
+            return s3_url
+
+    @classmethod
     def validate_zoom_webhook_challenge(cls, plain_token):
         """
         Responds to Zoom's endpoint.url_validation challenge event using HMAC-SHA256.
@@ -102,31 +128,59 @@ class ZoomRecordingService:
         headers = {}
         target_url = download_url
 
-        if download_token:
-            separator = '&' if '?' in target_url else '?'
-            target_url = f"{target_url}{separator}access_token={download_token}"
-        else:
+        token = download_token
+        if not token:
             try:
-                oauth_token = ZoomService.get_access_token()
-                headers["Authorization"] = f"Bearer {oauth_token}"
+                token = ZoomService.get_access_token()
             except Exception as e:
                 logger.warning(f"[ZoomRecording] Could not get OAuth token for download: {e}")
 
-        # Stream the download from Zoom
+        if token:
+            separator = '&' if '?' in target_url else '?'
+            target_url = f"{target_url}{separator}access_token={token}"
+            headers["Authorization"] = f"Bearer {token}"
+
+        import tempfile
+        tmp_path = None
+
+        # Stream download into a temporary file to avoid partial/corrupt uploads
         try:
-            res = requests.get(target_url, headers=headers, stream=True, timeout=180)
-            if res.status_code != 200:
-                logger.error(f"[ZoomRecording] Download failed with status {res.status_code}: {res.text[:200]}")
+            with requests.get(target_url, headers=headers, stream=True, timeout=300) as res:
+                if res.status_code != 200:
+                    logger.error(f"[ZoomRecording] Download failed with status {res.status_code}: {res.text[:200]}")
+                    return None
+
+                content_type = res.headers.get('content-type', '').lower()
+                if 'html' in content_type:
+                    logger.error(f"[ZoomRecording] Received HTML response instead of video stream from Zoom.")
+                    return None
+
+                with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_file:
+                    tmp_path = tmp_file.name
+                    for chunk in res.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            tmp_file.write(chunk)
+
+            file_size = os.path.getsize(tmp_path)
+            if file_size < 1024:
+                logger.error(f"[ZoomRecording] Downloaded file is too small ({file_size} bytes). Not a valid video.")
                 return None
 
             s3_key = f"recordings/live-classes/{live_class.id}/recording_{uuid.uuid4().hex[:8]}.mp4"
-            s3_url = cls.upload_file_to_s3(res.raw, s3_key, content_type='video/mp4')
+            with open(tmp_path, 'rb') as f:
+                s3_url = cls.upload_file_to_s3(f, s3_key, content_type='video/mp4')
 
             live_class.recording_url = s3_url
             live_class.recording_uploaded_at = timezone.now()
             if live_class.status != LiveClass.ClassStatus.COMPLETED:
                 live_class.status = LiveClass.ClassStatus.COMPLETED
             live_class.save(update_fields=['recording_url', 'recording_uploaded_at', 'status'])
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
 
             # Automatically populate attendance for enrolled students
             try:

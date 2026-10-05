@@ -647,6 +647,16 @@ class LiveClassSerializer(serializers.ModelSerializer):
             ret['attendance_present_count'] = 0
             ret['attendance_avg_duration'] = 0
 
+        rec_url = ret.get('recording_url')
+        if rec_url and 'amazonaws.com' in rec_url and '?' not in rec_url:
+            try:
+                from courses.services.recording import ZoomRecordingService
+                presigned = ZoomRecordingService.generate_presigned_download_url(rec_url)
+                if presigned:
+                    ret['recording_url'] = presigned
+            except Exception:
+                pass
+
         return ret
 
 
