@@ -1176,6 +1176,8 @@ class IsSuperAdminOrAuthorizedTeacherOrReadOnly(permissions.BasePermission):
             return False
         if request.method in permissions.SAFE_METHODS:
             return True
+        if getattr(view, 'action', None) in ('join_class', 'heartbeat', 'leave_class'):
+            return True
         return (
             request.user.is_superuser or request.user.is_staff
             or getattr(request.user, 'is_teacher', False)
@@ -1186,6 +1188,16 @@ class IsSuperAdminOrAuthorizedTeacherOrReadOnly(permissions.BasePermission):
         # Admins have full access
         if request.user.is_superuser or request.user.is_staff:
             return True
+        # If student/user is joining/heartbeating/leaving
+        if getattr(view, 'action', None) in ('join_class', 'heartbeat', 'leave_class'):
+            from .models import LiveBatchStudent, Enrollment
+            if obj.batch and LiveBatchStudent.objects.filter(batch=obj.batch, student=request.user).exists():
+                return True
+            if obj.course and Enrollment.objects.filter(course=obj.course, student=request.user).exists():
+                return True
+            if getattr(request.user, 'is_teacher', False) or getattr(request.user, 'is_mentor', False):
+                return True
+            return False
         # If batch is NULL, students/teachers/mentors have NO access (legacy/orphaned isolation)
         if not obj.batch:
             return False
@@ -1306,8 +1318,9 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 live_class=live_class,
                 student=student,
                 defaults={
-                    'status': Attendance.Status.PRESENT,
-                    'notes': 'Automatically marked on session completion',
+                    'status': Attendance.Status.ABSENT,
+                    'duration_minutes': 0,
+                    'notes': 'Did not attend the session',
                     'marked_by': instructor
                 }
             )
@@ -1709,6 +1722,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 live_class=live_class, student=student,
                 defaults={
                     'status': serializer.validated_data.get('status', Attendance.Status.ABSENT),
+                    'duration_minutes': serializer.validated_data.get('duration_minutes', 0),
                     'marked_by': user,
                     'notes': serializer.validated_data.get('notes', ''),
                 }
@@ -1831,6 +1845,114 @@ class LiveClassViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(live_class)
         return Response(serializer.data, status=drf_status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='join')
+    def join_class(self, request, pk=None):
+        """
+        Invoked when a student clicks 'Join Class' or 'Join Now'.
+        Records their presence as PRESENT (or LATE) and records their joined_at timestamp.
+        """
+        live_class = self.get_object()
+        user = request.user
+
+        # If user is instructor or staff, allow joining without recording student attendance
+        if user.is_superuser or user.is_staff or (live_class.batch and live_class.batch.instructor == user) or live_class.instructor == user:
+            return Response({
+                "status": "host_or_staff",
+                "meeting_url": live_class.host_url or live_class.meeting_url
+            })
+
+        # Check if student is assigned to batch or enrolled in course
+        is_assigned = False
+        if live_class.batch and live_class.batch.students.filter(student=user).exists():
+            is_assigned = True
+        elif live_class.course and live_class.course.enrollments.filter(student=user).exists():
+            is_assigned = True
+            if live_class.batch:
+                try:
+                    from courses.models import LiveBatchStudent
+                    LiveBatchStudent.objects.get_or_create(batch=live_class.batch, student=user)
+                except Exception:
+                    pass
+
+        if not is_assigned:
+            return Response({"detail": "You are not enrolled in this live class."}, status=drf_status.HTTP_403_FORBIDDEN)
+
+        now = timezone.now()
+        is_late = False
+        if live_class.scheduled_start and now > live_class.scheduled_start + timezone.timedelta(minutes=15):
+            is_late = True
+
+        status_val = Attendance.Status.LATE if is_late else Attendance.Status.PRESENT
+        instructor = live_class.instructor or (live_class.batch.instructor if live_class.batch else None)
+
+        att, created = Attendance.objects.get_or_create(
+            live_class=live_class,
+            student=user,
+            defaults={
+                'status': status_val,
+                'joined_at': now,
+                'duration_minutes': 1,
+                'notes': f"Joined session at {now.strftime('%H:%M')}",
+                'marked_by': instructor
+            }
+        )
+        if not created:
+            if not att.joined_at:
+                att.joined_at = now
+            if att.status == Attendance.Status.ABSENT:
+                att.status = status_val
+            if att.duration_minutes == 0:
+                att.duration_minutes = 1
+            att.save(update_fields=['joined_at', 'status', 'duration_minutes'])
+
+        return Response({
+            "status": "joined",
+            "attendance_status": att.status,
+            "duration_minutes": att.duration_minutes,
+            "joined_at": att.joined_at,
+            "meeting_url": live_class.meeting_url
+        }, status=drf_status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='heartbeat')
+    def heartbeat(self, request, pk=None):
+        """
+        Called periodically (e.g. every 60s) by student client while attending the live class.
+        Increments attended duration_minutes and updates left_at.
+        """
+        live_class = self.get_object()
+        user = request.user
+        try:
+            att = Attendance.objects.get(live_class=live_class, student=user)
+        except Attendance.DoesNotExist:
+            return Response({"status": "not_joined"}, status=drf_status.HTTP_404_NOT_FOUND)
+
+        now = timezone.now()
+        att.left_at = now
+        max_allowed_duration = (live_class.duration_minutes or 60) + 30
+        if att.duration_minutes < max_allowed_duration:
+            att.duration_minutes += 1
+        if att.status == Attendance.Status.ABSENT:
+            att.status = Attendance.Status.PRESENT
+        att.save(update_fields=['duration_minutes', 'left_at', 'status'])
+
+        return Response({
+            "status": "active",
+            "duration_minutes": att.duration_minutes,
+            "attendance_status": att.status
+        }, status=drf_status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='leave')
+    def leave_class(self, request, pk=None):
+        live_class = self.get_object()
+        user = request.user
+        try:
+            att = Attendance.objects.get(live_class=live_class, student=user)
+            att.left_at = timezone.now()
+            att.save(update_fields=['left_at'])
+            return Response({"status": "left", "duration_minutes": att.duration_minutes})
+        except Attendance.DoesNotExist:
+            return Response({"status": "not_joined"}, status=drf_status.HTTP_404_NOT_FOUND)
 
 
 class IsSuperAdminOrStaffOrReadOnlyBatches(permissions.BasePermission):
@@ -2495,6 +2617,12 @@ class ZoomWebhookView(APIView):
         if event == 'recording.completed':
             payload = request.data.get('payload', {})
             success = ZoomRecordingService.handle_recording_completed_webhook(payload)
+            return Response({"status": "received", "handled": success}, status=drf_status.HTTP_200_OK)
+
+        # 3. Participant joined / left events
+        if event in ('meeting.participant_joined', 'meeting.participant_left'):
+            payload = request.data.get('payload', {})
+            success = ZoomRecordingService.handle_participant_webhook(payload, event)
             return Response({"status": "received", "handled": success}, status=drf_status.HTTP_200_OK)
 
         return Response({"status": "ignored"}, status=drf_status.HTTP_200_OK)

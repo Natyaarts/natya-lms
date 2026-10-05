@@ -2829,23 +2829,61 @@ class Phase2AttendanceTests(APITestCase):
         )
         self.assertEqual(Attendance.objects.filter(live_class=lc).count(), 0)
 
-        # GET attendance by instructor auto-populates all batch students as PRESENT
+        # GET attendance by instructor auto-populates all batch students as ABSENT by default
         self.client.force_authenticate(user=self.teacher)
         url = reverse('live-class-attendance', args=[lc.id])
         res = self.client.get(url)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(len(res.data), 2)
-        self.assertTrue(all(r['status'] == 'PRESENT' for r in res.data))
+        self.assertTrue(all(r['status'] == 'ABSENT' for r in res.data))
+        self.assertTrue(all(r['duration_minutes'] == 0 for r in res.data))
         self.assertEqual(Attendance.objects.filter(live_class=lc).count(), 2)
 
-        # Serializer representation includes counts and titles
+        # Serializer representation includes counts and average duration (0 when none present)
         detail_url = reverse('live-class-detail', args=[lc.id])
         d_res = self.client.get(detail_url)
         self.assertEqual(d_res.status_code, status.HTTP_200_OK)
-        self.assertEqual(d_res.data['attendance_present_count'], 2)
+        self.assertEqual(d_res.data['attendance_present_count'], 0)
         self.assertEqual(d_res.data['attendance_total_count'], 2)
+        self.assertEqual(d_res.data['attendance_avg_duration'], 0)
         self.assertEqual(d_res.data['course_title'], self.course.title)
         self.assertIn("Batch", d_res.data['batch_name'])
+
+    def test_student_join_heartbeat_and_duration_tracking(self):
+        # Student joins a live class
+        self.client.force_authenticate(user=self.student1)
+        join_url = reverse('live-class-join-class', args=[self.live_class.id])
+        res = self.client.post(join_url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['status'], 'joined')
+        self.assertEqual(res.data['attendance_status'], 'PRESENT')
+        self.assertGreaterEqual(res.data['duration_minutes'], 1)
+
+        att = Attendance.objects.get(live_class=self.live_class, student=self.student1)
+        self.assertEqual(att.status, 'PRESENT')
+        self.assertIsNotNone(att.joined_at)
+        initial_duration = att.duration_minutes
+
+        # Heartbeat increments duration
+        hb_url = reverse('live-class-heartbeat', args=[self.live_class.id])
+        hb_res = self.client.post(hb_url)
+        self.assertEqual(hb_res.status_code, status.HTTP_200_OK)
+        att.refresh_from_db()
+        self.assertEqual(att.duration_minutes, initial_duration + 1)
+
+        # Instructor updates attendance with specific duration
+        self.client.force_authenticate(user=self.teacher)
+        att_url = reverse('live-class-attendance', args=[self.live_class.id])
+        self.client.post(att_url, [
+            {"student": self.student1.id, "status": "PRESENT", "duration_minutes": 55},
+            {"student": self.student2.id, "status": "ABSENT", "duration_minutes": 0},
+        ], format='json')
+
+        # Check detail serializer computes correct counts and avg duration
+        detail_url = reverse('live-class-detail', args=[self.live_class.id])
+        d_res = self.client.get(detail_url)
+        self.assertEqual(d_res.data['attendance_present_count'], 1)
+        self.assertEqual(d_res.data['attendance_avg_duration'], 55)
 
 
 class Phase2RecordingTests(APITransactionTestCase):

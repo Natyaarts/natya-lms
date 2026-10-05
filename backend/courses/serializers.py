@@ -636,13 +636,16 @@ class LiveClassSerializer(serializers.ModelSerializer):
         try:
             records = list(instance.attendance_records.all())
             total_recs = len(records)
-            present_recs = sum(1 for r in records if r.status == 'PRESENT')
+            present_recs = sum(1 for r in records if r.status in ('PRESENT', 'LATE'))
+            total_duration = sum(getattr(r, 'duration_minutes', 0) for r in records)
             batch_count = instance.batch.students.count() if instance.batch else 0
             ret['attendance_total_count'] = total_recs if total_recs > 0 else batch_count
             ret['attendance_present_count'] = present_recs
+            ret['attendance_avg_duration'] = round(total_duration / present_recs) if present_recs > 0 else 0
         except Exception:
             ret['attendance_total_count'] = 0
             ret['attendance_present_count'] = 0
+            ret['attendance_avg_duration'] = 0
 
         return ret
 
@@ -745,8 +748,8 @@ class AttendanceSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Attendance
-        fields = ['id', 'live_class', 'student', 'student_name', 'status', 'marked_by', 'marked_at', 'notes']
-        read_only_fields = ['id', 'live_class', 'marked_by', 'marked_at']
+        fields = ['id', 'live_class', 'student', 'student_name', 'status', 'duration_minutes', 'joined_at', 'left_at', 'marked_by', 'marked_at', 'notes']
+        read_only_fields = ['id', 'live_class', 'marked_by', 'marked_at', 'joined_at', 'left_at']
 
     def get_student_name(self, obj):
         name = f"{obj.student.first_name} {obj.student.last_name}".strip()

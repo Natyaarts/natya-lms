@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { Video, Calendar as CalendarIcon, List as ListIcon, ExternalLink, PlayCircle, CheckCircle2, Play, Film, X, Copy } from "lucide-react";
+import { Video, Calendar as CalendarIcon, List as ListIcon, ExternalLink, PlayCircle, CheckCircle2, Play, Film, X, Copy, Clock } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
 
@@ -28,8 +28,9 @@ export default function StudentLiveClassesPage() {
   const [calendarClasses, setCalendarClasses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [attendanceById, setAttendanceById] = useState<Record<number, string>>({});
+  const [attendanceById, setAttendanceById] = useState<Record<number, { status: string; duration_minutes: number }>>({});
   const [watchTarget, setWatchTarget] = useState<any>(null);
+  const activeHeartbeats = useRef<Record<number, NodeJS.Timeout>>({});
 
   const authedFetch = (path: string, init?: RequestInit) =>
     fetch(`${API}${path}`, { credentials: "include", ...init });
@@ -55,7 +56,15 @@ export default function StudentLiveClassesPage() {
               const aRes = await authedFetch(`/api/courses/live-classes/${lc.id}/attendance/`);
               if (aRes.ok) {
                 const records = await aRes.json();
-                if (records[0]) setAttendanceById((prev) => ({ ...prev, [lc.id]: records[0].status }));
+                if (records[0]) {
+                  setAttendanceById((prev) => ({
+                    ...prev,
+                    [lc.id]: {
+                      status: records[0].status,
+                      duration_minutes: records[0].duration_minutes ?? 0,
+                    },
+                  }));
+                }
               }
             } catch (e) {
               // ignore
@@ -102,6 +111,45 @@ export default function StudentLiveClassesPage() {
     const start = new Date(lc.scheduled_start).getTime();
     return Date.now() >= start - 10 * 60 * 1000; // joinable 10 min before start
   };
+
+  const handleJoinClass = async (lc: any) => {
+    try {
+      const res = await authedFetch(`/api/courses/live-classes/${lc.id}/join/`, {
+        method: "POST",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (!activeHeartbeats.current[lc.id]) {
+          activeHeartbeats.current[lc.id] = setInterval(async () => {
+            try {
+              await authedFetch(`/api/courses/live-classes/${lc.id}/heartbeat/`, {
+                method: "POST",
+              });
+            } catch (err) {
+              console.error("Heartbeat error", err);
+            }
+          }, 60000);
+        }
+        const targetUrl = data.meeting_url || lc.host_url || lc.meeting_url;
+        if (targetUrl) {
+          window.open(targetUrl, "_blank", "noopener,noreferrer");
+          return;
+        }
+      }
+    } catch (e) {
+      console.error("Join tracking error", e);
+    }
+    const fallbackUrl = lc.host_url || lc.meeting_url;
+    if (fallbackUrl) {
+      window.open(fallbackUrl, "_blank", "noopener,noreferrer");
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      Object.values(activeHeartbeats.current).forEach(clearInterval);
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-black text-white font-sans pb-24">
@@ -158,14 +206,22 @@ export default function StudentLiveClassesPage() {
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
                     <h3 className="font-bold text-white text-base">{lc.title}</h3>
                     <span className={`px-2 py-0.5 text-[10px] font-bold rounded ${STATUS_STYLE[lc.status] || ""}`}>{lc.status}</span>
-                    {tab === "completed" && (
-                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded flex items-center gap-1 ${
-                        attendanceById[lc.id] === "ABSENT"
-                          ? "bg-red-500/10 text-red-400 border border-red-500/20"
-                          : "bg-green-500/10 text-green-400 border border-green-500/20"
-                      }`}>
-                        <CheckCircle2 className="w-3 h-3" /> Attendance: {attendanceById[lc.id] || "PRESENT"}
-                      </span>
+                    {tab === "completed" && attendanceById[lc.id] && (
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className={`px-2 py-0.5 text-[10px] font-bold rounded flex items-center gap-1 ${
+                          attendanceById[lc.id].status === "ABSENT"
+                            ? "bg-red-500/10 text-red-400 border border-red-500/20"
+                            : "bg-green-500/10 text-green-400 border border-green-500/20"
+                        }`}>
+                          <CheckCircle2 className="w-3 h-3" /> Attendance: {attendanceById[lc.id].status === "ABSENT" ? "Absent" : "Present"}
+                        </span>
+                        {attendanceById[lc.id].status !== "ABSENT" && (
+                          <span className="px-2 py-0.5 text-[10px] font-medium rounded bg-zinc-800 text-zinc-300 border border-white/10 flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-yellow-400" />
+                            Attended: {attendanceById[lc.id].duration_minutes || 0} min
+                          </span>
+                        )}
+                      </div>
                     )}
                     {lc.recording_url && (
                       <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
@@ -187,16 +243,16 @@ export default function StudentLiveClassesPage() {
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {(lc.status === "LIVE" || lc.status === "SCHEDULED") && (lc.host_url || lc.meeting_url) && (
-                    <a
-                      href={canJoin(lc) ? (lc.host_url || lc.meeting_url) : undefined}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      type="button"
+                      disabled={!canJoin(lc)}
+                      onClick={() => handleJoinClass(lc)}
                       className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-colors ${
-                        canJoin(lc) ? "bg-[#facc15] text-black hover:bg-yellow-400" : "bg-zinc-800 text-zinc-500 cursor-not-allowed pointer-events-none"
+                        canJoin(lc) ? "bg-[#facc15] text-black hover:bg-yellow-400 shadow-sm cursor-pointer" : "bg-zinc-800 text-zinc-500 cursor-not-allowed"
                       }`}
                     >
                       <PlayCircle className="w-4 h-4" /> {lc.status === "LIVE" ? (lc.host_url ? "Start as Host" : "Join Now") : (lc.host_url ? "Start Class" : "Join")}
-                    </a>
+                    </button>
                   )}
                   {lc.status === "COMPLETED" && lc.recording_url && (
                     <button

@@ -35,6 +35,22 @@ export default function LiveClassesScreen({ navigation }: any) {
   useEffect(() => { fetchClasses(); }, []);
   const onRefresh = useCallback(() => { setRefreshing(true); fetchClasses(); }, []);
 
+  const handleJoin = async (item: any) => {
+    try {
+      const res = await client.post(`courses/live-classes/${item.id}/join/`);
+      const targetUrl = res.data?.meeting_url || item.meeting_url;
+      if (targetUrl) {
+        Linking.openURL(targetUrl);
+        return;
+      }
+    } catch (err) {
+      // fallback to regular meeting link
+    }
+    if (item.meeting_url) {
+      Linking.openURL(item.meeting_url);
+    }
+  };
+
   const renderItem = ({ item }: { item: any }) => {
     const meta = statusMeta(item.status);
     const scheduled = new Date(item.scheduled_start);
@@ -46,12 +62,12 @@ export default function LiveClassesScreen({ navigation }: any) {
         </View>
         <Text style={styles.datetime}>{scheduled.toLocaleString()} · {item.duration_minutes} min</Text>
         {item.status === 'LIVE' && !!item.meeting_url && (
-          <TouchableOpacity style={styles.joinButton} onPress={() => Linking.openURL(item.meeting_url)}>
+          <TouchableOpacity style={styles.joinButton} onPress={() => handleJoin(item)}>
             <Text style={styles.joinButtonText}>Join Now</Text>
           </TouchableOpacity>
         )}
         {item.status === 'SCHEDULED' && !!item.meeting_url && (
-          <TouchableOpacity style={styles.joinButtonSecondary} onPress={() => Linking.openURL(item.meeting_url)}>
+          <TouchableOpacity style={styles.joinButtonSecondary} onPress={() => handleJoin(item)}>
             <Text style={styles.joinButtonSecondaryText}>Open Meeting Link</Text>
           </TouchableOpacity>
         )}

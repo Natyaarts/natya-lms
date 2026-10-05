@@ -517,6 +517,9 @@ class Attendance(models.Model):
     live_class = models.ForeignKey(LiveClass, related_name='attendance_records', on_delete=models.CASCADE, db_index=True)
     student = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='live_class_attendance', on_delete=models.CASCADE, db_index=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ABSENT)
+    duration_minutes = models.PositiveIntegerField(default=0, help_text="Total minutes the student was present in this session")
+    joined_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when student joined the session")
+    left_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when student left the session")
     marked_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='attendance_marked')
     marked_at = models.DateTimeField(auto_now=True)
     notes = models.TextField(blank=True)
@@ -527,7 +530,7 @@ class Attendance(models.Model):
         verbose_name_plural = "Attendance Records"
 
     def __str__(self):
-        return f"{self.student.username} - {self.live_class.title} ({self.status})"
+        return f"{self.student.username} - {self.live_class.title} ({self.status} - {self.duration_minutes}m)"
 
 
 # =============================================================================

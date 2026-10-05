@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Video, Plus, X, Repeat, Users as UsersIcon, Calendar as CalendarIcon, List as ListIcon, ExternalLink, Trash2, Play, Film, Upload, RefreshCw, Copy, CheckCircle2 } from "lucide-react";
+import { Video, Plus, X, Repeat, Users as UsersIcon, Calendar as CalendarIcon, List as ListIcon, ExternalLink, Trash2, Play, Film, Upload, RefreshCw, Copy, CheckCircle2, Clock } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
 
@@ -583,9 +583,11 @@ export default function LiveClassesPage() {
   const [attendanceTarget, setAttendanceTarget] = useState<any>(null);
   const [attendanceRoster, setAttendanceRoster] = useState<any[]>([]);
   const [attendanceRecords, setAttendanceRecords] = useState<Record<number, string>>({});
+  const [attendanceDurations, setAttendanceDurations] = useState<Record<number, number>>({});
   const openAttendance = async (lc: any) => {
     setAttendanceTarget(lc);
     setAttendanceRecords({});
+    setAttendanceDurations({});
     let roster: any[] = [];
     if (lc.batch) {
       const res = await authedFetch(`/api/courses/live-batches/${lc.batch}/students/?page_size=200`);
@@ -598,9 +600,11 @@ export default function LiveClassesPage() {
     if (aRes.ok) {
       const existing = await aRes.json();
       const map: Record<number, string> = {};
+      const durMap: Record<number, number> = {};
       const rosterIds = new Set(roster.map((r: any) => r.student));
       for (const rec of existing) {
         map[rec.student] = rec.status;
+        durMap[rec.student] = rec.duration_minutes ?? 0;
         if (!rosterIds.has(rec.student)) {
           roster.push({
             id: rec.id,
@@ -611,10 +615,12 @@ export default function LiveClassesPage() {
       }
       for (const s of roster) {
         if (!map[s.student]) {
-          map[s.student] = "PRESENT";
+          map[s.student] = "ABSENT";
+          durMap[s.student] = 0;
         }
       }
       setAttendanceRecords(map);
+      setAttendanceDurations(durMap);
     }
     setAttendanceRoster(roster);
   };
@@ -622,7 +628,8 @@ export default function LiveClassesPage() {
     if (!attendanceTarget) return;
     const records = attendanceRoster.map((s) => ({
       student: s.student,
-      status: attendanceRecords[s.student] || "PRESENT",
+      status: attendanceRecords[s.student] || "ABSENT",
+      duration_minutes: Number(attendanceDurations[s.student] || 0),
     }));
     const res = await authedFetch(`/api/courses/live-classes/${attendanceTarget.id}/attendance/`, {
       method: "POST",
@@ -877,7 +884,7 @@ export default function LiveClassesPage() {
                     <td className="p-4 text-center">
                       <span className={`px-2 py-0.5 text-[10px] font-bold rounded ${STATUS_STYLE[lc.status] || ""}`}>{lc.status}</span>
                       {(lc.status === "COMPLETED" || (lc.attendance_total_count && lc.attendance_total_count > 0)) && (
-                        <div className="mt-1.5 flex justify-center">
+                        <div className="mt-1.5 flex flex-col items-center">
                           <button
                             type="button"
                             onClick={() => openAttendance(lc)}
@@ -887,6 +894,12 @@ export default function LiveClassesPage() {
                             <UsersIcon className="w-2.5 h-2.5" />
                             {lc.attendance_present_count ?? 0}/{lc.attendance_total_count || 1} Present
                           </button>
+                          {lc.attendance_avg_duration > 0 && (
+                            <span className="text-[10px] text-zinc-400 mt-0.5 flex items-center gap-1">
+                              <Clock className="w-2.5 h-2.5 text-yellow-400/80" />
+                              Avg {lc.attendance_avg_duration} min
+                            </span>
+                          )}
                         </div>
                       )}
                     </td>
@@ -1305,19 +1318,32 @@ export default function LiveClassesPage() {
       <AnimatePresence>
         {attendanceTarget && (
           <Modal title={`Attendance -- ${attendanceTarget.title}`} onClose={() => setAttendanceTarget(null)} wide>
-            <div className="space-y-3">
+            <div className="space-y-4">
               {attendanceRoster.length > 0 && (
-                <div className="flex items-center justify-between pb-2 border-b border-white/5">
-                  <span className="text-xs text-zinc-400">
-                    {attendanceRoster.length} Student{attendanceRoster.length !== 1 ? "s" : ""}
-                  </span>
+                <div className="flex items-center justify-between pb-3 border-b border-white/5 flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-zinc-400">
+                      {attendanceRoster.length} Student{attendanceRoster.length !== 1 ? "s" : ""}
+                    </span>
+                    <span className="text-zinc-600">·</span>
+                    <span className="text-xs text-zinc-400 flex items-center gap-1">
+                      <Clock className="w-3 h-3 text-yellow-400" />
+                      Class Duration: {attendanceTarget.duration_minutes || 60} min
+                    </span>
+                  </div>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => {
                         const all: Record<number, string> = {};
-                        for (const s of attendanceRoster) all[s.student] = "PRESENT";
+                        const allDur: Record<number, number> = {};
+                        const defDur = attendanceTarget.duration_minutes || 60;
+                        for (const s of attendanceRoster) {
+                          all[s.student] = "PRESENT";
+                          allDur[s.student] = defDur;
+                        }
                         setAttendanceRecords(all);
+                        setAttendanceDurations(allDur);
                       }}
                       className="px-2.5 py-1 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 text-[10px] font-bold transition-colors"
                     >
@@ -1327,8 +1353,13 @@ export default function LiveClassesPage() {
                       type="button"
                       onClick={() => {
                         const all: Record<number, string> = {};
-                        for (const s of attendanceRoster) all[s.student] = "ABSENT";
+                        const allDur: Record<number, number> = {};
+                        for (const s of attendanceRoster) {
+                          all[s.student] = "ABSENT";
+                          allDur[s.student] = 0;
+                        }
                         setAttendanceRecords(all);
+                        setAttendanceDurations(allDur);
                       }}
                       className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold transition-colors"
                     >
@@ -1338,26 +1369,93 @@ export default function LiveClassesPage() {
                 </div>
               )}
               {attendanceRoster.length === 0 ? (
-                <p className="text-zinc-500 text-sm">No students assigned to this batch.</p>
-              ) : attendanceRoster.map((s: any) => (
-                <div key={s.id} className="flex items-center justify-between bg-black border border-white/10 rounded-xl p-3">
-                  <span className="text-sm text-white">{s.student_username}</span>
-                  <div className="flex gap-1.5">
-                    {["PRESENT", "LATE", "ABSENT", "EXCUSED"].map((st) => (
-                      <button
-                        key={st}
-                        onClick={() => setAttendanceRecords((r) => ({ ...r, [s.student]: st }))}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors ${
-                          attendanceRecords[s.student] === st ? "bg-[#facc15] text-black" : "bg-zinc-950 border border-white/10 text-zinc-400"
-                        }`}
+                <p className="text-zinc-500 text-sm py-4 text-center">No students assigned to this batch.</p>
+              ) : (
+                <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
+                  {attendanceRoster.map((s: any) => {
+                    const currentStatus = attendanceRecords[s.student] || "ABSENT";
+                    const isPresent = currentStatus === "PRESENT" || currentStatus === "LATE";
+                    return (
+                      <div
+                        key={s.id || s.student}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-black border border-white/10 rounded-xl p-3.5 hover:border-white/20 transition-colors"
                       >
-                        {st}
-                      </button>
-                    ))}
-                  </div>
+                        <div>
+                          <span className="text-sm font-medium text-white block">{s.student_username}</span>
+                          <span className="text-[11px] text-zinc-500">
+                            {isPresent ? (
+                              <span className="text-emerald-400 font-medium">Attended session</span>
+                            ) : (
+                              <span className="text-zinc-500">Not attended (Absent)</span>
+                            )}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3 flex-wrap">
+                          {/* Duration input */}
+                          <div className="flex items-center gap-1.5 bg-zinc-900 border border-white/10 rounded-lg px-2.5 py-1" title="Duration student spent in class">
+                            <Clock className="w-3.5 h-3.5 text-zinc-400" />
+                            <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">Duration:</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="600"
+                              value={attendanceDurations[s.student] ?? 0}
+                              onChange={(e) => {
+                                const val = Math.max(0, parseInt(e.target.value) || 0);
+                                setAttendanceDurations((d) => ({ ...d, [s.student]: val }));
+                                if (val > 0 && currentStatus === "ABSENT") {
+                                  setAttendanceRecords((r) => ({ ...r, [s.student]: "PRESENT" }));
+                                } else if (val === 0 && currentStatus === "PRESENT") {
+                                  setAttendanceRecords((r) => ({ ...r, [s.student]: "ABSENT" }));
+                                }
+                              }}
+                              className="w-12 bg-transparent text-xs text-white text-right focus:outline-none font-mono"
+                            />
+                            <span className="text-[11px] text-zinc-400">min</span>
+                          </div>
+
+                          {/* Status Buttons */}
+                          <div className="flex gap-1">
+                            {["PRESENT", "LATE", "ABSENT", "EXCUSED"].map((st) => (
+                              <button
+                                key={st}
+                                type="button"
+                                onClick={() => {
+                                  setAttendanceRecords((r) => ({ ...r, [s.student]: st }));
+                                  if (st === "PRESENT" || st === "LATE") {
+                                    if (!attendanceDurations[s.student] || attendanceDurations[s.student] === 0) {
+                                      setAttendanceDurations((d) => ({
+                                        ...d,
+                                        [s.student]: attendanceTarget.duration_minutes || 60,
+                                      }));
+                                    }
+                                  } else if (st === "ABSENT") {
+                                    setAttendanceDurations((d) => ({ ...d, [s.student]: 0 }));
+                                  }
+                                }}
+                                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors ${
+                                  attendanceRecords[s.student] === st
+                                    ? st === "PRESENT"
+                                      ? "bg-green-500 text-black shadow-sm"
+                                      : st === "LATE"
+                                      ? "bg-yellow-400 text-black shadow-sm"
+                                      : st === "ABSENT"
+                                      ? "bg-red-500 text-white shadow-sm"
+                                      : "bg-blue-500 text-white shadow-sm"
+                                    : "bg-zinc-950 border border-white/10 text-zinc-400 hover:text-white"
+                                }`}
+                              >
+                                {st}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
-              <div className="flex justify-end gap-3 pt-2">
+              )}
+              <div className="flex justify-end gap-3 pt-3 border-t border-white/5">
                 <button onClick={() => setAttendanceTarget(null)} className={btnGhost}>Close</button>
                 {attendanceRoster.length > 0 && <button onClick={submitAttendance} className={btnPrimary}>Save Attendance</button>}
               </div>

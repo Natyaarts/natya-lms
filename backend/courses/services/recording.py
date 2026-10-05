@@ -270,3 +270,64 @@ class ZoomRecordingService:
         if s3_url:
             return True, s3_url
         return False, "Failed to download recording and upload to S3."
+
+    @classmethod
+    def handle_participant_webhook(cls, payload, event_type):
+        """
+        Processes 'meeting.participant_joined' and 'meeting.participant_left' webhooks from Zoom.
+        Finds matching LiveClass and student, marking them PRESENT and recording duration.
+        """
+        from courses.models import LiveClass, Attendance
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+
+        meeting_obj = payload.get('object', {})
+        meeting_id = str(meeting_obj.get('id') or '')
+        participant = meeting_obj.get('participant', {})
+        email = participant.get('email') or participant.get('user_email', '')
+        user_name = participant.get('user_name', '')
+        duration_sec = participant.get('duration', 0)
+
+        if not meeting_id:
+            return False
+
+        live_class = LiveClass.objects.filter(meeting_url__icontains=meeting_id).first()
+        if not live_class:
+            live_class = LiveClass.objects.filter(host_url__icontains=meeting_id).first()
+        if not live_class:
+            return False
+
+        student = None
+        if email:
+            student = User.objects.filter(email__iexact=email).first()
+        if not student and user_name:
+            student = User.objects.filter(username__iexact=user_name).first()
+        if not student:
+            return False
+
+        if student.is_staff or student.is_superuser or (live_class.batch and live_class.batch.instructor == student):
+            return True
+
+        instructor = live_class.instructor or (live_class.batch.instructor if live_class.batch else None)
+        duration_min = max(int(duration_sec) // 60, 1) if duration_sec else 1
+        now = timezone.now()
+
+        att, created = Attendance.objects.get_or_create(
+            live_class=live_class,
+            student=student,
+            defaults={
+                'status': Attendance.Status.PRESENT,
+                'duration_minutes': duration_min,
+                'joined_at': now,
+                'marked_by': instructor,
+                'notes': f"Recorded via Zoom {event_type}",
+            }
+        )
+        if not created:
+            att.status = Attendance.Status.PRESENT
+            if duration_min > att.duration_minutes:
+                att.duration_minutes = duration_min
+            if event_type == 'meeting.participant_left':
+                att.left_at = now
+            att.save(update_fields=['status', 'duration_minutes', 'left_at'])
+        return True
