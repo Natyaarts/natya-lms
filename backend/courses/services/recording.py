@@ -312,6 +312,8 @@ class ZoomRecordingService:
                 pass
             if err_data.get('code') == 4711 or 'scope' in err_data.get('message', '').lower():
                 return False, "Zoom API token is missing 'recording:read:admin' scope. Please add 'Recording -> View all user recordings' in your Zoom App Marketplace app."
+            if err_data.get('code') == 3301 or 'in progress' in err_data.get('message', '').lower():
+                return False, "This meeting is currently still in progress. Please click 'End Meeting for All' in Zoom, then wait 1–2 minutes for Zoom to finish encoding the video."
             return False, err_data.get('message', f'Zoom API error (HTTP {res.status_code}).')
         elif res.status_code != 200:
             return False, f"Zoom API returned status {res.status_code}"

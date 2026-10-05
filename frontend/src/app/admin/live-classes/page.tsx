@@ -654,15 +654,15 @@ export default function LiveClassesPage() {
       const res = await authedFetch(`/api/courses/live-classes/${lc.id}/sync-recording/`, {
         method: "POST",
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setBanner("✓ Zoom recording downloaded and saved to AWS S3 successfully!");
         fetchClasses();
       } else {
-        alert(data.error || "Zoom recording not ready yet. Please try again in a few minutes.");
+        alert(data.error || data.detail || `Zoom recording is not ready yet (Status ${res.status}). If the meeting just ended, please wait 1–2 minutes for Zoom to finish encoding.`);
       }
-    } catch (e) {
-      alert("Error connecting to Zoom recording sync service.");
+    } catch (e: any) {
+      alert(e?.message || "Error connecting to Zoom sync service. Please ensure the meeting has ended in Zoom.");
     } finally {
       setBusyId(null);
     }
