@@ -128,6 +128,32 @@ class ZoomRecordingService:
                 live_class.status = LiveClass.ClassStatus.COMPLETED
             live_class.save(update_fields=['recording_url', 'recording_uploaded_at', 'status'])
 
+            # Automatically populate attendance for enrolled students
+            try:
+                from courses.models import Attendance, Enrollment
+                students = set()
+                if live_class.batch:
+                    for lbs in live_class.batch.students.select_related('student'):
+                        if lbs.student:
+                            students.add(lbs.student)
+                if not students and live_class.course:
+                    for enr in Enrollment.objects.filter(course=live_class.course).select_related('student'):
+                        if enr.student:
+                            students.add(enr.student)
+                instructor = live_class.instructor or (live_class.batch.instructor if live_class.batch else None)
+                for st in students:
+                    Attendance.objects.get_or_create(
+                        live_class=live_class,
+                        student=st,
+                        defaults={
+                            'status': Attendance.Status.PRESENT,
+                            'notes': 'Automatically marked on session completion',
+                            'marked_by': instructor
+                        }
+                    )
+            except Exception as att_err:
+                logger.warning(f"[ZoomRecording] Auto-attendance recording failed: {att_err}")
+
             try:
                 from notifications.services import NotificationService
                 from notifications.models import NotificationType

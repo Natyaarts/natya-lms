@@ -2819,6 +2819,34 @@ class Phase2AttendanceTests(APITestCase):
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertEqual(len(res.data), 2)
 
+    def test_auto_populate_attendance_on_completion_and_get(self):
+        # Create a new live class without manual attendance records
+        lc = LiveClass.objects.create(
+            course=self.course, batch=self.batch, instructor=self.teacher,
+            title="Auto Attendance Session",
+            scheduled_start=timezone.now() - timezone.timedelta(hours=2),
+            duration_minutes=60, status='SCHEDULED', meeting_url="http://zoom.us/auto"
+        )
+        self.assertEqual(Attendance.objects.filter(live_class=lc).count(), 0)
+
+        # GET attendance by instructor auto-populates all batch students as PRESENT
+        self.client.force_authenticate(user=self.teacher)
+        url = reverse('live-class-attendance', args=[lc.id])
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 2)
+        self.assertTrue(all(r['status'] == 'PRESENT' for r in res.data))
+        self.assertEqual(Attendance.objects.filter(live_class=lc).count(), 2)
+
+        # Serializer representation includes counts and titles
+        detail_url = reverse('live-class-detail', args=[lc.id])
+        d_res = self.client.get(detail_url)
+        self.assertEqual(d_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(d_res.data['attendance_present_count'], 2)
+        self.assertEqual(d_res.data['attendance_total_count'], 2)
+        self.assertEqual(d_res.data['course_title'], self.course.title)
+        self.assertIn("Batch", d_res.data['batch_name'])
+
 
 class Phase2RecordingTests(APITransactionTestCase):
     """Recording attach dispatches a notification per assigned student --

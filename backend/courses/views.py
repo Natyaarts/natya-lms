@@ -1278,6 +1278,40 @@ class LiveClassViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsSuperAdminOrAuthorizedTeacherOrReadOnly]
     pagination_class = LiveClassResultsSetPagination
 
+    def _auto_populate_attendance(self, live_class):
+        if not live_class:
+            return
+        from courses.models import Attendance, LiveBatchStudent, Enrollment
+        students = set()
+        instructor = live_class.instructor or (live_class.batch.instructor if live_class.batch else None)
+
+        if live_class.batch:
+            for lbs in live_class.batch.students.select_related('student'):
+                if lbs.student:
+                    students.add(lbs.student)
+
+        # If no students directly attached to batch, pull from course enrollments
+        if not students and live_class.course:
+            for enr in Enrollment.objects.filter(course=live_class.course).select_related('student'):
+                if enr.student:
+                    students.add(enr.student)
+                    if live_class.batch:
+                        try:
+                            LiveBatchStudent.objects.get_or_create(batch=live_class.batch, student=enr.student)
+                        except Exception:
+                            pass
+
+        for student in students:
+            Attendance.objects.get_or_create(
+                live_class=live_class,
+                student=student,
+                defaults={
+                    'status': Attendance.Status.PRESENT,
+                    'notes': 'Automatically marked on session completion',
+                    'marked_by': instructor
+                }
+            )
+
     def _auto_complete_expired_classes(self):
         from datetime import timedelta
         from django.utils import timezone
@@ -1291,6 +1325,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             if now >= end_time:
                 lc.status = LiveClass.ClassStatus.COMPLETED
                 lc.save(update_fields=['status'])
+                self._auto_populate_attendance(lc)
                 if lc.meeting_provider == LiveClass.MeetingProvider.ZOOM and not lc.recording_url:
                     try:
                         import threading
@@ -1299,6 +1334,14 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                     except Exception:
                         pass
 
+        # Backfill attendance for existing completed classes that have no attendance records yet
+        completed_without_attendance = LiveClass.objects.filter(
+            status=LiveClass.ClassStatus.COMPLETED,
+            attendance_records__isnull=True
+        ).distinct()
+        for lc in completed_without_attendance[:30]:
+            self._auto_populate_attendance(lc)
+
     def get_queryset(self):
         self._auto_complete_expired_classes()
         user = self.request.user
@@ -1306,11 +1349,11 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             return LiveClass.objects.none()
 
         if user.is_superuser or user.is_staff:
-            queryset = LiveClass.objects.all().select_related('course', 'instructor', 'batch')
+            queryset = LiveClass.objects.all().select_related('course', 'instructor', 'batch', 'batch__course').prefetch_related('attendance_records')
         elif getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False):
-            queryset = LiveClass.objects.filter(batch__instructor=user).select_related('course', 'instructor', 'batch')
+            queryset = LiveClass.objects.filter(batch__instructor=user).select_related('course', 'instructor', 'batch', 'batch__course').prefetch_related('attendance_records')
         else:
-            queryset = LiveClass.objects.filter(batch__students__student=user).distinct().select_related('course', 'instructor', 'batch')
+            queryset = LiveClass.objects.filter(batch__students__student=user).distinct().select_related('course', 'instructor', 'batch', 'batch__course').prefetch_related('attendance_records')
 
         # Filter by course
         course_id = self.request.query_params.get('course')
@@ -1487,13 +1530,21 @@ class LiveClassViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def end(self, request, pk=None):
         live_class = self.get_object()
-        if live_class.status != LiveClass.ClassStatus.LIVE:
+        if live_class.status not in [LiveClass.ClassStatus.LIVE, LiveClass.ClassStatus.SCHEDULED]:
             return Response(
                 {"error": f"Cannot transition to COMPLETED from {live_class.status}."},
-                status=status.HTTP_400_BAD_REQUEST
+                status=drf_status.HTTP_400_BAD_REQUEST
             )
         live_class.status = LiveClass.ClassStatus.COMPLETED
-        live_class.save()
+        live_class.save(update_fields=['status'])
+        self._auto_populate_attendance(live_class)
+        if live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM and not live_class.recording_url:
+            try:
+                import threading
+                from courses.services.recording import ZoomRecordingService
+                threading.Thread(target=ZoomRecordingService.sync_meeting_recordings, args=(live_class,), daemon=True).start()
+            except Exception:
+                pass
         serializer = self.get_serializer(live_class)
         return Response(serializer.data)
 
@@ -1638,6 +1689,8 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         is_manager = bool(user.is_superuser or user.is_staff or (live_class.batch and live_class.batch.instructor == user))
 
         if request.method == 'GET':
+            if live_class.status == LiveClass.ClassStatus.COMPLETED or is_manager:
+                self._auto_populate_attendance(live_class)
             qs = Attendance.objects.filter(live_class=live_class).select_related('student')
             if not is_manager:
                 qs = qs.filter(student=user)

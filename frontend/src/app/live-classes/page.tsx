@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { Video, Calendar as CalendarIcon, List as ListIcon, ExternalLink, PlayCircle, CheckCircle2 } from "lucide-react";
+import { Video, Calendar as CalendarIcon, List as ListIcon, ExternalLink, PlayCircle, CheckCircle2, Play, Film, X, Copy } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
 
 // Phase 2: student-facing live classes -- upcoming/today/completed/
@@ -28,6 +29,7 @@ export default function StudentLiveClassesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [attendanceById, setAttendanceById] = useState<Record<number, string>>({});
+  const [watchTarget, setWatchTarget] = useState<any>(null);
 
   const authedFetch = (path: string, init?: RequestInit) =>
     fetch(`${API}${path}`, { credentials: "include", ...init });
@@ -49,10 +51,14 @@ export default function StudentLiveClassesPage() {
         setClasses(list);
         if (tab === "completed") {
           list.forEach(async (lc: any) => {
-            const aRes = await authedFetch(`/api/courses/live-classes/${lc.id}/attendance/`);
-            if (aRes.ok) {
-              const records = await aRes.json();
-              if (records[0]) setAttendanceById((prev) => ({ ...prev, [lc.id]: records[0].status }));
+            try {
+              const aRes = await authedFetch(`/api/courses/live-classes/${lc.id}/attendance/`);
+              if (aRes.ok) {
+                const records = await aRes.json();
+                if (records[0]) setAttendanceById((prev) => ({ ...prev, [lc.id]: records[0].status }));
+              }
+            } catch (e) {
+              // ignore
             }
           });
         }
@@ -67,7 +73,11 @@ export default function StudentLiveClassesPage() {
     }
   };
 
-  useEffect(() => { fetchClasses(); }, [tab]);
+  useEffect(() => {
+    fetchClasses();
+    const interval = setInterval(fetchClasses, 30000);
+    return () => clearInterval(interval);
+  }, [tab]);
 
   useEffect(() => {
     if (view !== "calendar") return;
@@ -100,7 +110,10 @@ export default function StudentLiveClassesPage() {
           <div className="w-10 h-10 rounded-full bg-[#facc15]/10 flex items-center justify-center text-[#facc15]">
             <Video className="w-5 h-5" />
           </div>
-          <h1 className="text-3xl font-bold">Live Classes</h1>
+          <div>
+            <h1 className="text-3xl font-bold">Live Classes</h1>
+            <p className="text-xs text-zinc-400 mt-0.5">Attend scheduled sessions and watch recordings of past classes</p>
+          </div>
         </div>
 
         <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
@@ -113,7 +126,7 @@ export default function StudentLiveClassesPage() {
                   tab === t ? "bg-[#facc15] text-black shadow-sm" : "text-zinc-400 hover:text-white"
                 }`}
               >
-                {t}
+                {t === "completed" ? "History / Past" : t}
               </button>
             ))}
           </div>
@@ -140,18 +153,32 @@ export default function StudentLiveClassesPage() {
         ) : (
           <div className="space-y-3">
             {classes.map((lc: any) => (
-              <div key={lc.id} className="bg-[#0a0a0a] border border-white/10 rounded-2xl p-5 flex items-center justify-between flex-wrap gap-4">
+              <div key={lc.id} className="bg-[#0a0a0a] border border-white/10 rounded-2xl p-5 flex items-center justify-between flex-wrap gap-4 hover:border-white/20 transition-colors">
                 <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="font-bold text-white">{lc.title}</h3>
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <h3 className="font-bold text-white text-base">{lc.title}</h3>
                     <span className={`px-2 py-0.5 text-[10px] font-bold rounded ${STATUS_STYLE[lc.status] || ""}`}>{lc.status}</span>
-                    {tab === "completed" && attendanceById[lc.id] && (
-                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-[#facc15]/10 text-[#facc15] border border-[#facc15]/20 flex items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3" /> {attendanceById[lc.id]}
+                    {tab === "completed" && (
+                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded flex items-center gap-1 ${
+                        attendanceById[lc.id] === "ABSENT"
+                          ? "bg-red-500/10 text-red-400 border border-red-500/20"
+                          : "bg-green-500/10 text-green-400 border border-green-500/20"
+                      }`}>
+                        <CheckCircle2 className="w-3 h-3" /> Attendance: {attendanceById[lc.id] || "PRESENT"}
+                      </span>
+                    )}
+                    {lc.recording_url && (
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                        <Film className="w-3 h-3" /> Recording Available
                       </span>
                     )}
                   </div>
-                  <p className="text-zinc-400 text-sm">
+                  {(lc.course_title || lc.batch_name) && (
+                    <p className="text-xs text-zinc-300 font-medium mb-1">
+                      {lc.course_title}{lc.course_title && lc.batch_name ? " · " : ""}{lc.batch_name}
+                    </p>
+                  )}
+                  <p className="text-zinc-400 text-xs">
                     {new Date(lc.scheduled_start).toLocaleString()} &middot; {lc.duration_minutes} min &middot; {PROVIDER_LABEL[lc.meeting_provider] || lc.meeting_provider}
                   </p>
                   {lc.status === "CANCELLED" && lc.cancellation_reason && (
@@ -172,9 +199,13 @@ export default function StudentLiveClassesPage() {
                     </a>
                   )}
                   {lc.status === "COMPLETED" && lc.recording_url && (
-                    <a href={lc.recording_url} target="_blank" rel="noopener noreferrer" className="px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 bg-white/5 border border-white/10 hover:bg-white/10 transition-colors">
-                      <ExternalLink className="w-4 h-4" /> Recording
-                    </a>
+                    <button
+                      type="button"
+                      onClick={() => setWatchTarget(lc)}
+                      className="px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 bg-emerald-500 text-black hover:bg-emerald-400 transition-colors shadow-sm"
+                    >
+                      <Play className="w-4 h-4 fill-current" /> Watch Recording
+                    </button>
                   )}
                 </div>
               </div>
@@ -182,6 +213,68 @@ export default function StudentLiveClassesPage() {
           </div>
         )}
       </div>
+
+      {/* ---------------- Watch Recording Video Player Modal ---------------- */}
+      <AnimatePresence>
+        {watchTarget && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setWatchTarget(null)}>
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-3xl bg-zinc-900 border border-white/10 rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+            >
+              <div className="flex items-center justify-between px-5 py-4 border-b border-white/5 shrink-0">
+                <h3 className="font-bold text-white text-base truncate pr-4">
+                  Session Recording -- {watchTarget.title}
+                </h3>
+                <button onClick={() => setWatchTarget(null)} className="p-1 rounded-lg hover:bg-white/5 text-zinc-400 hover:text-white">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-5 space-y-4">
+                <div className="relative rounded-2xl overflow-hidden bg-black aspect-video border border-white/10 shadow-2xl flex items-center justify-center">
+                  <video
+                    src={watchTarget.recording_url}
+                    controls
+                    autoPlay
+                    className="w-full h-full object-contain"
+                  >
+                    Your browser does not support HTML5 video playback.
+                  </video>
+                </div>
+                <div className="flex items-center justify-between p-3.5 rounded-xl bg-white/5 border border-white/10 flex-wrap gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span className="font-bold text-white">Class Video Recording</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(watchTarget.recording_url);
+                        alert("Recording URL copied to clipboard!");
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-white font-medium text-xs flex items-center gap-1.5 transition-colors"
+                    >
+                      <Copy className="w-3.5 h-3.5" /> Copy Link
+                    </button>
+                    <a
+                      href={watchTarget.recording_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-bold text-xs flex items-center gap-1.5 transition-colors"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" /> Open in New Tab
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

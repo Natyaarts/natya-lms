@@ -611,6 +611,39 @@ class LiveClassSerializer(serializers.ModelSerializer):
         # render a "recurring series" badge without an extra request per class.
         if instance.recurrence_rule_id:
             ret['recurrence_rule'] = RecurrenceRuleSerializer(instance.recurrence_rule).data
+
+        # Enrich representation with course_title, batch_name, instructor_name, and attendance counts
+        if instance.course:
+            ret['course_title'] = instance.course.title
+        elif instance.batch and instance.batch.course:
+            ret['course_title'] = instance.batch.course.title
+        else:
+            ret['course_title'] = ""
+
+        if instance.batch:
+            b_type = instance.batch.get_batch_type_display() if hasattr(instance.batch, 'get_batch_type_display') else "Group"
+            ret['batch_name'] = f"{b_type} Batch #{instance.batch.id}"
+        else:
+            ret['batch_name'] = ""
+
+        if instance.instructor:
+            ret['instructor_name'] = instance.instructor.get_full_name() or instance.instructor.username
+        elif instance.batch and instance.batch.instructor:
+            ret['instructor_name'] = instance.batch.instructor.get_full_name() or instance.batch.instructor.username
+        else:
+            ret['instructor_name'] = ""
+
+        try:
+            records = list(instance.attendance_records.all())
+            total_recs = len(records)
+            present_recs = sum(1 for r in records if r.status == 'PRESENT')
+            batch_count = instance.batch.students.count() if instance.batch else 0
+            ret['attendance_total_count'] = total_recs if total_recs > 0 else batch_count
+            ret['attendance_present_count'] = present_recs
+        except Exception:
+            ret['attendance_total_count'] = 0
+            ret['attendance_present_count'] = 0
+
         return ret
 
 

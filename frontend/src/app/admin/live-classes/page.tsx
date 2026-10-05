@@ -586,32 +586,53 @@ export default function LiveClassesPage() {
   const openAttendance = async (lc: any) => {
     setAttendanceTarget(lc);
     setAttendanceRecords({});
+    let roster: any[] = [];
     if (lc.batch) {
       const res = await authedFetch(`/api/courses/live-batches/${lc.batch}/students/?page_size=200`);
       if (res.ok) {
         const data = await res.json();
-        setAttendanceRoster(Array.isArray(data) ? data : data.results || []);
+        roster = Array.isArray(data) ? data : data.results || [];
       }
     }
     const aRes = await authedFetch(`/api/courses/live-classes/${lc.id}/attendance/`);
     if (aRes.ok) {
       const existing = await aRes.json();
       const map: Record<number, string> = {};
-      for (const rec of existing) map[rec.student] = rec.status;
+      const rosterIds = new Set(roster.map((r: any) => r.student));
+      for (const rec of existing) {
+        map[rec.student] = rec.status;
+        if (!rosterIds.has(rec.student)) {
+          roster.push({
+            id: rec.id,
+            student: rec.student,
+            student_username: rec.student_name || `Student #${rec.student}`,
+          });
+        }
+      }
+      for (const s of roster) {
+        if (!map[s.student]) {
+          map[s.student] = "PRESENT";
+        }
+      }
       setAttendanceRecords(map);
     }
+    setAttendanceRoster(roster);
   };
   const submitAttendance = async () => {
     if (!attendanceTarget) return;
     const records = attendanceRoster.map((s) => ({
       student: s.student,
-      status: attendanceRecords[s.student] || "ABSENT",
+      status: attendanceRecords[s.student] || "PRESENT",
     }));
-    await authedFetch(`/api/courses/live-classes/${attendanceTarget.id}/attendance/`, {
+    const res = await authedFetch(`/api/courses/live-classes/${attendanceTarget.id}/attendance/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(records),
     });
+    if (res.ok) {
+      setBanner("✓ Attendance updated successfully!");
+      fetchClasses();
+    }
     setAttendanceTarget(null);
   };
 
@@ -808,11 +829,11 @@ export default function LiveClassesPage() {
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
-                  <th className="p-4 font-semibold">Title</th>
+                  <th className="p-4 font-semibold">Title & Course</th>
                   <th className="p-4 font-semibold">Scheduled</th>
                   <th className="p-4 font-semibold">Duration</th>
                   <th className="p-4 font-semibold">Provider</th>
-                  <th className="p-4 font-semibold text-center">Status</th>
+                  <th className="p-4 font-semibold text-center">Status / Attendance</th>
                   <th className="p-4 font-semibold text-right">Actions</th>
                 </tr>
               </thead>
@@ -820,111 +841,166 @@ export default function LiveClassesPage() {
                 {classes.map((lc: any) => (
                   <tr key={lc.id} className="hover:bg-white/5 transition-colors">
                     <td className="p-4 text-white font-bold">
-                      {lc.title}
-                      {lc.recurrence_rule && (
-                        <span title="Part of a recurring series" className="ml-2 inline-flex items-center text-[#facc15]"><Repeat className="w-3 h-3" /></span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span>{lc.title}</span>
+                        {lc.recurrence_rule && (
+                          <span title="Part of a recurring series" className="inline-flex items-center text-[#facc15]"><Repeat className="w-3 h-3" /></span>
+                        )}
+                      </div>
+                      {(lc.course_title || lc.batch_name) && (
+                        <p className="text-[11px] font-normal text-zinc-400 mt-0.5">
+                          {lc.course_title}{lc.course_title && lc.batch_name ? " · " : ""}{lc.batch_name}
+                        </p>
                       )}
-                      {lc.recording_url && (
-                        <div className="mt-1">
-                          <span
+                      {lc.recording_url ? (
+                        <div className="mt-1.5">
+                          <button
+                            type="button"
                             onClick={() => setWatchTarget(lc)}
-                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[9px] font-bold cursor-pointer hover:bg-emerald-500/20 transition-colors"
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold cursor-pointer hover:bg-emerald-500/25 transition-colors shadow-sm"
                             title="Saved on AWS S3 - Click to watch"
                           >
-                            <Film className="w-2.5 h-2.5" /> S3 Recording
+                            <Play className="w-2.5 h-2.5 fill-current" /> Watch Recording
+                          </button>
+                        </div>
+                      ) : lc.status === "COMPLETED" ? (
+                        <div className="mt-1.5">
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 text-[9px]">
+                            <Film className="w-2.5 h-2.5" /> Recording pending
                           </span>
                         </div>
-                      )}
+                      ) : null}
                     </td>
                     <td className="p-4 text-zinc-400">{new Date(lc.scheduled_start).toLocaleString()}</td>
                     <td className="p-4">{lc.duration_minutes} min</td>
                     <td className="p-4">{PROVIDER_LABEL[lc.meeting_provider] || lc.meeting_provider}</td>
                     <td className="p-4 text-center">
                       <span className={`px-2 py-0.5 text-[10px] font-bold rounded ${STATUS_STYLE[lc.status] || ""}`}>{lc.status}</span>
+                      {(lc.status === "COMPLETED" || (lc.attendance_total_count && lc.attendance_total_count > 0)) && (
+                        <div className="mt-1.5 flex justify-center">
+                          <button
+                            type="button"
+                            onClick={() => openAttendance(lc)}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 transition-colors"
+                            title="Click to view/edit attendance"
+                          >
+                            <UsersIcon className="w-2.5 h-2.5" />
+                            {lc.attendance_present_count ?? 0}/{lc.attendance_total_count || 1} Present
+                          </button>
+                        </div>
+                      )}
                     </td>
                     <td className="p-4">
                       <div className="flex items-center justify-end gap-1.5 flex-wrap">
-                        {(lc.host_url || lc.meeting_url) && (
-                          <a
-                            href={lc.host_url || lc.meeting_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="px-2.5 py-1 rounded-lg bg-[#facc15]/10 text-[#facc15] border border-[#facc15]/20 hover:bg-[#facc15]/20 text-[10px] font-bold flex items-center gap-1"
-                            title={lc.host_url ? "Launch meeting directly with host privileges" : "Join meeting"}
-                          >
-                            <ExternalLink className="w-3 h-3" /> {lc.host_url ? "Start as Host (Zoom)" : `Join ${PROVIDER_LABEL[lc.meeting_provider] || "Zoom"}`}
-                          </a>
-                        )}
-                        {!lc.host_url && lc.meeting_provider === "ZOOM" && (
-                          <button
-                            disabled={busyId === lc.id}
-                            onClick={() => regenerateZoom(lc)}
-                            className="px-2.5 py-1 rounded-lg bg-[#facc15]/20 text-[#facc15] border border-[#facc15]/40 hover:bg-[#facc15]/30 text-[10px] font-bold disabled:opacity-50 flex items-center gap-1"
-                            title="Generate host link with ZAK token so you enter Zoom as host instead of waiting"
-                          >
-                            Get Host Link
-                          </button>
-                        )}
-                        {lc.meeting_url && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              navigator.clipboard.writeText(lc.meeting_url);
-                              alert("Student join link copied to clipboard!");
-                            }}
-                            className="px-2 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-300 text-[10px] font-medium"
-                            title="Copy student join link"
-                          >
-                            Copy Link
-                          </button>
-                        )}
-                        {lc.status === "SCHEDULED" && (
+                        {lc.status === "COMPLETED" ? (
                           <>
-                            <button disabled={busyId === lc.id} onClick={() => startClass(lc)} className="px-2.5 py-1 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 text-[10px] font-bold disabled:opacity-50">Start Class</button>
-                            <button onClick={() => { setRescheduleTarget(lc); setRescheduleDate(""); setRescheduleTime(""); }} className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold">Reschedule</button>
-                            <button onClick={() => { setCancelTarget(lc); setCancelReason(""); setCancelSeries(false); }} className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold">Cancel</button>
-                          </>
-                        )}
-                        {lc.status === "LIVE" && (
-                          <button disabled={busyId === lc.id} onClick={() => endClass(lc)} className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 text-[10px] font-bold disabled:opacity-50">End Class</button>
-                        )}
-                        <button onClick={() => openAttendance(lc)} className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold flex items-center gap-1"><UsersIcon className="w-3 h-3" /> Attendance</button>
-                        {/* Recording Actions */}
-                        {lc.recording_url ? (
-                          <>
+                            {lc.recording_url ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setWatchTarget(lc)}
+                                  className="px-3 py-1.5 rounded-lg bg-emerald-500 text-black font-bold text-[10px] flex items-center gap-1.5 hover:bg-emerald-400 transition-colors shadow-sm"
+                                  title="Watch session recording"
+                                >
+                                  <Play className="w-3 h-3 fill-current" /> Watch Recording
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(lc.recording_url);
+                                    setBanner("✓ Recording URL copied to clipboard!");
+                                  }}
+                                  className="px-2 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-300 text-[10px] font-medium transition-colors"
+                                  title="Copy video link"
+                                >
+                                  Copy Link
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => { setRecordingTarget(lc); setRecordingUrl(lc.recording_url || ""); }}
+                                  className="px-2 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-medium text-zinc-400 hover:text-white transition-colors"
+                                  title="Edit recording link"
+                                >
+                                  Edit Link
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                {lc.meeting_provider === "ZOOM" && (
+                                  <button
+                                    type="button"
+                                    disabled={busyId === lc.id}
+                                    onClick={() => handleSyncZoomRecording(lc)}
+                                    className="px-2.5 py-1.5 rounded-lg bg-blue-500 text-white hover:bg-blue-400 text-[10px] font-bold disabled:opacity-50 flex items-center gap-1 transition-colors shadow-sm"
+                                    title="Fetch cloud recording from Zoom and transfer to AWS S3"
+                                  >
+                                    <RefreshCw className={`w-3 h-3 ${busyId === lc.id ? "animate-spin" : ""}`} /> Sync to S3
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => { setRecordingTarget(lc); setRecordingUrl(""); }}
+                                  className="px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold text-zinc-300 flex items-center gap-1 transition-colors"
+                                >
+                                  <Upload className="w-3 h-3" /> Add Recording
+                                </button>
+                              </>
+                            )}
                             <button
-                              onClick={() => setWatchTarget(lc)}
-                              className="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 text-[10px] font-bold flex items-center gap-1 shadow-sm"
-                              title="Watch S3 recording"
+                              type="button"
+                              onClick={() => openAttendance(lc)}
+                              className="px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold text-zinc-300 flex items-center gap-1 transition-colors"
                             >
-                              <Play className="w-3 h-3 fill-current" /> Watch Recording
-                            </button>
-                            <button
-                              onClick={() => { setRecordingTarget(lc); setRecordingUrl(lc.recording_url || ""); }}
-                              className="px-2 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-medium text-zinc-400 hover:text-white"
-                              title="Edit or replace recording link"
-                            >
-                              Edit Link
+                              <UsersIcon className="w-3 h-3" /> Attendance
                             </button>
                           </>
                         ) : (
                           <>
-                            {lc.meeting_provider === "ZOOM" && (
+                            {(lc.host_url || lc.meeting_url) && (
+                              <a
+                                href={lc.host_url || lc.meeting_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="px-2.5 py-1 rounded-lg bg-[#facc15]/10 text-[#facc15] border border-[#facc15]/20 hover:bg-[#facc15]/20 text-[10px] font-bold flex items-center gap-1"
+                                title={lc.host_url ? "Launch meeting directly with host privileges" : "Join meeting"}
+                              >
+                                <ExternalLink className="w-3 h-3" /> {lc.host_url ? "Start as Host (Zoom)" : `Join ${PROVIDER_LABEL[lc.meeting_provider] || "Zoom"}`}
+                              </a>
+                            )}
+                            {!lc.host_url && lc.meeting_provider === "ZOOM" && (
                               <button
                                 disabled={busyId === lc.id}
-                                onClick={() => handleSyncZoomRecording(lc)}
-                                className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 text-[10px] font-bold disabled:opacity-50 flex items-center gap-1"
-                                title="Fetch cloud recording from Zoom and transfer to AWS S3"
+                                onClick={() => regenerateZoom(lc)}
+                                className="px-2.5 py-1 rounded-lg bg-[#facc15]/20 text-[#facc15] border border-[#facc15]/40 hover:bg-[#facc15]/30 text-[10px] font-bold disabled:opacity-50 flex items-center gap-1"
+                                title="Generate host link with ZAK token so you enter Zoom as host instead of waiting"
                               >
-                                <RefreshCw className={`w-3 h-3 ${busyId === lc.id ? "animate-spin" : ""}`} /> Sync to S3
+                                Get Host Link
                               </button>
                             )}
-                            <button
-                              onClick={() => { setRecordingTarget(lc); setRecordingUrl(""); }}
-                              className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold text-zinc-300 flex items-center gap-1"
-                            >
-                              <Upload className="w-3 h-3" /> Add Recording
-                            </button>
+                            {lc.meeting_url && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(lc.meeting_url);
+                                  alert("Student join link copied to clipboard!");
+                                }}
+                                className="px-2 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-300 text-[10px] font-medium"
+                                title="Copy student join link"
+                              >
+                                Copy Link
+                              </button>
+                            )}
+                            {lc.status === "SCHEDULED" && (
+                              <>
+                                <button disabled={busyId === lc.id} onClick={() => startClass(lc)} className="px-2.5 py-1 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 text-[10px] font-bold disabled:opacity-50">Start Class</button>
+                                <button onClick={() => { setRescheduleTarget(lc); setRescheduleDate(""); setRescheduleTime(""); }} className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold">Reschedule</button>
+                                <button onClick={() => { setCancelTarget(lc); setCancelReason(""); setCancelSeries(false); }} className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold">Cancel</button>
+                              </>
+                            )}
+                            {lc.status === "LIVE" && (
+                              <button disabled={busyId === lc.id} onClick={() => endClass(lc)} className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 text-[10px] font-bold disabled:opacity-50">End Class</button>
+                            )}
+                            <button onClick={() => openAttendance(lc)} className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold flex items-center gap-1"><UsersIcon className="w-3 h-3" /> Attendance</button>
                           </>
                         )}
                       </div>
@@ -1230,6 +1306,37 @@ export default function LiveClassesPage() {
         {attendanceTarget && (
           <Modal title={`Attendance -- ${attendanceTarget.title}`} onClose={() => setAttendanceTarget(null)} wide>
             <div className="space-y-3">
+              {attendanceRoster.length > 0 && (
+                <div className="flex items-center justify-between pb-2 border-b border-white/5">
+                  <span className="text-xs text-zinc-400">
+                    {attendanceRoster.length} Student{attendanceRoster.length !== 1 ? "s" : ""}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const all: Record<number, string> = {};
+                        for (const s of attendanceRoster) all[s.student] = "PRESENT";
+                        setAttendanceRecords(all);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 text-[10px] font-bold transition-colors"
+                    >
+                      Mark All Present
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const all: Record<number, string> = {};
+                        for (const s of attendanceRoster) all[s.student] = "ABSENT";
+                        setAttendanceRecords(all);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold transition-colors"
+                    >
+                      Mark All Absent
+                    </button>
+                  </div>
+                </div>
+              )}
               {attendanceRoster.length === 0 ? (
                 <p className="text-zinc-500 text-sm">No students assigned to this batch.</p>
               ) : attendanceRoster.map((s: any) => (
