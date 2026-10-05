@@ -1006,12 +1006,40 @@ export default function LiveClassesPage() {
                             {lc.status === "SCHEDULED" && (
                               <>
                                 <button disabled={busyId === lc.id} onClick={() => startClass(lc)} className="px-2.5 py-1 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 text-[10px] font-bold disabled:opacity-50">Start Class</button>
+                                {lc.meeting_provider === "ZOOM" && (
+                                  <button
+                                    disabled={busyId === lc.id}
+                                    onClick={async () => {
+                                      await endClass(lc);
+                                      await handleSyncZoomRecording(lc);
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg bg-blue-500 text-white hover:bg-blue-400 text-[10px] font-bold disabled:opacity-50 flex items-center gap-1 shadow-sm transition-colors"
+                                    title="Mark meeting ended and fetch Zoom cloud recording into S3"
+                                  >
+                                    <RefreshCw className="w-3 h-3" /> End & Sync to S3
+                                  </button>
+                                )}
                                 <button onClick={() => { setRescheduleTarget(lc); setRescheduleDate(""); setRescheduleTime(""); }} className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold">Reschedule</button>
                                 <button onClick={() => { setCancelTarget(lc); setCancelReason(""); setCancelSeries(false); }} className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold">Cancel</button>
                               </>
                             )}
                             {lc.status === "LIVE" && (
-                              <button disabled={busyId === lc.id} onClick={() => endClass(lc)} className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 text-[10px] font-bold disabled:opacity-50">End Class</button>
+                              <>
+                                <button disabled={busyId === lc.id} onClick={() => endClass(lc)} className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 text-[10px] font-bold disabled:opacity-50">End Class</button>
+                                {lc.meeting_provider === "ZOOM" && (
+                                  <button
+                                    disabled={busyId === lc.id}
+                                    onClick={async () => {
+                                      await endClass(lc);
+                                      await handleSyncZoomRecording(lc);
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg bg-blue-500 text-white hover:bg-blue-400 text-[10px] font-bold disabled:opacity-50 flex items-center gap-1 shadow-sm transition-colors"
+                                    title="Mark meeting ended and fetch Zoom cloud recording into S3"
+                                  >
+                                    <RefreshCw className="w-3 h-3" /> End & Sync to S3
+                                  </button>
+                                )}
+                              </>
                             )}
                             <button onClick={() => openAttendance(lc)} className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold flex items-center gap-1"><UsersIcon className="w-3 h-3" /> Attendance</button>
                           </>
