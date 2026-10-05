@@ -112,7 +112,13 @@ export default function LiveClassesPage() {
     }
   };
 
-  useEffect(() => { fetchClasses(); }, [tab]);
+  useEffect(() => {
+    fetchClasses();
+    const timer = setInterval(() => {
+      fetchClasses();
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [tab]);
   useEffect(() => { fetchBatches(); }, []);
 
   // Calendar view pulls a broader, unfiltered-by-tab window (upcoming +

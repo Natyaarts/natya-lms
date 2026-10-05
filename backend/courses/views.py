@@ -1278,7 +1278,29 @@ class LiveClassViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsSuperAdminOrAuthorizedTeacherOrReadOnly]
     pagination_class = LiveClassResultsSetPagination
 
+    def _auto_complete_expired_classes(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        now = timezone.now()
+        expired_classes = LiveClass.objects.filter(
+            status__in=[LiveClass.ClassStatus.LIVE, LiveClass.ClassStatus.SCHEDULED],
+            scheduled_start__lt=now
+        )
+        for lc in expired_classes:
+            end_time = lc.scheduled_start + timedelta(minutes=lc.duration_minutes or 60)
+            if now >= end_time:
+                lc.status = LiveClass.ClassStatus.COMPLETED
+                lc.save(update_fields=['status'])
+                if lc.meeting_provider == LiveClass.MeetingProvider.ZOOM and not lc.recording_url:
+                    try:
+                        import threading
+                        from courses.services.recording import ZoomRecordingService
+                        threading.Thread(target=ZoomRecordingService.sync_meeting_recordings, args=(lc,), daemon=True).start()
+                    except Exception:
+                        pass
+
     def get_queryset(self):
+        self._auto_complete_expired_classes()
         user = self.request.user
         if not user or not user.is_authenticated:
             return LiveClass.objects.none()
