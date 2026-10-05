@@ -55,7 +55,8 @@ class ZoomService:
                 "join_before_host": True,
                 "jbh_time": 0,
                 "mute_upon_entry": True,
-                "waiting_room": False
+                "waiting_room": False,
+                "auto_recording": "cloud"
             }
         }
         if start_time_iso:

@@ -1705,6 +1705,58 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
+    @action(detail=True, methods=['post'], url_path='sync-recording')
+    def sync_recording(self, request, pk=None):
+        live_class = self.get_object()
+        from courses.services.recording import ZoomRecordingService
+        success, result = ZoomRecordingService.sync_meeting_recordings(live_class)
+        if success:
+            live_class.refresh_from_db()
+            serializer = self.get_serializer(live_class)
+            return Response({
+                "message": "Zoom recording successfully downloaded and saved to AWS S3.",
+                "recording_url": result,
+                "data": serializer.data
+            }, status=drf_status.HTTP_200_OK)
+        else:
+            return Response({"error": result}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'], url_path='upload-recording')
+    def upload_recording(self, request, pk=None):
+        live_class = self.get_object()
+        from django.utils import timezone
+        import os
+        import uuid
+
+        recording_file = request.FILES.get('file')
+        direct_url = request.data.get('recording_url')
+
+        if direct_url:
+            live_class.recording_url = direct_url.strip()
+            live_class.recording_uploaded_at = timezone.now()
+            if live_class.status != LiveClass.ClassStatus.COMPLETED:
+                live_class.status = LiveClass.ClassStatus.COMPLETED
+            live_class.save(update_fields=['recording_url', 'recording_uploaded_at', 'status'])
+            serializer = self.get_serializer(live_class)
+            return Response(serializer.data, status=drf_status.HTTP_200_OK)
+
+        if not recording_file:
+            return Response({"error": "No file or recording_url provided."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        from courses.services.recording import ZoomRecordingService
+        ext = os.path.splitext(recording_file.name)[1].lower() or '.mp4'
+        s3_key = f"recordings/live-classes/{live_class.id}/session_{uuid.uuid4().hex[:8]}{ext}"
+
+        s3_url = ZoomRecordingService.upload_file_to_s3(recording_file, s3_key, content_type='video/mp4')
+        live_class.recording_url = s3_url
+        live_class.recording_uploaded_at = timezone.now()
+        if live_class.status != LiveClass.ClassStatus.COMPLETED:
+            live_class.status = LiveClass.ClassStatus.COMPLETED
+        live_class.save(update_fields=['recording_url', 'recording_uploaded_at', 'status'])
+
+        serializer = self.get_serializer(live_class)
+        return Response(serializer.data, status=drf_status.HTTP_200_OK)
+
 
 class IsSuperAdminOrStaffOrReadOnlyBatches(permissions.BasePermission):
     """
@@ -2344,4 +2396,31 @@ class AdminZoomMeetingCreateView(APIView):
             return Response(meeting_info, status=drf_status.HTTP_201_CREATED)
         except Exception as e:
             return Response({"error": f"Zoom API Error: {str(e)}"}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ZoomWebhookView(APIView):
+    """
+    Public webhook receiver for Zoom events:
+    - endpoint.url_validation (HMAC SHA-256 challenge response)
+    - recording.completed (automatically download Zoom recording & stream into AWS S3)
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from courses.services.recording import ZoomRecordingService
+        event = request.data.get('event')
+
+        # 1. URL validation challenge from Zoom
+        if event == 'endpoint.url_validation':
+            plain_token = request.data.get('payload', {}).get('plainToken', '')
+            response_data = ZoomRecordingService.validate_zoom_webhook_challenge(plain_token)
+            return Response(response_data, status=drf_status.HTTP_200_OK)
+
+        # 2. Recording completed event
+        if event == 'recording.completed':
+            payload = request.data.get('payload', {})
+            success = ZoomRecordingService.handle_recording_completed_webhook(payload)
+            return Response({"status": "received", "handled": success}, status=drf_status.HTTP_200_OK)
+
+        return Response({"status": "ignored"}, status=drf_status.HTTP_200_OK)
 

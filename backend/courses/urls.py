@@ -6,6 +6,7 @@ from .views import (
     AssignmentSubmissionViewSet, AdminCertificateListView, AdminAssignmentListView,
     CertificateTemplateView,
     AdminZoomMeetingCreateView,
+    ZoomWebhookView,
 )
 
 router = DefaultRouter()
@@ -40,6 +41,7 @@ urlpatterns = [
     # pitfall already hit and fixed elsewhere in this codebase, e.g.
     # notifications/urls.py's device-token/ override).
     path('admin/zoom/create-meeting/', AdminZoomMeetingCreateView.as_view(), name='admin-zoom-create-meeting'),
+    path('zoom/webhook/', ZoomWebhookView.as_view(), name='zoom-webhook'),
     path('certificate-template/', CertificateTemplateView.as_view(), name='certificate-template'),
     path('admin/certificate-template/', CertificateTemplateView.as_view(), name='admin-certificate-template'),
     path('admin/certificates/', AdminCertificateListView.as_view(), name='admin-certificates'),

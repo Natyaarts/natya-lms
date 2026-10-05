@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Video, Plus, X, Repeat, Users as UsersIcon, Calendar as CalendarIcon, List as ListIcon, ExternalLink, Trash2 } from "lucide-react";
+import { Video, Plus, X, Repeat, Users as UsersIcon, Calendar as CalendarIcon, List as ListIcon, ExternalLink, Trash2, Play, Film, Upload, RefreshCw, Copy, CheckCircle2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
 
@@ -611,6 +611,54 @@ export default function LiveClassesPage() {
 
   const [recordingTarget, setRecordingTarget] = useState<any>(null);
   const [recordingUrl, setRecordingUrl] = useState("");
+  const [watchTarget, setWatchTarget] = useState<any>(null);
+  const [uploadingFile, setUploadingFile] = useState(false);
+
+  const handleSyncZoomRecording = async (lc: any) => {
+    setBusyId(lc.id);
+    try {
+      const res = await authedFetch(`/api/courses/live-classes/${lc.id}/sync-recording/`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setBanner("✓ Zoom recording downloaded and saved to AWS S3 successfully!");
+        fetchClasses();
+      } else {
+        alert(data.error || "Zoom recording not ready yet. Please try again in a few minutes.");
+      }
+    } catch (e) {
+      alert("Error connecting to Zoom recording sync service.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleFileUpload = async (file: File) => {
+    if (!recordingTarget) return;
+    setUploadingFile(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await authedFetch(`/api/courses/live-classes/${recordingTarget.id}/upload-recording/`, {
+        method: "POST",
+        body: formData,
+      });
+      if (res.ok) {
+        setBanner("✓ Recording uploaded to AWS S3 successfully!");
+        setRecordingTarget(null);
+        fetchClasses();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to upload recording file.");
+      }
+    } catch (e) {
+      alert("Error uploading file to S3.");
+    } finally {
+      setUploadingFile(false);
+    }
+  };
+
   const submitRecording = async () => {
     if (!recordingTarget) return;
     setBusyId(recordingTarget.id);
@@ -770,6 +818,17 @@ export default function LiveClassesPage() {
                       {lc.recurrence_rule && (
                         <span title="Part of a recurring series" className="ml-2 inline-flex items-center text-[#facc15]"><Repeat className="w-3 h-3" /></span>
                       )}
+                      {lc.recording_url && (
+                        <div className="mt-1">
+                          <span
+                            onClick={() => setWatchTarget(lc)}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[9px] font-bold cursor-pointer hover:bg-emerald-500/20 transition-colors"
+                            title="Saved on AWS S3 - Click to watch"
+                          >
+                            <Film className="w-2.5 h-2.5" /> S3 Recording
+                          </span>
+                        </div>
+                      )}
                     </td>
                     <td className="p-4 text-zinc-400">{new Date(lc.scheduled_start).toLocaleString()}</td>
                     <td className="p-4">{lc.duration_minutes} min</td>
@@ -824,10 +883,43 @@ export default function LiveClassesPage() {
                           <button disabled={busyId === lc.id} onClick={() => endClass(lc)} className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 text-[10px] font-bold disabled:opacity-50">End Class</button>
                         )}
                         <button onClick={() => openAttendance(lc)} className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold flex items-center gap-1"><UsersIcon className="w-3 h-3" /> Attendance</button>
-                        {lc.status === "COMPLETED" && (
-                          <button onClick={() => { setRecordingTarget(lc); setRecordingUrl(lc.recording_url || ""); }} className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold">
-                            {lc.recording_url ? "Edit Recording" : "Add Recording"}
-                          </button>
+                        {/* Recording Actions */}
+                        {lc.recording_url ? (
+                          <>
+                            <button
+                              onClick={() => setWatchTarget(lc)}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 text-[10px] font-bold flex items-center gap-1 shadow-sm"
+                              title="Watch S3 recording"
+                            >
+                              <Play className="w-3 h-3 fill-current" /> Watch Recording
+                            </button>
+                            <button
+                              onClick={() => { setRecordingTarget(lc); setRecordingUrl(lc.recording_url || ""); }}
+                              className="px-2 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-medium text-zinc-400 hover:text-white"
+                              title="Edit or replace recording link"
+                            >
+                              Edit Link
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            {lc.meeting_provider === "ZOOM" && (
+                              <button
+                                disabled={busyId === lc.id}
+                                onClick={() => handleSyncZoomRecording(lc)}
+                                className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 text-[10px] font-bold disabled:opacity-50 flex items-center gap-1"
+                                title="Fetch cloud recording from Zoom and transfer to AWS S3"
+                              >
+                                <RefreshCw className={`w-3 h-3 ${busyId === lc.id ? "animate-spin" : ""}`} /> Sync to S3
+                              </button>
+                            )}
+                            <button
+                              onClick={() => { setRecordingTarget(lc); setRecordingUrl(""); }}
+                              className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold text-zinc-300 flex items-center gap-1"
+                            >
+                              <Upload className="w-3 h-3" /> Add Recording
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>
@@ -1164,15 +1256,119 @@ export default function LiveClassesPage() {
       {/* ---------------- Recording Modal ---------------- */}
       <AnimatePresence>
         {recordingTarget && (
-          <Modal title={`Recording -- ${recordingTarget.title}`} onClose={() => setRecordingTarget(null)}>
-            <div className="space-y-4">
-              <div>
-                <label className={labelCls}>Recording URL</label>
-                <input type="url" value={recordingUrl} onChange={(e) => setRecordingUrl(e.target.value)} placeholder="https://..." className={inputCls} />
+          <Modal title={`Manage Recording -- ${recordingTarget.title}`} onClose={() => setRecordingTarget(null)} wide>
+            <div className="space-y-5">
+              {/* Option 1: File Upload to S3 */}
+              <div className="p-4 rounded-xl bg-white/5 border border-white/10 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <Upload className="w-4 h-4 text-[#facc15]" /> Upload MP4 Video Directly to AWS S3
+                  </span>
+                  <span className="text-[10px] text-zinc-400 font-mono">Max 2.5 GB</span>
+                </div>
+                <input
+                  type="file"
+                  accept="video/mp4,video/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleFileUpload(file);
+                  }}
+                  disabled={uploadingFile}
+                  className="block w-full text-xs text-zinc-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-[#facc15] file:text-black hover:file:bg-yellow-400 cursor-pointer disabled:opacity-50"
+                />
+                {uploadingFile && (
+                  <p className="text-xs text-[#facc15] animate-pulse flex items-center gap-1.5 font-medium">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Uploading recording directly to AWS S3 bucket... Please do not close this window.
+                  </p>
+                )}
               </div>
-              <div className="flex justify-end gap-3">
+
+              {/* Option 2: Sync from Zoom Cloud */}
+              {recordingTarget.meeting_provider === "ZOOM" && (
+                <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/20 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <RefreshCw className="w-3.5 h-3.5 text-blue-400" /> Fetch from Zoom Cloud
+                    </p>
+                    <p className="text-[11px] text-zinc-400">Download the cloud recording from Zoom & automatically save it to AWS S3</p>
+                  </div>
+                  <button
+                    disabled={busyId === recordingTarget.id || uploadingFile}
+                    onClick={() => handleSyncZoomRecording(recordingTarget)}
+                    className="px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 text-xs font-bold disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${busyId === recordingTarget.id ? "animate-spin" : ""}`} /> Sync to S3
+                  </button>
+                </div>
+              )}
+
+              {/* Option 3: Manual URL */}
+              <div className="space-y-2">
+                <label className={labelCls}>Or Enter Direct S3 / Video URL</label>
+                <input
+                  type="url"
+                  value={recordingUrl}
+                  onChange={(e) => setRecordingUrl(e.target.value)}
+                  placeholder="https://your-bucket.s3.ap-south-1.amazonaws.com/..."
+                  className={inputCls}
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2 border-t border-white/5">
                 <button onClick={() => setRecordingTarget(null)} className={btnGhost}>Cancel</button>
-                <button onClick={submitRecording} disabled={!recordingUrl || busyId === recordingTarget.id} className={btnPrimary}>Save</button>
+                <button
+                  onClick={submitRecording}
+                  disabled={!recordingUrl || busyId === recordingTarget.id || uploadingFile}
+                  className={btnPrimary}
+                >
+                  Save URL
+                </button>
+              </div>
+            </div>
+          </Modal>
+        )}
+      </AnimatePresence>
+
+      {/* ---------------- Watch Recording Video Player Modal ---------------- */}
+      <AnimatePresence>
+        {watchTarget && (
+          <Modal title={`Session Recording -- ${watchTarget.title}`} onClose={() => setWatchTarget(null)} wide>
+            <div className="space-y-4">
+              <div className="relative rounded-2xl overflow-hidden bg-black aspect-video border border-white/10 shadow-2xl flex items-center justify-center">
+                <video
+                  src={watchTarget.recording_url}
+                  controls
+                  autoPlay
+                  className="w-full h-full object-contain"
+                >
+                  Your browser does not support HTML5 video playback.
+                </video>
+              </div>
+              <div className="flex items-center justify-between p-3.5 rounded-xl bg-white/5 border border-white/10 flex-wrap gap-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span className="font-bold text-white">AWS S3 Cloud Video</span>
+                  <span className="text-zinc-500 font-mono text-[10px] truncate max-w-xs">{watchTarget.recording_url}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(watchTarget.recording_url);
+                      alert("Recording S3 URL copied to clipboard!");
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-white font-medium text-xs flex items-center gap-1.5 transition-colors"
+                  >
+                    <Copy className="w-3.5 h-3.5" /> Copy S3 Link
+                  </button>
+                  <a
+                    href={watchTarget.recording_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-bold text-xs flex items-center gap-1.5 transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" /> Open in New Tab
+                  </a>
+                </div>
               </div>
             </div>
           </Modal>
