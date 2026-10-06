@@ -4,7 +4,25 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronUp, ChevronDown } from "lucide-react";
+import { 
+  ChevronUp, 
+  ChevronDown, 
+  Video, 
+  Film, 
+  Headphones, 
+  Globe, 
+  Pencil, 
+  Trash2, 
+  Plus, 
+  Layers, 
+  AlertCircle, 
+  Zap, 
+  Clock, 
+  Sparkles,
+  RefreshCw,
+  Check,
+  X
+} from "lucide-react";
 
 // Canonical language list for manual audio-track uploads. Kept in sync with
 // backend/courses/languages.py (SUPPORTED_LANGUAGES). Base codes only -- the
@@ -387,7 +405,7 @@ export default function CourseManager() {
 
     // Optimistically update the UI instantly
     setCourse({ ...course, modules: reordered });
-    showToast(`✓ Moved Section "${moved.title}" to position #${targetIndex + 1}`);
+    showToast(`Moved Section "${moved.title}" to position #${targetIndex + 1}`);
 
     try {
       const updates = reordered.map((mod, newOrder) =>
@@ -608,7 +626,7 @@ export default function CourseManager() {
     setHighlightedLessonId(moved.id);
     setTimeout(() => setHighlightedLessonId(null), 1800);
 
-    showToast(`✓ Moved "${moved.title}" to position #${targetIndex + 1}`);
+    showToast(`Moved "${moved.title}" to position #${targetIndex + 1}`);
 
     try {
       const updates = reordered.map((lesson, newOrder) =>
@@ -1082,14 +1100,23 @@ export default function CourseManager() {
 
         {/* Right Column: Curriculum Builder */}
         <div className="lg:col-span-8">
-          <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6">
-            <div className="flex items-center justify-between mb-8">
-              <h2 className="text-xl font-bold">Curriculum Builder</h2>
+          <div className="bg-[#0e0e12] border border-white/10 rounded-2xl p-6 shadow-xl">
+            <div className="flex items-center justify-between mb-8 pb-5 border-b border-white/[0.08] flex-wrap gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-[#facc15]/10 border border-[#facc15]/20 flex items-center justify-center text-[#facc15] shadow-sm">
+                  <Layers className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-white tracking-tight">Curriculum Builder</h2>
+                  <p className="text-xs text-zinc-400 mt-0.5">Organize modules, upload video lessons, and manage audio tracks</p>
+                </div>
+              </div>
               <button 
                 onClick={() => setShowAddModule(true)}
-                className="px-4 py-2 bg-[#facc15]/10 text-[#facc15] hover:bg-[#facc15]/20 font-bold rounded-xl transition-colors text-sm"
+                className="px-4 py-2 bg-[#facc15] hover:bg-yellow-400 text-black font-semibold rounded-xl transition-all text-xs flex items-center gap-1.5 shadow-sm hover:shadow-yellow-500/20"
               >
-                + Add Module
+                <Plus className="w-4 h-4 stroke-[2.5]" />
+                Add Module
               </button>
             </div>
 
@@ -1136,25 +1163,28 @@ export default function CourseManager() {
             {/* Modules List */}
             <div className="space-y-6">
               {course.modules?.length === 0 && !showAddModule ? (
-                <div className="text-center py-12 text-zinc-500 border border-dashed border-white/10 rounded-xl">
-                  No modules yet. Click "Add Module" to start building your course.
+                <div className="text-center py-16 text-zinc-500 border border-dashed border-white/10 rounded-2xl bg-zinc-950/40">
+                  <Layers className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
+                  <p className="text-sm font-medium text-zinc-400">No modules yet</p>
+                  <p className="text-xs text-zinc-600 mt-1">Click "Add Module" to start structuring your course curriculum.</p>
                 </div>
               ) : (
                 course.modules?.map((module: any, idx: number) => (
-                  <div key={module.id} className="border border-white/10 rounded-xl overflow-hidden">
-                    <div className="bg-black/50 px-5 py-4 border-b border-white/10 flex items-center justify-between flex-wrap gap-4">
+                  <div key={module.id} className="bg-zinc-950/70 border border-white/10 rounded-2xl overflow-hidden shadow-sm">
+                    {/* Module Top Bar */}
+                    <div className="bg-[#141419] px-5 py-3.5 border-b border-white/[0.08] flex items-center justify-between flex-wrap gap-3">
                       {editingModuleId === module.id ? (
                         <div className="flex items-center gap-2 flex-1">
                           <input
                             type="text"
                             value={editModuleTitle}
                             onChange={(e) => setEditModuleTitle(e.target.value)}
-                            className="bg-zinc-950 border border-white/20 rounded-xl px-3 py-1.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                            className="bg-zinc-900 border border-white/20 rounded-xl px-3 py-1.5 text-sm text-white focus:outline-none focus:border-[#facc15] flex-1 max-w-md"
                             autoFocus
                           />
                           <button
                             onClick={() => handleRenameModule(module.id)}
-                            className="text-xs font-bold px-3 py-1.5 bg-[#facc15] text-black rounded-xl hover:bg-yellow-500 transition-colors"
+                            className="text-xs font-bold px-3 py-1.5 bg-[#facc15] text-black rounded-lg hover:bg-yellow-400 transition-colors"
                           >
                             Save
                           </button>
@@ -1166,14 +1196,17 @@ export default function CourseManager() {
                           </button>
                         </div>
                       ) : (
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <span className="w-7 h-7 rounded-lg bg-zinc-800 text-zinc-300 font-bold text-xs flex items-center justify-center border border-white/5 shrink-0">
-                            {idx + 1}
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <span className="px-2 py-0.5 rounded-md bg-white/[0.06] border border-white/10 text-[10px] font-mono font-bold text-zinc-300 uppercase tracking-wider shrink-0">
+                            Module {idx + 1}
                           </span>
-                          <span className="text-sm font-bold text-white tracking-wide truncate">
+                          <h3 className="text-sm font-bold text-white tracking-wide truncate">
                             {module.title}
+                          </h3>
+                          <span className="text-[11px] text-zinc-500 font-medium shrink-0">
+                            • {module.lessons?.length || 0} {module.lessons?.length === 1 ? 'lesson' : 'lessons'}
                           </span>
-                          
+
                           {/* Rename / Delete Module Triggers */}
                           <div className="flex items-center gap-0.5 ml-1">
                             <button
@@ -1184,22 +1217,22 @@ export default function CourseManager() {
                               className="text-zinc-500 hover:text-[#facc15] p-1.5 transition-colors rounded-lg hover:bg-white/5"
                               title="Rename module"
                             >
-                              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                              <Pencil className="w-3.5 h-3.5" />
                             </button>
                             <button
                               onClick={() => handleDeleteModule(module.id, module.title)}
-                              className="text-zinc-500 hover:text-red-500 p-1.5 transition-colors rounded-lg hover:bg-white/5"
+                              className="text-zinc-500 hover:text-red-400 p-1.5 transition-colors rounded-lg hover:bg-white/5"
                               title="Delete module"
                             >
-                              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                              <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         </div>
                       )}
-                      
+
                       <div className="flex items-center gap-2">
                         {/* Module Order Arrows */}
-                        <div className="flex items-center bg-zinc-900 border border-white/10 rounded-xl p-0.5">
+                        <div className="flex items-center bg-zinc-900 border border-white/10 rounded-lg p-0.5">
                           <button
                             type="button"
                             disabled={idx === 0}
@@ -1223,9 +1256,10 @@ export default function CourseManager() {
 
                         <button 
                           onClick={() => setAddingLessonToModule(addingLessonToModule === module.id ? null : module.id)}
-                          className="text-xs font-bold px-3 py-1.5 bg-[#facc15]/10 text-[#facc15] hover:bg-[#facc15]/20 rounded-xl transition-colors"
+                          className="text-xs font-semibold px-3 py-1.5 bg-[#facc15]/10 text-[#facc15] hover:bg-[#facc15]/20 border border-[#facc15]/20 hover:border-[#facc15]/40 rounded-lg transition-all flex items-center gap-1.5 shadow-sm"
                         >
-                          + Add Video
+                          <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                          Add Video
                         </button>
                       </div>
                     </div>
@@ -1237,64 +1271,74 @@ export default function CourseManager() {
                         return (
                           <div 
                             key={lesson.id} 
-                            className={`p-3.5 rounded-xl transition-all duration-300 ${
+                            className={`p-3.5 rounded-xl transition-all duration-200 group ${
                               isHighlighted 
-                                ? 'bg-[#facc15]/10 border-2 border-[#facc15] shadow-lg shadow-[#facc15]/10 scale-[1.005]' 
-                                : 'bg-zinc-900/60 border border-white/5 hover:border-white/10'
+                                ? 'bg-[#facc15]/10 border border-[#facc15] shadow-lg shadow-[#facc15]/10' 
+                                : 'bg-[#101015] hover:bg-[#15151c] border border-white/[0.07] hover:border-white/[0.15]'
                             }`}
                           >
-                            <div className="flex items-start justify-between gap-4">
-                              {/* Left: Reorder Stepper + Index + Title & Subtitle */}
-                              <div className="flex items-start gap-3 min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-4">
+                              {/* Left: Reorder Stepper + Media Thumbnail + Index + Title & Subtitle */}
+                              <div className="flex items-center gap-3 min-w-0 flex-1">
                                 {/* Compact Vertical Stepper */}
-                                <div className="flex flex-col items-center bg-zinc-950/80 border border-white/10 rounded-lg p-0.5 shrink-0 mt-0.5">
+                                <div className="flex flex-col items-center bg-zinc-900 border border-white/10 rounded-md p-0.5 shrink-0">
                                   <button
                                     type="button"
                                     disabled={lIdx === 0}
                                     onClick={() => handleMoveLesson(idx, lIdx, 'up')}
-                                    className="p-1 text-zinc-400 hover:text-[#facc15] disabled:opacity-20 disabled:hover:text-zinc-600 transition-colors"
+                                    className="p-0.5 text-zinc-400 hover:text-[#facc15] disabled:opacity-20 disabled:hover:text-zinc-600 transition-colors"
                                     title="Move Lesson Up"
                                   >
-                                    <ChevronUp className="w-3.5 h-3.5" />
+                                    <ChevronUp className="w-3 h-3" />
                                   </button>
                                   <button
                                     type="button"
                                     disabled={lIdx === (module.lessons?.length || 1) - 1}
                                     onClick={() => handleMoveLesson(idx, lIdx, 'down')}
-                                    className="p-1 text-zinc-400 hover:text-[#facc15] disabled:opacity-20 disabled:hover:text-zinc-600 transition-colors"
+                                    className="p-0.5 text-zinc-400 hover:text-[#facc15] disabled:opacity-20 disabled:hover:text-zinc-600 transition-colors"
                                     title="Move Lesson Down"
                                   >
-                                    <ChevronDown className="w-3.5 h-3.5" />
+                                    <ChevronDown className="w-3 h-3" />
                                   </button>
                                 </div>
 
-                                {/* Lesson Number Badge */}
-                                <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-[#facc15]/10 text-[#facc15] font-bold text-xs border border-[#facc15]/20 shrink-0 mt-0.5">
-                                  {lIdx + 1}
+                                {/* Professional Video Media Icon Badge */}
+                                <div className="w-9 h-9 rounded-lg bg-zinc-900 border border-white/10 flex items-center justify-center text-[#facc15] shrink-0 group-hover:border-[#facc15]/30 transition-colors shadow-inner">
+                                  <Video className="w-4 h-4 text-[#facc15]" />
                                 </div>
+
+                                {/* Lesson Number Pill */}
+                                <span className="font-mono text-xs font-bold text-zinc-400 shrink-0 w-5 text-center">
+                                  {lIdx + 1 < 10 ? `0${lIdx + 1}` : lIdx + 1}
+                                </span>
 
                                 {/* Title and Video Info */}
                                 <div className="min-w-0 flex-1">
-                                  <h4 className="font-bold text-base text-white break-words">
+                                  <h4 className="font-semibold text-sm text-white group-hover:text-zinc-100 transition-colors truncate">
                                     {lesson.title || `Lesson ${lIdx + 1}`}
                                   </h4>
 
-                                  {/* Video file name display */}
-                                  <div className="flex items-center gap-1.5 text-xs text-zinc-400 mt-1">
-                                    <span className="text-[#facc15] shrink-0 text-sm">🎬</span>
-                                    <span className="font-mono text-[11px] text-zinc-300 truncate" title={lesson.video_file || ""}>
-                                      {cleanFileName || (lesson.video_file ? String(lesson.video_file).split('/').pop() : "No video file attached")}
+                                  {/* Professional Metadata Row */}
+                                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                                    {/* Video File Name Pill */}
+                                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-zinc-900 border border-white/[0.08] text-[11px] text-zinc-300 font-mono">
+                                      <Film className="w-3 h-3 text-[#facc15]/80 shrink-0" />
+                                      <span className="truncate max-w-[220px]" title={lesson.video_file || ""}>
+                                        {cleanFileName || (lesson.video_file ? String(lesson.video_file).split('/').pop() : "No video file")}
+                                      </span>
                                     </span>
-                                  </div>
 
-                                  {/* Badges line: English Original + Translated tracks */}
-                                  <div className="flex items-center gap-2 mt-2 flex-wrap">
-                                    <span className="px-2 py-0.5 bg-zinc-800 rounded text-[10px] font-medium text-zinc-400 uppercase tracking-wider">
+                                    {/* Language Badge */}
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-900 border border-white/[0.08] text-[10px] text-zinc-400 font-medium">
+                                      <Globe className="w-2.5 h-2.5 text-zinc-500 shrink-0" />
                                       English · Original
                                     </span>
+
+                                    {/* Audio Tracks Badge */}
                                     {lesson.translated_audios?.filter((a: any) => a.status === 'completed').length > 0 && (
-                                      <span className="px-2 py-0.5 bg-[#facc15]/10 border border-[#facc15]/20 rounded text-[10px] font-semibold text-[#facc15]">
-                                        🎧 {lesson.translated_audios.filter((a: any) => a.status === 'completed').length} Audio Track{lesson.translated_audios.filter((a: any) => a.status === 'completed').length > 1 ? 's' : ''}
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-[#facc15]/10 border border-[#facc15]/25 rounded-md text-[10px] font-semibold text-[#facc15]">
+                                        <Headphones className="w-2.5 h-2.5 shrink-0" />
+                                        {lesson.translated_audios.filter((a: any) => a.status === 'completed').length} Audio Track{lesson.translated_audios.filter((a: any) => a.status === 'completed').length > 1 ? 's' : ''}
                                       </span>
                                     )}
                                   </div>
@@ -1302,7 +1346,7 @@ export default function CourseManager() {
                               </div>
 
                               {/* Right: Clean, Balanced Action Buttons */}
-                              <div className="flex items-center gap-2 shrink-0 mt-0.5">
+                              <div className="flex items-center gap-2 shrink-0">
                                 {/* Edit Button */}
                                 <button
                                   type="button"
@@ -1316,19 +1360,20 @@ export default function CourseManager() {
                                       moduleId: module.id
                                     });
                                   }}
-                                  className="px-3 py-1.5 text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg border border-white/5 transition-colors"
+                                  className="px-2.5 py-1.5 text-xs font-medium bg-zinc-900 hover:bg-zinc-800 text-zinc-200 hover:text-white rounded-lg border border-white/10 hover:border-white/20 transition-all flex items-center gap-1.5 shadow-sm"
                                 >
-                                  Edit
+                                  <Pencil className="w-3 h-3 text-zinc-400" />
+                                  <span>Edit</span>
                                 </button>
 
                                 {/* Audio Tracks Button */}
                                 <button
                                   type="button"
                                   onClick={() => audioManagerLessonId === lesson.id ? closeAudioManager() : openAudioManager(lesson.id)}
-                                  className="px-3 py-1.5 text-xs font-medium bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] rounded-lg border border-[#facc15]/20 transition-colors flex items-center gap-1.5"
+                                  className="px-2.5 py-1.5 text-xs font-medium bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] rounded-lg border border-[#facc15]/20 hover:border-[#facc15]/40 transition-all flex items-center gap-1.5 shadow-sm"
                                   title="Manage audio tracks"
                                 >
-                                  <span>🎧</span>
+                                  <Headphones className="w-3.5 h-3.5" />
                                   <span>Audio</span>
                                 </button>
 
@@ -1336,10 +1381,10 @@ export default function CourseManager() {
                                 <button
                                   type="button"
                                   onClick={() => handleDeleteLesson(lesson.id, lesson.title)}
-                                  className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                                  className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 rounded-lg transition-all"
                                   title="Delete lesson"
                                 >
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                                  <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               </div>
                             </div>
@@ -1351,30 +1396,43 @@ export default function CourseManager() {
                                 initial={{ opacity: 0, height: 0 }}
                                 animate={{ opacity: 1, height: 'auto' }}
                                 exit={{ opacity: 0, height: 0 }}
-                                className="bg-black border border-white/10 rounded-xl p-5 mt-4 space-y-3 overflow-hidden"
+                                className="bg-[#09090c] border border-white/10 rounded-xl p-4 mt-3 space-y-3 overflow-hidden shadow-inner"
                               >
-                                <h4 className="text-sm font-bold text-[#facc15]">Audio Tracks</h4>
-                                <p className="text-[11px] text-zinc-500 -mt-2">
-                                  Upload alternate-language audio dubbed/translated externally. Students switch between
-                                  tracks while the same video keeps playing.
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-6 h-6 rounded-md bg-[#facc15]/10 border border-[#facc15]/20 flex items-center justify-center text-[#facc15]">
+                                      <Headphones className="w-3 h-3" />
+                                    </div>
+                                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">Multi-Language Audio Tracks</h4>
+                                  </div>
+                                </div>
+                                <p className="text-[11px] text-zinc-400">
+                                  Upload alternate-language audio tracks. Students can switch audio languages in the player while video playback continues seamlessly.
                                 </p>
 
                                 {/* English (always present, original video audio) */}
-                                <div className="flex items-center justify-between bg-zinc-900/50 border border-white/5 rounded-xl px-4 py-3">
-                                  <div>
-                                    <div className="text-sm font-medium text-white">English</div>
-                                    <div className="text-[11px] text-zinc-500">Original video audio</div>
+                                <div className="flex items-center justify-between bg-zinc-900/60 border border-white/5 rounded-lg px-3.5 py-2.5">
+                                  <div className="flex items-center gap-2">
+                                    <Globe className="w-3.5 h-3.5 text-blue-400" />
+                                    <div>
+                                      <div className="text-xs font-semibold text-white">English</div>
+                                      <div className="text-[10px] text-zinc-500">Original video master audio</div>
+                                    </div>
                                   </div>
+                                  <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px] font-semibold">Primary</span>
                                 </div>
 
                                 {lesson.translated_audios?.map((audio: any) => (
-                                  <div key={audio.id} className="flex items-center justify-between bg-zinc-900/50 border border-white/5 rounded-xl px-4 py-3">
-                                    <div>
-                                      <div className="text-sm font-medium text-white">
-                                        {audio.language_name || languageDisplayName(audio.language_code)}
-                                      </div>
-                                      <div className="text-[11px] text-zinc-500">
-                                        {audio.status === 'completed' ? 'Uploaded' : audio.status === 'processing' ? 'Processing…' : 'Failed'}
+                                  <div key={audio.id} className="flex items-center justify-between bg-zinc-900/60 border border-white/5 rounded-lg px-3.5 py-2.5">
+                                    <div className="flex items-center gap-2">
+                                      <Headphones className="w-3.5 h-3.5 text-[#facc15]" />
+                                      <div>
+                                        <div className="text-xs font-semibold text-white">
+                                          {audio.language_name || languageDisplayName(audio.language_code)}
+                                        </div>
+                                        <div className="text-[10px] text-zinc-500">
+                                          {audio.status === 'completed' ? 'Uploaded & active' : audio.status === 'processing' ? 'Processing audio…' : 'Upload failed'}
+                                        </div>
                                       </div>
                                     </div>
                                     <div className="flex gap-2">
@@ -1387,16 +1445,18 @@ export default function CourseManager() {
                                           setNewAudioFile(null);
                                           setAudioUploadError("");
                                         }}
-                                        className="text-xs font-semibold px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg transition-colors"
+                                        className="text-xs font-medium px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-white rounded-md transition-colors flex items-center gap-1"
                                       >
+                                        <RefreshCw className="w-3 h-3 text-zinc-400" />
                                         Replace
                                       </button>
                                       <button
                                         type="button"
                                         disabled={deletingAudioId === audio.id}
                                         onClick={() => handleDeleteAudio(lesson.id, audio.id, audio.language_name || languageDisplayName(audio.language_code))}
-                                        className="text-xs font-semibold px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg transition-colors disabled:opacity-50"
+                                        className="text-xs font-medium px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-md transition-colors disabled:opacity-50 flex items-center gap-1"
                                       >
+                                        <Trash2 className="w-3 h-3" />
                                         {deletingAudioId === audio.id ? "Removing…" : "Delete"}
                                       </button>
                                     </div>
@@ -1407,18 +1467,20 @@ export default function CourseManager() {
                                   <button
                                     type="button"
                                     onClick={() => { setShowAddAudioForm(true); setReplacingAudioId(null); setNewAudioLangCode(""); setNewAudioFile(null); setAudioUploadError(""); }}
-                                    className="w-full py-2 border border-dashed border-white/20 hover:border-[#facc15]/50 text-zinc-400 hover:text-[#facc15] rounded-xl text-xs font-semibold transition-colors"
+                                    className="w-full py-2 border border-dashed border-white/15 hover:border-[#facc15]/50 text-zinc-400 hover:text-[#facc15] rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-1.5"
                                   >
-                                    + Add Audio
+                                    <Plus className="w-3.5 h-3.5" />
+                                    Add Audio Track
                                   </button>
                                 ) : (
                                   <form
                                     onSubmit={(e) => submitAudioUpload(e, lesson.id, replacingAudioId)}
-                                    className="bg-zinc-900/50 border border-[#facc15]/20 rounded-xl p-4 space-y-3"
+                                    className="bg-zinc-900/70 border border-[#facc15]/20 rounded-xl p-4 space-y-3"
                                   >
-                                    <h5 className="text-xs font-bold text-white">
-                                      {replacingAudioId ? "Replace Audio Track" : "Add Audio Track"}
-                                    </h5>
+                                    <div className="flex items-center gap-2 text-xs font-bold text-white">
+                                      <Headphones className="w-3.5 h-3.5 text-[#facc15]" />
+                                      <span>{replacingAudioId ? "Replace Audio Track" : "Add New Audio Track"}</span>
+                                    </div>
                                     <div>
                                       <label className="block text-[10px] font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Language</label>
                                       <select
@@ -1445,7 +1507,9 @@ export default function CourseManager() {
                                       />
                                     </div>
                                     {audioUploadError && (
-                                      <p className="text-xs text-red-400">{audioUploadError}</p>
+                                      <p className="text-xs text-red-400 flex items-center gap-1">
+                                        <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {audioUploadError}
+                                      </p>
                                     )}
                                     <div className="flex justify-end gap-2 pt-1">
                                       <button
@@ -1520,7 +1584,7 @@ export default function CourseManager() {
                                 </div>
 
                                 {/* Legacy AI-dubbing fields: not part of the V1 manual audio-upload
-                                    workflow (see "🎧 Audio Tracks" above). Kept collapsed so they
+                                    workflow (see Audio Tracks above). Kept collapsed so they
                                     don't confuse admins, but preserved for the old AI pipeline (V2). */}
                                 <details className="group bg-zinc-900/40 border border-white/10 rounded-xl overflow-hidden">
                                   <summary className="cursor-pointer select-none list-none px-4 py-3 flex items-center justify-between text-xs font-semibold text-zinc-400 hover:text-zinc-200 transition-colors">
@@ -1530,7 +1594,7 @@ export default function CourseManager() {
                                   <div className="px-4 pb-4 pt-1 space-y-4 border-t border-white/10">
                                     <p className="text-[10px] text-zinc-600 leading-relaxed">
                                       Not needed for V1 — audio for students is managed entirely via
-                                      "🎧 Audio Tracks" above. These fields only feed the legacy AI
+                                      "Audio Tracks" above. These fields only feed the legacy AI
                                       auto-dubbing pipeline, kept here for future use.
                                     </p>
 
@@ -1547,7 +1611,7 @@ export default function CourseManager() {
 
                                     <div className="bg-[#facc15]/5 border border-[#facc15]/20 rounded-xl p-4">
                                       <div className="flex items-center gap-2 mb-2">
-                                        <span className="text-sm">⏱</span>
+                                        <Clock className="w-3.5 h-3.5 text-[#facc15]" />
                                         <label className="block text-xs font-semibold text-[#facc15] uppercase tracking-wide">Timing for Speaking (for Perfect AI Dubbing)</label>
                                       </div>
                                       <p className="text-[10px] text-zinc-500 mb-3 leading-relaxed">
@@ -1563,7 +1627,10 @@ export default function CourseManager() {
                                         onChange={(e) => setEditLessonData({...editLessonData, timed_transcript: e.target.value})}
                                         className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-xl text-white text-xs font-mono focus:outline-none focus:border-[#facc15] resize-vertical"
                                       />
-                                      <p className="text-[10px] text-zinc-600 mt-2">💡 Leave blank to let Whisper AI auto-detect timings (less accurate). Fill this in for perfect sync.</p>
+                                      <p className="text-[10px] text-zinc-500 mt-2 flex items-center gap-1.5">
+                                        <Sparkles className="w-3 h-3 text-[#facc15] shrink-0" />
+                                        <span>Leave blank to let Whisper AI auto-detect timings (less accurate). Fill this in for perfect sync.</span>
+                                      </p>
                                     </div>
                                   </div>
                                 </details>
@@ -1643,25 +1710,31 @@ export default function CourseManager() {
                               />
                               {lessonData.video_file && (
                                 <div className="mt-2 text-xs flex flex-wrap items-center justify-between gap-2 bg-zinc-900/60 p-2.5 rounded-xl border border-white/5">
-                                  <span className="text-zinc-300">
-                                    📹 <strong className="text-white">{lessonData.video_file.name}</strong> ({(lessonData.video_file.size / (1024 * 1024)).toFixed(1)} MB)
+                                  <span className="text-zinc-300 flex items-center gap-1.5">
+                                    <Video className="w-3.5 h-3.5 text-[#facc15] shrink-0" />
+                                    <strong className="text-white">{lessonData.video_file.name}</strong> ({(lessonData.video_file.size / (1024 * 1024)).toFixed(1)} MB)
                                   </span>
                                   {lessonData.video_file.size > 2 * 1024 * 1024 * 1024 ? (
-                                    <span className="text-red-400 bg-red-400/10 px-2 py-0.5 rounded text-[11px] border border-red-400/20 font-medium">
-                                      ❌ Exceeds 2 GB limit ({(lessonData.video_file.size / (1024 * 1024 * 1024)).toFixed(2)} GB). Please compress or select a video under 2 GB.
+                                    <span className="text-red-400 bg-red-400/10 px-2 py-0.5 rounded text-[11px] border border-red-400/20 font-medium flex items-center gap-1">
+                                      <AlertCircle className="w-3 h-3 shrink-0" />
+                                      Exceeds 2 GB limit ({(lessonData.video_file.size / (1024 * 1024 * 1024)).toFixed(2)} GB). Please compress or select a video under 2 GB.
                                     </span>
                                   ) : (
-                                    <span className="text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded text-[11px] border border-emerald-400/20 font-medium">
-                                      ⚡ Direct S3 Upload enabled (up to 2 GB)
+                                    <span className="text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded text-[11px] border border-emerald-400/20 font-medium flex items-center gap-1">
+                                      <Zap className="w-3 h-3 shrink-0" />
+                                      Direct S3 Upload enabled (up to 2 GB)
                                     </span>
                                   )}
                                 </div>
                               )}
-                              <p className="text-[10px] text-zinc-600 mt-2">After saving, use "🎧 Audio Tracks" on the lesson to add translated/dubbed audio.</p>
+                              <p className="text-[10px] text-zinc-500 mt-2 flex items-center gap-1.5">
+                                <Headphones className="w-3 h-3 text-zinc-400 shrink-0" />
+                                <span>After saving, use "Audio" on the lesson to add translated/dubbed audio tracks.</span>
+                              </p>
                             </div>
 
                             {/* Legacy AI-dubbing fields: not part of the V1 manual audio-upload
-                                workflow (see "🎧 Audio Tracks"). Kept collapsed so they don't
+                                workflow (see Audio Tracks). Kept collapsed so they don't
                                 confuse admins, but preserved for the old AI pipeline (V2). */}
                             <details className="group bg-zinc-900/40 border border-white/10 rounded-xl overflow-hidden">
                               <summary className="cursor-pointer select-none list-none px-4 py-3 flex items-center justify-between text-xs font-semibold text-zinc-400 hover:text-zinc-200 transition-colors">
@@ -1671,7 +1744,7 @@ export default function CourseManager() {
                               <div className="px-4 pb-4 pt-1 space-y-4 border-t border-white/10">
                                 <p className="text-[10px] text-zinc-600 leading-relaxed">
                                   Not needed for V1 — audio for students is managed entirely via
-                                  "🎧 Audio Tracks" after this lesson is created. These fields only
+                                  "Audio" after this lesson is created. These fields only
                                   feed the legacy AI auto-dubbing pipeline, kept here for future use.
                                 </p>
 
@@ -1688,7 +1761,7 @@ export default function CourseManager() {
 
                                 <div className="bg-[#facc15]/5 border border-[#facc15]/20 rounded-xl p-4">
                                   <div className="flex items-center gap-2 mb-2">
-                                    <span className="text-sm">⏱</span>
+                                    <Clock className="w-3.5 h-3.5 text-[#facc15]" />
                                     <label className="block text-xs font-semibold text-[#facc15] uppercase tracking-wide">Timing for Speaking (for Perfect AI Dubbing)</label>
                                   </div>
                                   <p className="text-[10px] text-zinc-500 mb-3 leading-relaxed">
@@ -1704,7 +1777,10 @@ export default function CourseManager() {
                                     onChange={(e) => setLessonData({...lessonData, timed_transcript: e.target.value})}
                                     className="w-full px-3 py-2 bg-zinc-900 border border-[#facc15]/30 rounded-xl text-white text-xs font-mono focus:outline-none focus:border-[#facc15] resize-vertical"
                                   />
-                                  <p className="text-[10px] text-zinc-600 mt-2">💡 Leave blank to let Whisper AI auto-detect timings (less accurate). Fill this in for perfect sync.</p>
+                                  <p className="text-[10px] text-zinc-500 mt-2 flex items-center gap-1.5">
+                                    <Sparkles className="w-3 h-3 text-[#facc15] shrink-0" />
+                                    <span>Leave blank to let Whisper AI auto-detect timings (less accurate). Fill this in for perfect sync.</span>
+                                  </p>
                                 </div>
                               </div>
                             </details>
@@ -1787,14 +1863,16 @@ export default function CourseManager() {
       {/* Toast Notification */}
       {toastMessage && (
         <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 px-4 py-3 bg-zinc-900/95 border border-[#facc15]/40 text-white rounded-2xl shadow-2xl shadow-black/80 text-sm backdrop-blur-md">
-          <span className="text-[#facc15] font-bold text-base">✓</span>
+          <div className="w-5 h-5 rounded-full bg-[#facc15]/20 border border-[#facc15]/40 flex items-center justify-center text-[#facc15] shrink-0">
+            <Check className="w-3 h-3 stroke-[3]" />
+          </div>
           <span className="font-medium text-zinc-200">{toastMessage}</span>
           <button 
             type="button"
             onClick={() => setToastMessage(null)}
-            className="ml-2 text-zinc-400 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-white/10 transition-colors"
+            className="ml-2 text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors"
           >
-            ✕
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
