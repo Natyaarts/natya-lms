@@ -1348,9 +1348,8 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 self._auto_populate_attendance(lc)
                 if lc.meeting_provider == LiveClass.MeetingProvider.ZOOM and not lc.recording_url:
                     try:
-                        import threading
                         from courses.services.recording import ZoomRecordingService
-                        threading.Thread(target=ZoomRecordingService.sync_meeting_recordings, args=(lc,), daemon=True).start()
+                        ZoomRecordingService.auto_sync_live_class_recording(lc.id)
                     except Exception:
                         pass
 
@@ -1361,6 +1360,20 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         ).distinct()
         for lc in completed_without_attendance[:30]:
             self._auto_populate_attendance(lc)
+
+        # Auto-sync recent completed Zoom classes that are missing recording_url (< 48 hrs)
+        recent_pending_recordings = LiveClass.objects.filter(
+            status=LiveClass.ClassStatus.COMPLETED,
+            meeting_provider=LiveClass.MeetingProvider.ZOOM,
+            recording_url__in=['', None],
+            scheduled_start__gte=now - timedelta(days=2)
+        )[:5]
+        for lc in recent_pending_recordings:
+            try:
+                from courses.services.recording import ZoomRecordingService
+                ZoomRecordingService.auto_sync_live_class_recording(lc.id, max_retries=3, delay_seconds=15)
+            except Exception:
+                pass
 
     def get_queryset(self):
         self._auto_complete_expired_classes()
@@ -1560,9 +1573,8 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         self._auto_populate_attendance(live_class)
         if live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM and not live_class.recording_url:
             try:
-                import threading
                 from courses.services.recording import ZoomRecordingService
-                threading.Thread(target=ZoomRecordingService.sync_meeting_recordings, args=(live_class,), daemon=True).start()
+                ZoomRecordingService.auto_sync_live_class_recording(live_class.id)
             except Exception:
                 pass
         serializer = self.get_serializer(live_class)
@@ -1820,6 +1832,30 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.exception(f"Error syncing Zoom recording for LiveClass #{pk}: {e}")
             return Response({"error": f"Failed to sync recording: {str(e)}"}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['post'], url_path='auto-sync-pending')
+    def auto_sync_pending(self, request):
+        from datetime import timedelta
+        from django.utils import timezone
+        from courses.services.recording import ZoomRecordingService
+
+        cutoff = timezone.now() - timedelta(days=3)
+        pending_classes = LiveClass.objects.filter(
+            status=LiveClass.ClassStatus.COMPLETED,
+            meeting_provider=LiveClass.MeetingProvider.ZOOM,
+            recording_url__in=['', None],
+            scheduled_start__gte=cutoff
+        ).order_by('-scheduled_start')[:10]
+
+        count = 0
+        for lc in pending_classes:
+            ZoomRecordingService.auto_sync_live_class_recording(lc.id, max_retries=4, delay_seconds=15)
+            count += 1
+
+        return Response({
+            "queued": count,
+            "message": f"Auto-sync initiated for {count} completed class(es)."
+        }, status=drf_status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='upload-recording')
     def upload_recording(self, request, pk=None):

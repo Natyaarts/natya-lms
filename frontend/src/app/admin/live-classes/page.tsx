@@ -1,7 +1,28 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Video, Plus, X, Repeat, Users as UsersIcon, Calendar as CalendarIcon, List as ListIcon, ExternalLink, Trash2, Play, Film, Upload, RefreshCw, Copy, CheckCircle2, Clock } from "lucide-react";
+import { 
+  Video, 
+  Plus, 
+  X, 
+  Repeat, 
+  Users as UsersIcon, 
+  Calendar as CalendarIcon, 
+  List as ListIcon, 
+  ExternalLink, 
+  Trash2, 
+  Play, 
+  Film, 
+  Upload, 
+  RefreshCw, 
+  Copy, 
+  CheckCircle2, 
+  Clock,
+  Pencil,
+  Square,
+  Sparkles,
+  Loader2
+} from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
 
@@ -18,10 +39,29 @@ const PROVIDER_LABEL: Record<string, string> = {
   ZOOM: "Zoom", GOOGLE_MEET: "Google Meet", TEAMS: "Teams", OTHER: "Other",
 };
 const STATUS_STYLE: Record<string, string> = {
-  SCHEDULED: "bg-zinc-700/50 text-zinc-300 border border-white/10",
-  LIVE: "bg-green-500/10 text-green-400 border border-green-500/20",
-  COMPLETED: "bg-blue-500/10 text-blue-400 border border-blue-500/20",
+  SCHEDULED: "bg-[#facc15]/10 text-[#facc15] border border-[#facc15]/20",
+  LIVE: "bg-red-500/15 text-red-400 border border-red-500/30",
+  COMPLETED: "bg-zinc-800 text-zinc-300 border border-white/10",
   CANCELLED: "bg-red-500/10 text-red-400 border border-red-500/20",
+};
+
+const formatScheduledDate = (isoStr: string) => {
+  try {
+    const d = new Date(isoStr);
+    const datePart = d.toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric"
+    });
+    const timePart = d.toLocaleTimeString("en-IN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true
+    });
+    return { datePart, timePart };
+  } catch {
+    return { datePart: isoStr, timePart: "" };
+  }
 };
 // Backend weekday convention (TeacherAvailability.Weekday / RecurrenceRule):
 // Monday=0 .. Sunday=6 -- NOT JS Date.getDay()'s Sunday=0.
@@ -112,13 +152,36 @@ export default function LiveClassesPage() {
     }
   };
 
+  const autoSyncPending = async () => {
+    try {
+      await authedFetch("/api/courses/live-classes/auto-sync-pending/", {
+        method: "POST"
+      });
+    } catch {
+      // Background non-blocking call
+    }
+  };
+
   useEffect(() => {
     fetchClasses();
+    if (tab === "history") {
+      autoSyncPending();
+    }
+  }, [tab]);
+
+  useEffect(() => {
+    const hasPendingRecording = classes.some(
+      (c) => c.status === "COMPLETED" && c.meeting_provider === "ZOOM" && !c.recording_url
+    );
+    const pollInterval = hasPendingRecording ? 10000 : 30000;
     const timer = setInterval(() => {
       fetchClasses();
-    }, 30000);
+      if (hasPendingRecording) {
+        autoSyncPending();
+      }
+    }, pollInterval);
     return () => clearInterval(timer);
-  }, [tab]);
+  }, [classes, tab]);
   useEffect(() => { fetchBatches(); }, []);
 
   // Calendar view pulls a broader, unfiltered-by-tab window (upcoming +
@@ -709,54 +772,76 @@ export default function LiveClassesPage() {
 
   return (
     <div className="max-w-6xl mx-auto pb-20">
-      <div className="flex items-center justify-between mb-8 flex-wrap gap-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-[#facc15]/10 flex items-center justify-center text-[#facc15]">
-            <Video className="w-5 h-5" />
+      {/* Header Bar */}
+      <div className="flex items-center justify-between mb-8 flex-wrap gap-4 pb-6 border-b border-white/[0.08]">
+        <div className="flex items-center gap-3.5">
+          <div className="w-11 h-11 rounded-2xl bg-[#facc15]/10 border border-[#facc15]/20 flex items-center justify-center text-[#facc15] shadow-sm">
+            <Video className="w-5 h-5 stroke-[2.2]" />
           </div>
-          <h1 className="text-3xl font-bold">Live Classes</h1>
+          <div>
+            <h1 className="text-2xl font-bold text-white tracking-tight">Live Classes</h1>
+            <p className="text-xs text-zinc-400 mt-0.5">Manage live sessions, track student attendance, and automatically sync recordings to S3</p>
+          </div>
         </div>
         <div className="flex items-center gap-3">
-          <button onClick={openCreateBatch} disabled={!currentUser} className="px-4 py-2 bg-white/10 hover:bg-white/15 text-white font-semibold rounded-xl transition-colors flex items-center gap-2 text-sm border border-white/10 disabled:opacity-50">
-            <UsersIcon className="w-4 h-4 text-[#facc15]" /> Create Batch
+          <button 
+            onClick={openCreateBatch} 
+            disabled={!currentUser} 
+            className="px-3.5 py-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 hover:text-white font-semibold rounded-xl transition-all flex items-center gap-2 text-xs border border-white/10 hover:border-white/20 disabled:opacity-50 shadow-sm"
+          >
+            <UsersIcon className="w-3.5 h-3.5 text-[#facc15]" /> 
+            <span>Create Batch</span>
           </button>
-          <button onClick={openSchedule} disabled={!currentUser} className={`${btnPrimary} flex items-center gap-2`}>
-            <Plus className="w-4 h-4" /> Schedule Class
+          <button 
+            onClick={openSchedule} 
+            disabled={!currentUser} 
+            className="px-4 py-2 bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs rounded-xl transition-all flex items-center gap-1.5 shadow-sm hover:shadow-yellow-500/20 disabled:opacity-50"
+          >
+            <Plus className="w-4 h-4 stroke-[2.5]" /> 
+            <span>Schedule Class</span>
           </button>
         </div>
       </div>
 
       {banner && (
-        <div className="mb-4 px-4 py-3 bg-green-500/10 border border-green-500/20 rounded-xl text-green-400 text-sm flex items-center justify-between">
-          {banner}
-          <button onClick={() => setBanner("")} className="text-green-400/70 hover:text-green-400"><X className="w-3.5 h-3.5" /></button>
+        <div className="mb-5 px-4 py-3 bg-zinc-900/90 border border-[#facc15]/30 rounded-xl text-zinc-200 text-xs font-medium flex items-center justify-between shadow-lg shadow-black/40">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-[#facc15] shrink-0" />
+            <span>{banner}</span>
+          </div>
+          <button onClick={() => setBanner("")} className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors">
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
+      {/* Tabs and View Switcher */}
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
-        <div className="flex gap-2 p-1 bg-zinc-950 border border-white/5 rounded-xl w-max">
+        <div className="flex gap-1.5 p-1 bg-[#0e0e12] border border-white/10 rounded-xl w-max shadow-inner">
           {(["today", "upcoming", "history", "cancelled", "batches"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all capitalize ${
-                tab === t ? "bg-[#facc15] text-black shadow-sm" : "text-zinc-400 hover:text-white"
+              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all capitalize ${
+                tab === t 
+                  ? "bg-[#facc15] text-black shadow-sm" 
+                  : "text-zinc-400 hover:text-white hover:bg-white/5"
               }`}
             >
               {t === "batches" ? `Batches (${batches.length})` : t}
             </button>
           ))}
         </div>
-        <div className="flex gap-2 p-1 bg-zinc-950 border border-white/5 rounded-xl w-max">
+        <div className="flex gap-1.5 p-1 bg-[#0e0e12] border border-white/10 rounded-xl w-max shadow-inner">
           <button
             onClick={() => setView("list")}
-            className={`px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${view === "list" ? "bg-white/10 text-white" : "text-zinc-500 hover:text-white"}`}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${view === "list" ? "bg-white/10 text-white shadow-sm" : "text-zinc-500 hover:text-zinc-300"}`}
           >
             <ListIcon className="w-3.5 h-3.5" /> List
           </button>
           <button
             onClick={() => setView("calendar")}
-            className={`px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${view === "calendar" ? "bg-white/10 text-white" : "text-zinc-500 hover:text-white"}`}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${view === "calendar" ? "bg-white/10 text-white shadow-sm" : "text-zinc-500 hover:text-zinc-300"}`}
           >
             <CalendarIcon className="w-3.5 h-3.5" /> Calendar
           </button>
@@ -766,21 +851,21 @@ export default function LiveClassesPage() {
       {view === "calendar" ? (
         <MonthCalendar classes={calendarClasses} />
       ) : (
-        <div className="bg-zinc-900 border border-white/10 rounded-2xl overflow-hidden">
+        <div className="bg-[#0e0e12] border border-white/10 rounded-2xl overflow-hidden shadow-xl">
           {tab === "batches" ? (
             loading ? (
               <div className="text-center py-20 text-zinc-500 text-sm">Loading batches...</div>
             ) : batches.length === 0 ? (
               <div className="text-center py-20 text-zinc-500 text-sm space-y-2">
                 <p>No batches created yet.</p>
-                <button onClick={openCreateBatch} className="px-4 py-2 bg-[#facc15] text-black font-bold text-xs rounded-xl hover:bg-yellow-500">
+                <button onClick={openCreateBatch} className="px-4 py-2 bg-[#facc15] text-black font-bold text-xs rounded-xl hover:bg-yellow-400 shadow-sm">
                   + Create Your First Batch
                 </button>
               </div>
             ) : (
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
-                  <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
+                  <tr className="bg-[#141419] border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[11px]">
                     <th className="p-4 font-semibold">Course</th>
                     <th className="p-4 font-semibold">Batch Type</th>
                     <th className="p-4 font-semibold">Instructor</th>
@@ -789,12 +874,12 @@ export default function LiveClassesPage() {
                     <th className="p-4 font-semibold text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-white/5 text-zinc-300">
+                <tbody className="divide-y divide-white/[0.06] text-zinc-300">
                   {batches.map((b: any) => (
-                    <tr key={b.id} className="hover:bg-white/5 transition-colors">
+                    <tr key={b.id} className="hover:bg-white/[0.02] transition-colors">
                       <td className="p-4 text-white font-bold">{b.course_title || `Course #${b.course}`}</td>
                       <td className="p-4">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${b.batch_type === 'ONE_TO_ONE' ? 'bg-purple-500/20 text-purple-300' : 'bg-blue-500/20 text-blue-300'}`}>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${b.batch_type === 'ONE_TO_ONE' ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-blue-500/20 text-blue-300 border border-blue-500/30'}`}>
                           {b.batch_type === 'ONE_TO_ONE' ? '1-on-1' : 'Group'}
                         </span>
                       </td>
@@ -810,11 +895,11 @@ export default function LiveClassesPage() {
                             onClick={() => openScheduleForBatch(b)}
                             className="px-2.5 py-1.5 rounded-lg bg-[#facc15] text-black text-[10px] font-bold hover:bg-yellow-400 transition-colors flex items-center gap-1 shadow-sm"
                           >
-                            <Plus className="w-3 h-3" /> Schedule Class
+                            <Plus className="w-3 h-3 stroke-[2.5]" /> Schedule Class
                           </button>
                           <button
                             onClick={() => handleDeleteBatch(b.id)}
-                            className="px-2 py-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold transition-colors"
+                            className="p-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold transition-colors"
                             title="Delete Batch"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -827,15 +912,15 @@ export default function LiveClassesPage() {
               </table>
             )
           ) : loading ? (
-            <div className="text-center py-20 text-zinc-500 text-sm">Loading...</div>
+            <div className="text-center py-20 text-zinc-500 text-sm">Loading live classes...</div>
           ) : error ? (
             <div className="text-center py-20 text-red-400 text-sm">{error}</div>
           ) : classes.length === 0 ? (
-            <div className="text-center py-20 text-zinc-500 text-sm">No {tab} live classes.</div>
+            <div className="text-center py-20 text-zinc-500 text-sm">No {tab} live classes found.</div>
           ) : (
             <table className="w-full text-left border-collapse text-xs">
               <thead>
-                <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
+                <tr className="bg-[#141419] border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[11px]">
                   <th className="p-4 font-semibold">Title & Course</th>
                   <th className="p-4 font-semibold">Scheduled</th>
                   <th className="p-4 font-semibold">Duration</th>
@@ -844,210 +929,260 @@ export default function LiveClassesPage() {
                   <th className="p-4 font-semibold text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/5 text-zinc-300">
-                {classes.map((lc: any) => (
-                  <tr key={lc.id} className="hover:bg-white/5 transition-colors">
-                    <td className="p-4 text-white font-bold">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span>{lc.title}</span>
-                        {lc.recurrence_rule && (
-                          <span title="Part of a recurring series" className="inline-flex items-center text-[#facc15]"><Repeat className="w-3 h-3" /></span>
-                        )}
-                      </div>
-                      {(lc.course_title || lc.batch_name) && (
-                        <p className="text-[11px] font-normal text-zinc-400 mt-0.5">
-                          {lc.course_title}{lc.course_title && lc.batch_name ? " · " : ""}{lc.batch_name}
-                        </p>
-                      )}
-                      {lc.recording_url ? (
-                        <div className="mt-1.5">
-                          <button
-                            type="button"
-                            onClick={() => setWatchTarget(lc)}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold cursor-pointer hover:bg-emerald-500/25 transition-colors shadow-sm"
-                            title="Saved on AWS S3 - Click to watch"
-                          >
-                            <Play className="w-2.5 h-2.5 fill-current" /> Watch Recording
-                          </button>
+              <tbody className="divide-y divide-white/[0.06] text-zinc-300">
+                {classes.map((lc: any) => {
+                  const sched = formatScheduledDate(lc.scheduled_start);
+                  return (
+                    <tr key={lc.id} className="hover:bg-white/[0.02] transition-colors">
+                      {/* Title & Course */}
+                      <td className="p-4">
+                        <div className="flex items-start gap-3">
+                          <div className="w-8 h-8 rounded-lg bg-zinc-900 border border-white/10 flex items-center justify-center text-[#facc15] shrink-0 mt-0.5 shadow-inner">
+                            <Video className="w-4 h-4 text-[#facc15]" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-semibold text-white text-sm tracking-tight truncate max-w-xs">{lc.title}</span>
+                              {lc.recurrence_rule && (
+                                <span title="Part of a recurring series" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#facc15]/10 border border-[#facc15]/20 text-[#facc15] text-[10px] font-medium">
+                                  <Repeat className="w-2.5 h-2.5" /> Series
+                                </span>
+                              )}
+                            </div>
+                            {(lc.course_title || lc.batch_name) && (
+                              <p className="text-xs text-zinc-400 mt-0.5 truncate max-w-xs">
+                                {lc.course_title}{lc.course_title && lc.batch_name ? " · " : ""}{lc.batch_name}
+                              </p>
+                            )}
+                          </div>
                         </div>
-                      ) : lc.status === "COMPLETED" ? (
-                        <div className="mt-1.5">
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 text-[9px]">
-                            <Film className="w-2.5 h-2.5" /> Recording pending
+                      </td>
+
+                      {/* Scheduled */}
+                      <td className="p-4 whitespace-nowrap">
+                        <div className="text-xs font-medium text-zinc-200">{sched.datePart}</div>
+                        <div className="text-[11px] text-zinc-500 font-mono mt-0.5">{sched.timePart}</div>
+                      </td>
+
+                      {/* Duration */}
+                      <td className="p-4 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1 text-xs text-zinc-300 font-mono bg-zinc-900/60 border border-white/5 rounded-md px-2 py-1">
+                          <Clock className="w-3 h-3 text-zinc-500" /> {lc.duration_minutes} min
+                        </span>
+                      </td>
+
+                      {/* Provider */}
+                      <td className="p-4 whitespace-nowrap">
+                        {lc.meeting_provider === "ZOOM" ? (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-medium">
+                            <Video className="w-3 h-3" /> Zoom
                           </span>
-                        </div>
-                      ) : null}
-                    </td>
-                    <td className="p-4 text-zinc-400">{new Date(lc.scheduled_start).toLocaleString()}</td>
-                    <td className="p-4">{lc.duration_minutes} min</td>
-                    <td className="p-4">{PROVIDER_LABEL[lc.meeting_provider] || lc.meeting_provider}</td>
-                    <td className="p-4 text-center">
-                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded ${STATUS_STYLE[lc.status] || ""}`}>{lc.status}</span>
-                      {(lc.status === "COMPLETED" || (lc.attendance_total_count && lc.attendance_total_count > 0)) && (
-                        <div className="mt-1.5 flex flex-col items-center">
-                          <button
-                            type="button"
-                            onClick={() => openAttendance(lc)}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 transition-colors"
-                            title="Click to view/edit attendance"
-                          >
-                            <UsersIcon className="w-2.5 h-2.5" />
-                            {lc.attendance_present_count ?? 0}/{lc.attendance_total_count || 1} Present
-                          </button>
-                          {lc.attendance_avg_duration > 0 && (
-                            <span className="text-[10px] text-zinc-400 mt-0.5 flex items-center gap-1">
-                              <Clock className="w-2.5 h-2.5 text-yellow-400/80" />
-                              Avg {lc.attendance_avg_duration} min
-                            </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white/5 border border-white/10 text-zinc-300 text-xs font-medium">
+                            {PROVIDER_LABEL[lc.meeting_provider] || lc.meeting_provider}
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Status & Attendance */}
+                      <td className="p-4 text-center">
+                        <div className="inline-flex flex-col items-center gap-1.5">
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 text-[10px] font-bold rounded-md uppercase tracking-wider ${STATUS_STYLE[lc.status] || "bg-zinc-800 text-zinc-400"}`}>
+                            {lc.status === "COMPLETED" && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
+                            {lc.status === "LIVE" && <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-ping" />}
+                            {lc.status}
+                          </span>
+                          {(lc.status === "COMPLETED" || (lc.attendance_total_count && lc.attendance_total_count > 0)) && (
+                            <div className="flex flex-col items-center">
+                              <button
+                                type="button"
+                                onClick={() => openAttendance(lc)}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-white/5 hover:bg-white/10 text-zinc-300 border border-white/10 hover:border-white/20 transition-colors shadow-sm"
+                                title="Click to view/edit attendance"
+                              >
+                                <UsersIcon className="w-2.5 h-2.5 text-[#facc15]" />
+                                {lc.attendance_present_count ?? 0}/{lc.attendance_total_count || 1} Present
+                              </button>
+                              {lc.attendance_avg_duration > 0 && (
+                                <span className="text-[10px] text-zinc-500 mt-0.5">
+                                  Avg {lc.attendance_avg_duration} min
+                                </span>
+                              )}
+                            </div>
                           )}
                         </div>
-                      )}
-                    </td>
-                    <td className="p-4">
-                      <div className="flex items-center justify-end gap-1.5 flex-wrap">
-                        {lc.status === "COMPLETED" ? (
-                          <>
-                            {lc.recording_url ? (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => setWatchTarget(lc)}
-                                  className="px-3 py-1.5 rounded-lg bg-emerald-500 text-black font-bold text-[10px] flex items-center gap-1.5 hover:bg-emerald-400 transition-colors shadow-sm"
-                                  title="Watch session recording"
+                      </td>
+
+                      {/* Actions */}
+                      <td className="p-4">
+                        <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                          {lc.status === "COMPLETED" ? (
+                            <>
+                              {lc.recording_url ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => setWatchTarget(lc)}
+                                    className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 transition-all shadow-sm hover:shadow-yellow-500/20"
+                                    title="Watch session recording saved on AWS S3"
+                                  >
+                                    <Play className="w-3 h-3 fill-current" /> Watch Recording
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(lc.recording_url);
+                                      setBanner("✓ Recording URL copied to clipboard!");
+                                    }}
+                                    className="p-2 rounded-lg bg-zinc-900 border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white text-xs transition-colors"
+                                    title="Copy S3 recording link"
+                                  >
+                                    <Copy className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setRecordingTarget(lc); setRecordingUrl(lc.recording_url || ""); }}
+                                    className="p-2 rounded-lg bg-zinc-900 border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white text-xs transition-colors"
+                                    title="Edit recording link"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  {lc.meeting_provider === "ZOOM" && (
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#facc15]/10 border border-[#facc15]/20 text-[#facc15] text-[11px] font-medium animate-pulse" title="Zoom cloud recording is automatically syncing to AWS S3 in background">
+                                        <RefreshCw className="w-3 h-3 animate-spin" /> Auto-syncing to S3
+                                      </span>
+                                      <button
+                                        type="button"
+                                        disabled={busyId === lc.id}
+                                        onClick={() => handleSyncZoomRecording(lc)}
+                                        className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-[#facc15]/30 text-zinc-300 hover:text-white text-[11px] font-medium disabled:opacity-50 flex items-center gap-1 transition-all"
+                                        title="Force sync immediately from Zoom to S3"
+                                      >
+                                        <RefreshCw className={`w-3 h-3 ${busyId === lc.id ? "animate-spin" : ""}`} /> Sync Now
+                                      </button>
+                                    </div>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => { setRecordingTarget(lc); setRecordingUrl(""); }}
+                                    className="p-2 rounded-lg bg-zinc-900 border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white text-xs transition-colors"
+                                    title="Upload MP4 recording directly to AWS S3"
+                                  >
+                                    <Upload className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => openAttendance(lc)}
+                                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-white/20 text-zinc-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm"
+                              >
+                                <UsersIcon className="w-3.5 h-3.5 text-zinc-400" /> Attendance
+                              </button>
+                            </>
+                          ) : lc.status === "LIVE" ? (
+                            <>
+                              {(lc.host_url || lc.meeting_url) && (
+                                <a
+                                  href={lc.host_url || lc.meeting_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 shadow-sm"
                                 >
-                                  <Play className="w-3 h-3 fill-current" /> Watch Recording
+                                  <ExternalLink className="w-3.5 h-3.5" /> {lc.host_url ? "Enter as Host" : "Enter Class"}
+                                </a>
+                              )}
+                              <button
+                                disabled={busyId === lc.id}
+                                onClick={() => endClass(lc)}
+                                className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-400 border border-red-500/30 text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-all"
+                                title="End session and automatically sync cloud recording to AWS S3"
+                              >
+                                <Square className="w-3 h-3 fill-current" /> End & Auto-Sync S3
+                              </button>
+                              <button
+                                onClick={() => openAttendance(lc)}
+                                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 text-xs font-medium flex items-center gap-1.5 shadow-sm"
+                              >
+                                <UsersIcon className="w-3.5 h-3.5 text-zinc-400" /> Attendance
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              {lc.host_url ? (
+                                <a
+                                  href={lc.host_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 transition-all shadow-sm"
+                                  title="Launch meeting directly with host privileges"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" /> Start Host (Zoom)
+                                </a>
+                              ) : lc.meeting_provider === "ZOOM" ? (
+                                <button
+                                  disabled={busyId === lc.id}
+                                  onClick={() => regenerateZoom(lc)}
+                                  className="px-3 py-1.5 rounded-lg bg-[#facc15]/20 hover:bg-[#facc15]/30 text-[#facc15] border border-[#facc15]/40 text-xs font-semibold disabled:opacity-50 flex items-center gap-1.5"
+                                  title="Generate host link with ZAK token"
+                                >
+                                  Get Host Link
                                 </button>
+                              ) : null}
+                              {lc.meeting_url && (
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    navigator.clipboard.writeText(lc.recording_url);
-                                    setBanner("✓ Recording URL copied to clipboard!");
+                                    navigator.clipboard.writeText(lc.meeting_url);
+                                    setBanner("✓ Student join link copied to clipboard!");
                                   }}
-                                  className="px-2 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-300 text-[10px] font-medium transition-colors"
-                                  title="Copy video link"
+                                  className="p-2 rounded-lg bg-zinc-900 border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white text-xs transition-colors"
+                                  title="Copy student join link"
                                 >
-                                  Copy Link
+                                  <Copy className="w-3.5 h-3.5" />
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() => { setRecordingTarget(lc); setRecordingUrl(lc.recording_url || ""); }}
-                                  className="px-2 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-medium text-zinc-400 hover:text-white transition-colors"
-                                  title="Edit recording link"
-                                >
-                                  Edit Link
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                {lc.meeting_provider === "ZOOM" && (
-                                  <button
-                                    type="button"
-                                    disabled={busyId === lc.id}
-                                    onClick={() => handleSyncZoomRecording(lc)}
-                                    className="px-2.5 py-1.5 rounded-lg bg-blue-500 text-white hover:bg-blue-400 text-[10px] font-bold disabled:opacity-50 flex items-center gap-1 transition-colors shadow-sm"
-                                    title="Fetch cloud recording from Zoom and transfer to AWS S3"
+                              )}
+                              {lc.status === "SCHEDULED" && (
+                                <>
+                                  <button 
+                                    disabled={busyId === lc.id} 
+                                    onClick={() => startClass(lc)} 
+                                    className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/25 text-xs font-medium transition-colors"
                                   >
-                                    <RefreshCw className={`w-3 h-3 ${busyId === lc.id ? "animate-spin" : ""}`} /> Sync to S3
+                                    Start Class
                                   </button>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => { setRecordingTarget(lc); setRecordingUrl(""); }}
-                                  className="px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold text-zinc-300 flex items-center gap-1 transition-colors"
-                                >
-                                  <Upload className="w-3 h-3" /> Add Recording
-                                </button>
-                              </>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => openAttendance(lc)}
-                              className="px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold text-zinc-300 flex items-center gap-1 transition-colors"
-                            >
-                              <UsersIcon className="w-3 h-3" /> Attendance
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            {(lc.host_url || lc.meeting_url) && (
-                              <a
-                                href={lc.host_url || lc.meeting_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="px-2.5 py-1 rounded-lg bg-[#facc15]/10 text-[#facc15] border border-[#facc15]/20 hover:bg-[#facc15]/20 text-[10px] font-bold flex items-center gap-1"
-                                title={lc.host_url ? "Launch meeting directly with host privileges" : "Join meeting"}
+                                  <button 
+                                    onClick={() => { setRescheduleTarget(lc); setRescheduleDate(""); setRescheduleTime(""); }} 
+                                    className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 text-xs font-medium transition-colors"
+                                  >
+                                    Reschedule
+                                  </button>
+                                  <button 
+                                    onClick={() => { setCancelTarget(lc); setCancelReason(""); setCancelSeries(false); }} 
+                                    className="p-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-colors"
+                                    title="Cancel session"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
+                              <button 
+                                onClick={() => openAttendance(lc)} 
+                                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 text-xs font-medium flex items-center gap-1.5 shadow-sm"
                               >
-                                <ExternalLink className="w-3 h-3" /> {lc.host_url ? "Start as Host (Zoom)" : `Join ${PROVIDER_LABEL[lc.meeting_provider] || "Zoom"}`}
-                              </a>
-                            )}
-                            {!lc.host_url && lc.meeting_provider === "ZOOM" && (
-                              <button
-                                disabled={busyId === lc.id}
-                                onClick={() => regenerateZoom(lc)}
-                                className="px-2.5 py-1 rounded-lg bg-[#facc15]/20 text-[#facc15] border border-[#facc15]/40 hover:bg-[#facc15]/30 text-[10px] font-bold disabled:opacity-50 flex items-center gap-1"
-                                title="Generate host link with ZAK token so you enter Zoom as host instead of waiting"
-                              >
-                                Get Host Link
+                                <UsersIcon className="w-3.5 h-3.5 text-zinc-400" /> Attendance
                               </button>
-                            )}
-                            {lc.meeting_url && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  navigator.clipboard.writeText(lc.meeting_url);
-                                  alert("Student join link copied to clipboard!");
-                                }}
-                                className="px-2 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-300 text-[10px] font-medium"
-                                title="Copy student join link"
-                              >
-                                Copy Link
-                              </button>
-                            )}
-                            {lc.status === "SCHEDULED" && (
-                              <>
-                                <button disabled={busyId === lc.id} onClick={() => startClass(lc)} className="px-2.5 py-1 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 text-[10px] font-bold disabled:opacity-50">Start Class</button>
-                                {lc.meeting_provider === "ZOOM" && (
-                                  <button
-                                    disabled={busyId === lc.id}
-                                    onClick={async () => {
-                                      await endClass(lc);
-                                      await handleSyncZoomRecording(lc);
-                                    }}
-                                    className="px-2.5 py-1 rounded-lg bg-blue-500 text-white hover:bg-blue-400 text-[10px] font-bold disabled:opacity-50 flex items-center gap-1 shadow-sm transition-colors"
-                                    title="Mark meeting ended and fetch Zoom cloud recording into S3"
-                                  >
-                                    <RefreshCw className="w-3 h-3" /> End & Sync to S3
-                                  </button>
-                                )}
-                                <button onClick={() => { setRescheduleTarget(lc); setRescheduleDate(""); setRescheduleTime(""); }} className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold">Reschedule</button>
-                                <button onClick={() => { setCancelTarget(lc); setCancelReason(""); setCancelSeries(false); }} className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold">Cancel</button>
-                              </>
-                            )}
-                            {lc.status === "LIVE" && (
-                              <>
-                                <button disabled={busyId === lc.id} onClick={() => endClass(lc)} className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 text-[10px] font-bold disabled:opacity-50">End Class</button>
-                                {lc.meeting_provider === "ZOOM" && (
-                                  <button
-                                    disabled={busyId === lc.id}
-                                    onClick={async () => {
-                                      await endClass(lc);
-                                      await handleSyncZoomRecording(lc);
-                                    }}
-                                    className="px-2.5 py-1 rounded-lg bg-blue-500 text-white hover:bg-blue-400 text-[10px] font-bold disabled:opacity-50 flex items-center gap-1 shadow-sm transition-colors"
-                                    title="Mark meeting ended and fetch Zoom cloud recording into S3"
-                                  >
-                                    <RefreshCw className="w-3 h-3" /> End & Sync to S3
-                                  </button>
-                                )}
-                              </>
-                            )}
-                            <button onClick={() => openAttendance(lc)} className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[10px] font-bold flex items-center gap-1"><UsersIcon className="w-3 h-3" /> Attendance</button>
-                          </>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -1524,17 +1659,17 @@ export default function LiveClassesPage() {
 
               {/* Option 2: Sync from Zoom Cloud */}
               {recordingTarget.meeting_provider === "ZOOM" && (
-                <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/20 flex items-center justify-between gap-3">
+                <div className="p-4 rounded-xl bg-zinc-900/80 border border-white/10 flex items-center justify-between gap-3">
                   <div>
                     <p className="text-xs font-bold text-white flex items-center gap-1.5">
-                      <RefreshCw className="w-3.5 h-3.5 text-blue-400" /> Fetch from Zoom Cloud
+                      <RefreshCw className="w-3.5 h-3.5 text-[#facc15]" /> Fetch from Zoom Cloud
                     </p>
-                    <p className="text-[11px] text-zinc-400">Download the cloud recording from Zoom & automatically save it to AWS S3</p>
+                    <p className="text-[11px] text-zinc-400 mt-0.5">Download the cloud recording from Zoom & automatically save it to AWS S3</p>
                   </div>
                   <button
                     disabled={busyId === recordingTarget.id || uploadingFile}
                     onClick={() => handleSyncZoomRecording(recordingTarget)}
-                    className="px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 text-xs font-bold disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+                    className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black text-xs font-bold disabled:opacity-50 flex items-center gap-1.5 shrink-0 transition-colors shadow-sm"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${busyId === recordingTarget.id ? "animate-spin" : ""}`} /> Sync to S3
                   </button>

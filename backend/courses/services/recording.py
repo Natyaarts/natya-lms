@@ -348,6 +348,50 @@ class ZoomRecordingService:
             return False, f"Error syncing Zoom recording: {str(e)}"
 
     @classmethod
+    def auto_sync_live_class_recording(cls, live_class_id, max_retries=8, delay_seconds=20):
+        """
+        Asynchronously polls Zoom Cloud Recordings API in a background daemon thread
+        and transfers the completed MP4 to AWS S3 once Zoom encoding is ready.
+        Retries up to max_retries with backoff delays, allowing seamless hands-off auto-sync.
+        """
+        import threading
+        import time
+
+        def _worker():
+            for attempt in range(1, max_retries + 1):
+                try:
+                    from courses.models import LiveClass
+                    live_class = LiveClass.objects.filter(pk=live_class_id).first()
+                    if not live_class:
+                        logger.warning(f"[AutoSyncRecording] LiveClass #{live_class_id} not found.")
+                        return
+
+                    # If already synced, stop
+                    if live_class.recording_url:
+                        logger.info(f"[AutoSyncRecording] LiveClass #{live_class_id} already has recording_url.")
+                        return
+
+                    logger.info(f"[AutoSyncRecording] Attempt {attempt}/{max_retries} for LiveClass #{live_class_id}...")
+                    success, result = cls.sync_meeting_recordings(live_class)
+                    if success:
+                        logger.info(f"[AutoSyncRecording] Successfully synced LiveClass #{live_class_id} to S3 on attempt {attempt}: {result}")
+                        return
+                    else:
+                        logger.info(f"[AutoSyncRecording] Attempt {attempt} for LiveClass #{live_class_id}: {result}. Retrying in {delay_seconds}s...")
+                except Exception as e:
+                    logger.warning(f"[AutoSyncRecording] Exception on attempt {attempt} for LiveClass #{live_class_id}: {e}")
+
+                if attempt < max_retries:
+                    time.sleep(delay_seconds)
+
+            logger.info(f"[AutoSyncRecording] Finished all {max_retries} attempts for LiveClass #{live_class_id}.")
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+        return thread
+
+
+    @classmethod
     def handle_participant_webhook(cls, payload, event_type):
         """
         Processes 'meeting.participant_joined' and 'meeting.participant_left' webhooks from Zoom.
