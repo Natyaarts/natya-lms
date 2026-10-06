@@ -129,7 +129,15 @@ export default function Login() {
   };
 
   const handleSocialLogin = (provider: string) => {
-    window.location.href = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/accounts/${provider}/login/`;
+    let nextParam = "";
+    if (typeof window !== "undefined") {
+      const searchParams = new URLSearchParams(window.location.search);
+      const next = searchParams.get("next");
+      if (next) {
+        nextParam = `?next=${encodeURIComponent(next)}`;
+      }
+    }
+    window.location.href = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/accounts/${provider}/login/${nextParam}`;
   };
 
   return (
