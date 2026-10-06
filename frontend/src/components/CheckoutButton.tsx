@@ -80,7 +80,12 @@ export default function CheckoutButton({ courseId, price }: CheckoutButtonProps)
       const orderData = await res.json();
 
       if (!res.ok) {
-        alert(orderData.error || "Failed to create order.");
+        if (res.status === 401 || res.status === 403) {
+          alert("Please sign in or create an account to enroll in this course.");
+          window.location.href = `/login?next=/courses/${courseId}`;
+          return;
+        }
+        alert(orderData.detail || orderData.error || "Failed to create order.");
         setLoading(false);
         return;
       }

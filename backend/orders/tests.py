@@ -1200,3 +1200,78 @@ class OrderWebhookMappingTests(APITestCase):
         self.assertEqual(r2.status_code, status.HTTP_200_OK)
         self.assertEqual(Notification.objects.filter(recipient=self.student, notification_type="PAYMENT").count(), 1)
         self.assertEqual(Enrollment.objects.filter(user=self.student, course=self.course).count(), 1)
+
+
+class CheckPaymentStatusTests(APITestCase):
+    """Tests for CheckPaymentStatusView ensuring courses only unlock upon payment confirmation."""
+
+    def setUp(self):
+        cache.clear()
+        self.student = User.objects.create_user(username="check_status_student", password="password123")
+        self.other_student = User.objects.create_user(username="other_status_student", password="password123")
+        self.course = Course.objects.create(title="Check Status Course", price=799.00, is_published=True)
+        self.url = reverse('check-payment-status')
+
+    def test_pending_purchase_does_not_unlock_course(self):
+        purchase = Purchase.objects.create(
+            user=self.student,
+            course=self.course,
+            razorpay_order_id="order_test_pending_1",
+            amount=799.00,
+            status=Purchase.Status.PENDING,
+        )
+        self.client.force_authenticate(user=self.student)
+        with patch('orders.views.client.order.fetch', return_value={'status': 'created'}):
+            response = self.client.get(self.url, {'purchase_id': purchase.id})
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertFalse(response.data['is_enrolled'])
+            self.assertEqual(response.data['status'], 'PENDING')
+            self.assertFalse(Enrollment.objects.filter(user=self.student, course=self.course).exists())
+
+    def test_successful_purchase_unlocks_course(self):
+        purchase = Purchase.objects.create(
+            user=self.student,
+            course=self.course,
+            razorpay_order_id="order_test_success_1",
+            amount=799.00,
+            status=Purchase.Status.SUCCESS,
+        )
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(self.url, {'purchase_id': purchase.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['is_enrolled'])
+        self.assertEqual(response.data['status'], 'SUCCESS')
+        self.assertTrue(Enrollment.objects.filter(user=self.student, course=self.course).exists())
+
+    def test_reconciles_with_razorpay_when_order_paid(self):
+        purchase = Purchase.objects.create(
+            user=self.student,
+            course=self.course,
+            razorpay_order_id="order_test_paid_live_1",
+            amount=799.00,
+            status=Purchase.Status.PENDING,
+        )
+        self.client.force_authenticate(user=self.student)
+        with patch('orders.views.client.order.fetch', return_value={'status': 'paid'}), \
+             patch('orders.views.client.order.payments', return_value={'items': [{'id': 'pay_live_123', 'status': 'captured'}]}):
+            response = self.client.get(self.url, {'purchase_id': purchase.id})
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertTrue(response.data['is_enrolled'])
+            self.assertEqual(response.data['status'], 'SUCCESS')
+            purchase.refresh_from_db()
+            self.assertEqual(purchase.status, Purchase.Status.SUCCESS)
+            self.assertEqual(purchase.razorpay_payment_id, 'pay_live_123')
+            self.assertTrue(Enrollment.objects.filter(user=self.student, course=self.course).exists())
+
+    def test_cannot_check_another_users_purchase(self):
+        purchase = Purchase.objects.create(
+            user=self.other_student,
+            course=self.course,
+            razorpay_order_id="order_other_1",
+            amount=799.00,
+            status=Purchase.Status.SUCCESS,
+        )
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(self.url, {'purchase_id': purchase.id})
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+

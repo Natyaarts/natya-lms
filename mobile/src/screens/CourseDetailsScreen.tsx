@@ -1,5 +1,19 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Image, ActivityIndicator, SafeAreaView, ScrollView, TouchableOpacity, Linking, Alert, Platform } from 'react-native';
+import React, { useEffect, useState, useRef } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Image,
+  ActivityIndicator,
+  SafeAreaView,
+  ScrollView,
+  TouchableOpacity,
+  Linking,
+  Alert,
+  Platform,
+  Modal,
+  AppState,
+} from 'react-native';
 import client, { resolveMediaUrl } from '../api/client';
 import Icon from '../components/Icon';
 import { colors, spacing, radius, typography } from '../theme';
@@ -20,21 +34,92 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
   const { courseId } = route.params;
   const [course, setCourse] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [buying, setBuying] = useState(false);
+  const [checkingPayment, setCheckingPayment] = useState(false);
+  const [awaitingPayment, setAwaitingPayment] = useState(false);
+  const [pendingPurchaseId, setPendingPurchaseId] = useState<number | null>(null);
+
+  const awaitingPaymentRef = useRef(awaitingPayment);
+  awaitingPaymentRef.current = awaitingPayment;
+  const pendingPurchaseIdRef = useRef(pendingPurchaseId);
+  pendingPurchaseIdRef.current = pendingPurchaseId;
+
+  const fetchCourseDetails = async () => {
+    try {
+      const res = await client.get(`courses/${courseId}/`);
+      setCourse(res.data);
+      return res.data;
+    } catch (err) {
+      console.error(err);
+      Alert.alert('Error', 'Could not load course details');
+      navigation.goBack();
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchCourseDetails = async () => {
-      try {
-        const res = await client.get(`courses/${courseId}/`);
-        setCourse(res.data);
-      } catch (err) {
-        console.error(err);
-        Alert.alert('Error', 'Could not load course details');
-        navigation.goBack();
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchCourseDetails();
+  }, [courseId]);
+
+  // Check payment status with backend (which queries Razorpay verification)
+  const verifyPaymentAndUnlock = async (isManual: boolean = false) => {
+    if (checkingPayment) return;
+    setCheckingPayment(true);
+    try {
+      const res = await client.get('orders/check-status/', {
+        params: {
+          course_id: courseId,
+          purchase_id: pendingPurchaseIdRef.current || undefined,
+        },
+      });
+
+      if (res.data?.is_enrolled) {
+        // Payment verified! Refresh course to unlock curriculum and player
+        setAwaitingPayment(false);
+        setPendingPurchaseId(null);
+        const updatedCourse = await fetchCourseDetails();
+        Alert.alert(
+          'Payment Successful! 🎉',
+          'Your payment has been confirmed by Razorpay and the course is now unlocked. Happy learning!',
+          [
+            {
+              text: 'Start Learning',
+              onPress: () => {
+                navigation.navigate('Learn', { courseId, isEnrolled: true });
+              },
+            },
+            { text: 'OK' },
+          ]
+        );
+      } else if (isManual) {
+        Alert.alert(
+          'Payment Pending',
+          'Payment has not been confirmed yet. If you have already completed the transaction, please wait a moment and tap "Verify Payment" again. The course will remain locked until confirmation is received from Razorpay.'
+        );
+      }
+    } catch (err: any) {
+      console.error('Error verifying payment:', err);
+      if (isManual) {
+        Alert.alert('Verification Check', 'Unable to verify payment status right now. Please try again.');
+      }
+    } finally {
+      setCheckingPayment(false);
+    }
+  };
+
+  // When student switches back to the app from Razorpay checkout, automatically check status
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active' && awaitingPaymentRef.current) {
+        verifyPaymentAndUnlock(false);
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
   }, [courseId]);
 
   if (loading || !course) {
@@ -48,10 +133,37 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
   const thumbUrl = resolveMediaUrl(course.thumbnail) || FALLBACK_THUMB;
   const owned = hasCourseAccess(course);
 
-  const handleBuyCourse = () => {
-    // Open the web version for checkout to bypass Google Play Billing 30% fee
-    const url = `https://academy.natyaarts.com/courses/${courseId}`;
-    Linking.openURL(url).catch((err) => console.error("Couldn't load page", err));
+  // Directly initiates Razorpay payment flow
+  const handleBuyCourse = async () => {
+    if (buying) return;
+    setBuying(true);
+    try {
+      // 1. Create order and obtain Razorpay checkout link from backend
+      const res = await client.post('orders/create-order/', {
+        course_id: courseId,
+      });
+
+      const { payment_url, purchase_id, order_id } = res.data;
+
+      if (payment_url) {
+        // 2. Redirect directly to Razorpay's official checkout URL
+        setPendingPurchaseId(purchase_id);
+        setAwaitingPayment(true);
+        await Linking.openURL(payment_url);
+      } else {
+        // If payment link generation is unavailable, alert user
+        Alert.alert(
+          'Payment Notice',
+          'Razorpay checkout link is currently unavailable. Please check your network or try again in a moment.'
+        );
+      }
+    } catch (err: any) {
+      console.error('Failed to create Razorpay order:', err);
+      const errMsg = err.response?.data?.error || 'Could not initiate Razorpay checkout. Please try again.';
+      Alert.alert('Checkout Error', errMsg);
+    } finally {
+      setBuying(false);
+    }
   };
 
   const handleGoToCourse = () => {
@@ -82,7 +194,9 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
           <View style={styles.metaRow}>
             {!owned && <Text style={styles.price}>₹{course.price}</Text>}
             {typeof course.total_module_count === 'number' && course.total_module_count > 0 && (
-              <Text style={typography.meta}>{course.total_module_count} {course.total_module_count === 1 ? 'module' : 'modules'}</Text>
+              <Text style={typography.meta}>
+                {course.total_module_count} {course.total_module_count === 1 ? 'module' : 'modules'}
+              </Text>
             )}
           </View>
 
@@ -102,7 +216,11 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
                 <Text style={styles.moduleNumber}>{(index + 1).toString().padStart(2, '0')}</Text>
                 <View style={styles.moduleInfo}>
                   <Text style={styles.moduleTitle}>{mod.title}</Text>
-                  {!!mod.description && <Text style={styles.moduleDescription} numberOfLines={2}>{mod.description}</Text>}
+                  {!!mod.description && (
+                    <Text style={styles.moduleDescription} numberOfLines={2}>
+                      {mod.description}
+                    </Text>
+                  )}
                 </View>
               </View>
               {mod.lessons?.map((lesson: any) => (
@@ -122,23 +240,70 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
         </View>
       </ScrollView>
 
+      {/* Razorpay Verification Modal */}
+      <Modal
+        visible={awaitingPayment}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAwaitingPayment(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalIconWrap}>
+              <Icon name="credit-card" size={28} color={colors.accent} />
+            </View>
+            <Text style={styles.modalTitle}>Payment in Progress</Text>
+            <Text style={styles.modalDescription}>
+              Complete your payment on the Razorpay screen. Your course will unlock automatically once payment is confirmed.
+            </Text>
+
+            <TouchableOpacity
+              style={[styles.primaryButton, styles.modalButton]}
+              onPress={() => verifyPaymentAndUnlock(true)}
+              disabled={checkingPayment}
+            >
+              {checkingPayment ? (
+                <ActivityIndicator color={colors.textInverse} size="small" />
+              ) : (
+                <>
+                  <Icon name="refresh-cw" size={16} color={colors.textInverse} />
+                  <Text style={styles.primaryButtonText}>Verify Payment & Unlock</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.cancelModalButton}
+              onPress={() => setAwaitingPayment(false)}
+              disabled={checkingPayment}
+            >
+              <Text style={styles.cancelModalButtonText}>Close / Check Later</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       <View style={styles.footer}>
         {owned ? (
           <TouchableOpacity style={styles.primaryButton} onPress={handleGoToCourse}>
             <Icon name="play" size={16} color={colors.textInverse} />
             <Text style={styles.primaryButtonText}>Go to Course</Text>
           </TouchableOpacity>
-        ) : Platform.OS === 'android' ? (
-          <TouchableOpacity style={styles.primaryButton} onPress={handleBuyCourse}>
-            <Text style={styles.primaryButtonText}>Buy Course for ₹{course.price}</Text>
-          </TouchableOpacity>
         ) : (
-          <View style={styles.infoBox}>
-            <Icon name="shield" size={15} color={colors.textSecondary} />
-            <Text style={styles.infoBoxText}>
-              Courses enrolled on our web platform are automatically available to learn here.
-            </Text>
-          </View>
+          <TouchableOpacity
+            style={[styles.primaryButton, buying && styles.disabledButton]}
+            onPress={handleBuyCourse}
+            disabled={buying}
+          >
+            {buying ? (
+              <ActivityIndicator color={colors.textInverse} size="small" />
+            ) : (
+              <>
+                <Icon name="credit-card" size={16} color={colors.textInverse} />
+                <Text style={styles.primaryButtonText}>Buy Course for ₹{course.price}</Text>
+              </>
+            )}
+          </TouchableOpacity>
         )}
       </View>
     </SafeAreaView>
@@ -156,14 +321,24 @@ const styles = StyleSheet.create({
   artworkWrap: { width: '100%', height: ARTWORK_HEIGHT, position: 'relative', backgroundColor: colors.card },
   artwork: { width: '100%', height: '100%', resizeMode: 'cover' },
   backButton: {
-    position: 'absolute', top: spacing.lg, left: spacing.lg,
-    width: 38, height: 38, borderRadius: 19, backgroundColor: colors.scrim,
-    alignItems: 'center', justifyContent: 'center',
+    position: 'absolute',
+    top: spacing.lg,
+    left: spacing.lg,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: colors.scrim,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   typeBadge: {
-    position: 'absolute', top: spacing.lg, right: spacing.lg,
-    backgroundColor: colors.scrim, borderRadius: radius.pill,
-    paddingHorizontal: spacing.md, paddingVertical: 6,
+    position: 'absolute',
+    top: spacing.lg,
+    right: spacing.lg,
+    backgroundColor: colors.scrim,
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
   },
   typeBadgeText: { color: colors.text, fontSize: 11, fontWeight: '700', letterSpacing: 0.4 },
 
@@ -177,8 +352,12 @@ const styles = StyleSheet.create({
   description: { ...typography.bodyRegular, lineHeight: 22 },
 
   moduleCard: {
-    backgroundColor: colors.card, borderRadius: radius.lg, padding: spacing.lg,
-    marginBottom: spacing.md, borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.card,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   moduleHeaderRow: { flexDirection: 'row', marginBottom: spacing.sm },
   moduleNumber: { color: colors.accent, fontSize: 16, fontWeight: '700', width: 34 },
@@ -191,20 +370,77 @@ const styles = StyleSheet.create({
   lessonTextLocked: { color: colors.textTertiary },
 
   footer: {
-    position: 'absolute', bottom: 0, left: 0, right: 0, padding: spacing.lg,
-    backgroundColor: colors.bg, borderTopWidth: 1, borderTopColor: colors.border,
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: spacing.lg,
+    backgroundColor: colors.bg,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
   },
   primaryButton: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
-    backgroundColor: colors.accent, paddingVertical: spacing.md, borderRadius: radius.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.accent,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+  },
+  disabledButton: {
+    opacity: 0.7,
   },
   primaryButtonText: { color: colors.textInverse, fontSize: 16, fontWeight: '700', marginLeft: spacing.sm },
-  infoBox: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: colors.card,
-    borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.md,
-    gap: spacing.sm, borderWidth: 1, borderColor: colors.border,
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xl,
   },
-  infoBoxText: {
-    ...typography.meta, color: colors.textSecondary, flex: 1, lineHeight: 18,
+  modalCard: {
+    width: '100%',
+    backgroundColor: colors.card,
+    borderRadius: radius.lg,
+    padding: spacing.xl,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  modalIconWrap: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'rgba(250, 204, 21, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: spacing.md,
+  },
+  modalTitle: {
+    ...typography.section,
+    color: colors.text,
+    textAlign: 'center',
+    marginBottom: spacing.sm,
+  },
+  modalDescription: {
+    ...typography.bodyRegular,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: spacing.xl,
+  },
+  modalButton: {
+    width: '100%',
+    marginBottom: spacing.md,
+  },
+  cancelModalButton: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  cancelModalButtonText: {
+    ...typography.meta,
+    color: colors.textSecondary,
   },
 });

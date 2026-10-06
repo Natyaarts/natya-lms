@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    CreateOrderView, VerifyPaymentView, AdminPurchaseViewSet, RazorpayWebhookView,
+    CreateOrderView, VerifyPaymentView, CheckPaymentStatusView, AdminPurchaseViewSet, RazorpayWebhookView,
     BundleViewSet, OrderViewSet, CreateSubscriptionView, VerifySubscriptionPaymentView,
     SubscriptionMeView, CancelSubscriptionView, SubscriptionPlanViewSet, SubscriptionPaymentHistoryView,
     AdminSubscriptionViewSet, MyPurchaseListView,
@@ -25,6 +25,7 @@ router.register(r'subscriptions-admin', AdminSubscriptionViewSet, basename='subs
 urlpatterns = [
     path('create-order/', CreateOrderView.as_view(), name='create-order'),
     path('verify-payment/', VerifyPaymentView.as_view(), name='verify-payment'),
+    path('check-status/', CheckPaymentStatusView.as_view(), name='check-payment-status'),
     path('my-purchases/', MyPurchaseListView.as_view(), name='my-purchases'),
     path('webhook/razorpay/', RazorpayWebhookView.as_view(), name='razorpay-webhook'),
     # Phase 3.4.2/3.4.5/3.4.6: intentionally plain APIView paths (not

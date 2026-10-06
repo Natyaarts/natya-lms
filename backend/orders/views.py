@@ -122,16 +122,155 @@ class CreateOrderView(APIView):
                 amount=course.price,
                 status=Purchase.Status.PENDING
             )
+
+            # Generate Razorpay Payment Link so mobile / external clients can redirect directly to Razorpay
+            payment_url = None
+            payment_link_id = None
+            try:
+                customer_payload = {
+                    "name": (request.user.get_full_name() or request.user.username or "Student")[:50],
+                }
+                if request.user.email:
+                    customer_payload["email"] = request.user.email
+                if getattr(request.user, "phone_number", None):
+                    phone_digits = "".join(filter(str.isdigit, str(request.user.phone_number)))
+                    if len(phone_digits) >= 10:
+                        customer_payload["contact"] = phone_digits[-10:]
+
+                plink = client.payment_link.create({
+                    "amount": amount_in_paise,
+                    "currency": "INR",
+                    "accept_partial": False,
+                    "description": f"Course: {course.title[:45]}",
+                    "customer": customer_payload,
+                    "notify": {"sms": False, "email": bool(request.user.email)},
+                    "reminder_enable": False,
+                    "notes": {
+                        "course_id": str(course.id),
+                        "user_id": str(request.user.id),
+                        "purchase_id": str(purchase.id),
+                        "order_id": str(razorpay_order['id']),
+                    },
+                    "callback_url": f"https://academy.natyaarts.com/payment-callback?course_id={course.id}&purchase_id={purchase.id}",
+                    "callback_method": "get"
+                })
+                payment_url = plink.get('short_url')
+                payment_link_id = plink.get('id')
+            except Exception as plink_err:
+                logger.warning(f"Could not generate Razorpay payment link (fallback to standard order): {plink_err}")
             
             return Response({
                 "order_id": razorpay_order['id'],
+                "purchase_id": purchase.id,
                 "amount": amount_in_paise,
                 "currency": "INR",
-                "key_id": settings.RAZORPAY_KEY_ID
+                "key_id": settings.RAZORPAY_KEY_ID,
+                "payment_url": payment_url,
+                "payment_link_id": payment_link_id,
             })
             
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CheckPaymentStatusView(APIView):
+    """
+    Check the payment & enrollment status of a course/purchase for the authenticated user.
+    Strictly verifies payment before unlocking:
+    - If purchase is already SUCCESS, confirms enrollment and returns is_enrolled=True.
+    - If purchase is PENDING, checks Razorpay directly (via client.order.fetch / client.order.payments).
+      If Razorpay confirms the order was paid/captured, it marks purchase SUCCESS and calls
+      fulfill_purchase() to unlock the course.
+    - If payment is not confirmed or cancelled/failed, course remains strictly locked (is_enrolled=False).
+    """
+    authentication_classes = [CSRFEnforcedJWTCookieAuthentication]
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [PaymentVerificationRateThrottle]
+
+    def get(self, request):
+        purchase_id = request.query_params.get('purchase_id')
+        order_id = request.query_params.get('order_id')
+        course_id = request.query_params.get('course_id')
+
+        purchase = None
+        if purchase_id:
+            purchase = Purchase.objects.filter(id=purchase_id, user=request.user).first()
+        elif order_id:
+            purchase = Purchase.objects.filter(razorpay_order_id=order_id, user=request.user).first()
+        elif course_id:
+            purchase = Purchase.objects.filter(course_id=course_id, user=request.user).order_by('-created_at').first()
+
+        # Check if already enrolled in the course directly
+        if course_id and Enrollment.objects.filter(user=request.user, course_id=course_id).exists():
+            return Response({
+                "status": "SUCCESS",
+                "is_enrolled": True,
+                "course_id": int(course_id),
+                "message": "Enrolled in course.",
+            })
+
+        if not purchase:
+            return Response({
+                "status": "NOT_FOUND",
+                "is_enrolled": False,
+                "message": "No purchase found for this course.",
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        from .services import fulfill_purchase
+
+        if purchase.status == Purchase.Status.SUCCESS:
+            fulfill_purchase(purchase, Purchase.Status.SUCCESS)
+            return Response({
+                "status": "SUCCESS",
+                "is_enrolled": True,
+                "course_id": purchase.course_id,
+                "purchase_id": purchase.id,
+                "message": "Payment verified and course unlocked!",
+            })
+
+        if purchase.status == Purchase.Status.PENDING:
+            # Check with Razorpay API
+            if purchase.razorpay_order_id:
+                try:
+                    rzp_order = client.order.fetch(purchase.razorpay_order_id)
+                    if rzp_order.get('status') == 'paid':
+                        payments = client.order.payments(purchase.razorpay_order_id)
+                        items = payments.get('items', [])
+                        successful_payment = next((p for p in items if p.get('status') == 'captured'), None)
+                        if successful_payment:
+                            purchase.razorpay_payment_id = successful_payment.get('id')
+
+                        previous_status = purchase.status
+                        purchase.status = Purchase.Status.SUCCESS
+                        purchase.save(update_fields=['status', 'razorpay_payment_id', 'updated_at'])
+
+                        fulfill_purchase(purchase, previous_status)
+
+                        return Response({
+                            "status": "SUCCESS",
+                            "is_enrolled": True,
+                            "course_id": purchase.course_id,
+                            "purchase_id": purchase.id,
+                            "message": "Payment verified and course unlocked!",
+                        })
+                except Exception as check_err:
+                    logger.warning(f"Error checking order status with Razorpay for order {purchase.razorpay_order_id}: {check_err}")
+
+            return Response({
+                "status": "PENDING",
+                "is_enrolled": False,
+                "course_id": purchase.course_id,
+                "purchase_id": purchase.id,
+                "message": "Payment is pending confirmation. Course remains locked.",
+            })
+
+        return Response({
+            "status": purchase.status,
+            "is_enrolled": False,
+            "course_id": purchase.course_id,
+            "purchase_id": purchase.id,
+            "message": f"Payment status is {purchase.status}. Course remains locked.",
+        })
 
 @method_decorator(csrf_exempt, name='dispatch')
 class VerifyPaymentView(APIView):
