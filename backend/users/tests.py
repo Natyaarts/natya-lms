@@ -247,3 +247,40 @@ class TeacherMentorProfileTests(APITestCase):
         self.client.force_authenticate(user=self.admin)
         res = self.client.get(reverse('admin-user-teacher-profile', kwargs={'pk': self.student.pk}))
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class SocialAuthAdapterTests(APITestCase):
+    """Verify Google Social Auth adapter links existing users and bypasses raw signup form."""
+
+    def test_pre_social_login_links_existing_user(self):
+        from users.adapters import CustomSocialAccountAdapter
+        from allauth.socialaccount.models import SocialLogin, SocialAccount
+        user = User.objects.create_user(username="existing_student", email="student@example.com")
+        adapter = CustomSocialAccountAdapter()
+        sl = SocialLogin(
+            account=SocialAccount(provider='google', uid='google_uid_123', extra_data={'email': 'student@example.com'}),
+            user=User(email='student@example.com')
+        )
+        adapter.pre_social_login(None, sl)
+        self.assertTrue(sl.is_existing)
+        self.assertEqual(sl.user, user)
+        self.assertEqual(sl.account.user, user)
+
+    def test_populate_user_ensures_unique_username(self):
+        from users.adapters import CustomSocialAccountAdapter
+        from allauth.socialaccount.models import SocialLogin, SocialAccount
+        User.objects.create_user(username="dance_fan", email="fan1@example.com")
+        adapter = CustomSocialAccountAdapter()
+        sl = SocialLogin(
+            account=SocialAccount(provider='google', uid='google_uid_456', extra_data={'email': 'dance_fan@example.com'}),
+            user=User(email='dance_fan@example.com', username='dance_fan')
+        )
+        user = adapter.populate_user(None, sl, {'email': 'dance_fan@example.com'})
+        self.assertNotEqual(user.username, "dance_fan")
+        self.assertTrue(user.username.startswith("dance_fan_"))
+
+    def test_auto_complete_social_signup_view_fallback_redirect(self):
+        res = self.client.get('/accounts/3rdparty/signup/')
+        self.assertEqual(res.status_code, 302)
+        self.assertIn('/login', res.url)
+

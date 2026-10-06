@@ -68,7 +68,11 @@ def health_check_detailed(request):
     return JsonResponse({'status': 'ok' if healthy else 'degraded', 'checks': checks})
 
 
-from users.views import ThrottledLoginView, ThrottledPasswordResetView
+from users.views import (
+    ThrottledLoginView,
+    ThrottledPasswordResetView,
+    AutoCompleteSocialSignupView,
+)
 
 urlpatterns = [
     path('', health_check, name='health_check'),
@@ -108,6 +112,7 @@ urlpatterns = [
     path('api/auth/registration/', include('dj_rest_auth.registration.urls')),
     path('api/users/', include('users.urls')),
     path('api/', include('notifications.urls')),
+    path('accounts/3rdparty/signup/', AutoCompleteSocialSignupView.as_view(), name='socialaccount_signup'),
     path('accounts/', include('allauth.urls')),
 ]
 

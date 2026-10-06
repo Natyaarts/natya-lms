@@ -1413,3 +1413,109 @@ class AdminAuditLogListView(generics.ListAPIView):
         if actor_id:
             qs = qs.filter(actor_id=actor_id)
         return qs
+
+
+from django.views import View
+from django.shortcuts import redirect
+from allauth.socialaccount.internal.flows import signup as flows_signup
+from allauth.account.utils import perform_login
+from allauth.socialaccount.adapter import get_adapter as get_social_adapter
+
+
+class AutoCompleteSocialSignupView(View):
+    """
+    Seamless fallback for allauth's raw 3rdparty signup form (/accounts/3rdparty/signup/).
+    If any OAuth callback falls through or a user lands on this URL, this view automatically
+    resolves the user (linking by email if they exist, or creating with a unique username if new),
+    logs them in immediately, and redirects them to the frontend dashboard or requested next URL.
+    """
+
+    def dispatch(self, request, *args, **kwargs):
+        sociallogin = flows_signup.get_pending_signup(request)
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'https://academy.natyaarts.com')
+        if not sociallogin:
+            return redirect(f"{frontend_url}/login")
+
+        # Extract email
+        email = sociallogin.account.extra_data.get('email')
+        if not email and sociallogin.user and sociallogin.user.email:
+            email = sociallogin.user.email
+        if not email and sociallogin.email_addresses:
+            email = sociallogin.email_addresses[0].email
+
+        user = None
+        if email:
+            user = User.objects.filter(email__iexact=email).first()
+
+        adapter = get_social_adapter(request)
+
+        if user:
+            # Existing user: bind social account and proceed
+            sociallogin.user = user
+            sociallogin.account.user = user
+            sociallogin._did_authenticate_by_email = None
+            try:
+                from allauth.socialaccount.models import SocialAccount
+                sa = SocialAccount.objects.filter(
+                    provider=sociallogin.account.provider,
+                    uid=sociallogin.account.uid
+                ).first()
+                if sa:
+                    if sa.user != user:
+                        sa.user = user
+                    sa.extra_data = sociallogin.account.extra_data
+                    sa.save()
+                    sociallogin.account = sa
+                else:
+                    sociallogin.account.user = user
+                    sociallogin.account.save()
+            except Exception as e:
+                logger.warning(f"Error in AutoCompleteSocialSignupView linking account: {e}")
+        else:
+            # Brand new user: auto-populate and save user
+            try:
+                user = adapter.save_user(request, sociallogin, form=None)
+            except Exception as e:
+                logger.error(f"Error creating user in AutoCompleteSocialSignupView: {e}")
+                import re
+                base = email.split('@')[0] if email else 'student'
+                base = re.sub(r'[^a-zA-Z0-9_]', '', base)[:20] or 'student'
+                candidate = base
+                counter = 1
+                while User.objects.filter(username=candidate).exists():
+                    candidate = f"{base}_{counter}"
+                    counter += 1
+                user = User.objects.create(
+                    username=candidate,
+                    email=email or f"{candidate}@example.com",
+                    first_name=sociallogin.account.extra_data.get('given_name', '')[:30],
+                    last_name=sociallogin.account.extra_data.get('family_name', '')[:30],
+                )
+                user.set_unusable_password()
+                user.save()
+                sociallogin.user = user
+                sociallogin.account.user = user
+                try:
+                    sociallogin.account.save()
+                except Exception:
+                    pass
+
+        # Clear pending signup session key
+        request.session.pop("socialaccount_sociallogin", None)
+
+        # Determine target redirect URL
+        next_url = (
+            request.GET.get('next') or
+            request.POST.get('next') or
+            request.session.get('next') or
+            adapter.get_login_redirect_url(request)
+        )
+
+        return perform_login(
+            request,
+            user,
+            email_verification='none',
+            redirect_url=next_url,
+            signal_kwargs={"sociallogin": sociallogin},
+        )
+
