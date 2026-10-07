@@ -284,3 +284,63 @@ class SocialAuthAdapterTests(APITestCase):
         self.assertEqual(res.status_code, 302)
         self.assertIn('/login', res.url)
 
+    def test_post_login_attaches_jwt_cookies_and_rewrites_redirect(self):
+        from users.adapters import CustomAccountAdapter
+        from django.test import RequestFactory
+        user = User.objects.create_user(username="cookie_student", email="cookie@example.com")
+        adapter = CustomAccountAdapter()
+        factory = RequestFactory()
+        request = factory.get('/accounts/google/login/callback/')
+        request.user = user
+
+        from django.contrib.sessions.middleware import SessionMiddleware
+        session_mw = SessionMiddleware(lambda req: None)
+        session_mw.process_request(request)
+        request.session.save()
+
+        response = adapter.post_login(
+            request,
+            user,
+            email_verification='none',
+            signal_kwargs={},
+            email='cookie@example.com',
+            signup=False,
+            redirect_url='/courses/1',
+        )
+
+        self.assertEqual(response.status_code, 302)
+        # Location header must be prefixed with frontend URL, never raw relative
+        self.assertTrue(response['Location'].startswith('http'))
+        self.assertIn('/courses/1', response['Location'])
+
+        # JWT cookies must be attached
+        self.assertIn('natya-auth', response.cookies)
+        self.assertIn('natya-refresh', response.cookies)
+        self.assertTrue(len(response.cookies['natya-auth'].value) > 20)
+        self.assertTrue(len(response.cookies['natya-refresh'].value) > 20)
+
+    def test_get_login_redirect_url_resolves_to_frontend(self):
+        from users.adapters import CustomAccountAdapter
+        from django.test import RequestFactory
+        adapter = CustomAccountAdapter()
+        factory = RequestFactory()
+
+        # With relative next
+        req_with_next = factory.get('/accounts/google/login/?next=/dashboard')
+        redirect_url = adapter.get_login_redirect_url(req_with_next)
+        self.assertTrue(redirect_url.startswith('http'))
+        self.assertTrue(redirect_url.endswith('/dashboard'))
+
+        # Without next
+        req_without_next = factory.get('/accounts/google/login/')
+        redirect_url = adapter.get_login_redirect_url(req_without_next)
+        self.assertTrue(redirect_url.startswith('http'))
+        self.assertTrue(redirect_url.endswith('/dashboard'))
+
+    def test_current_user_view_authenticates_with_session(self):
+        user = User.objects.create_user(username="session_student", email="session@example.com")
+        self.client.force_login(user)
+        res = self.client.get('/api/users/me/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()['email'], "session@example.com")
+

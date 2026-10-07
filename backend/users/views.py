@@ -1507,15 +1507,24 @@ class AutoCompleteSocialSignupView(View):
         next_url = (
             request.GET.get('next') or
             request.POST.get('next') or
-            request.session.get('next') or
-            adapter.get_login_redirect_url(request)
+            request.session.get('next')
         )
+        if next_url and next_url.startswith('/'):
+            target_url = f"{frontend_url.rstrip('/')}{next_url}"
+        elif next_url and next_url.startswith(('https://', 'http://')):
+            target_url = next_url
+        else:
+            target_url = f"{frontend_url.rstrip('/')}/dashboard"
 
-        return perform_login(
+        response = perform_login(
             request,
             user,
             email_verification='none',
-            redirect_url=next_url,
+            redirect_url=target_url,
             signal_kwargs={"sociallogin": sociallogin},
         )
+
+        from users.adapters import attach_jwt_cookies
+        return attach_jwt_cookies(response, user)
+
 
