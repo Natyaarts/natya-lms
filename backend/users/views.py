@@ -18,6 +18,8 @@ from django.shortcuts import render, get_object_or_404
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import ensure_csrf_cookie
 from dj_rest_auth.views import LoginView, PasswordResetView
+from dj_rest_auth.jwt_auth import JWTCookieAuthentication
+from rest_framework.authentication import SessionAuthentication
 
 import requests
 
@@ -113,25 +115,7 @@ def _generate_otp():
 
 
 class ThrottledLoginView(LoginView):
-    """
-    Final release-blocker fix. The one and only change from dj-rest-auth's
-    stock LoginView (core/urls.py routes api/auth/login/ to THIS class
-    instead, overriding dj_rest_auth.urls' own 'login/' pattern -- see
-    that file's own comment) is the added throttle_classes below --
-    everything else (credential validation, JWT cookie issuance, response
-    shape) is entirely inherited, unchanged. Password-based login for
-    superuser/staff/teacher/mentor accounts previously had no rate
-    limiting at all; LoginRateThrottle (users/throttles.py) is the exact
-    same per-IP, Redis-backed SimpleRateThrottle pattern already proven by
-    OTPRequestThrottle/OTPVerifyThrottle above, scoped via
-    REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['login'] (core/settings.py)
-    -- never a hardcoded rate here.
-
-    Deliberately NOT a global DEFAULT_THROTTLE_CLASSES change: this
-    targets only the one endpoint identified as the release blocker,
-    exactly as scoped -- OTP, JWT refresh, and every other endpoint's
-    throttling behavior is untouched.
-    """
+    authentication_classes = []
     throttle_classes = [LoginRateThrottle]
 
 
@@ -1056,6 +1040,8 @@ class AdminStatsView(APIView):
 
 @method_decorator(ensure_csrf_cookie, name='get')
 class CurrentUserView(APIView):
+    authentication_classes = [JWTCookieAuthentication, SessionAuthentication]
+
     """
     Payment/subscription CSRF hardening (final release audit finding):
     ensure_csrf_cookie added here -- this is the single most universally-

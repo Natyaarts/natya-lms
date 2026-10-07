@@ -25,10 +25,14 @@ export default function AdminLogin() {
     setLoading(true);
 
     try {
-      const payload = {
-        username: formData.username.trim(),
+      const trimmed = formData.username.trim();
+      const payload: any = {
+        username: trimmed,
         password: formData.password
       };
+      if (trimmed.includes('@')) {
+        payload.email = trimmed;
+      }
 
       // Extract CSRF token from cookies if it exists
       let csrfToken = "";

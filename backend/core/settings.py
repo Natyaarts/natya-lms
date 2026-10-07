@@ -105,7 +105,6 @@ SITE_ID = 1
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'dj_rest_auth.jwt_auth.JWTCookieAuthentication',
-        'rest_framework.authentication.SessionAuthentication',
     ),
     # General API rate limiting gap fix (final release audit). Before this,
     # DEFAULT_THROTTLE_CLASSES was never set at all -- DRF's own default is
@@ -212,22 +211,6 @@ REST_FRAMEWORK = {
     },
 }
 
-REST_AUTH = {
-    'USE_JWT': True,
-    'JWT_AUTH_COOKIE': 'natya-auth',
-    'JWT_AUTH_REFRESH_COOKIE': 'natya-refresh',
-    'USER_DETAILS_SERIALIZER': 'users.serializers.CustomUserDetailsSerializer',
-    'JWT_AUTH_SAMESITE': 'None',
-    'JWT_AUTH_SECURE': True,
-}
-
-# Allow cookies to be sent cross-domain (Frontend -> Backend API)
-CSRF_COOKIE_SAMESITE = 'None'
-CSRF_COOKIE_SECURE = True
-CSRF_COOKIE_HTTPONLY = False
-SESSION_COOKIE_SAMESITE = 'None'
-SESSION_COOKIE_SECURE = True
-
 # Allow academy.natyaarts.com to read cookies set by api.natyaarts.com.
 # Only applies in production: a cookie's Domain attribute must be the exact
 # request host or a parent of it, so setting '.natyaarts.com' while running
@@ -241,8 +224,30 @@ COOKIE_DOMAIN = os.environ.get('COOKIE_DOMAIN', None if DEBUG else '.natyaarts.c
 CSRF_COOKIE_DOMAIN = COOKIE_DOMAIN
 SESSION_COOKIE_DOMAIN = COOKIE_DOMAIN
 
+REST_AUTH = {
+    'USE_JWT': True,
+    'JWT_AUTH_COOKIE': 'natya-auth',
+    'JWT_AUTH_REFRESH_COOKIE': 'natya-refresh',
+    'USER_DETAILS_SERIALIZER': 'users.serializers.CustomUserDetailsSerializer',
+    'JWT_AUTH_SAMESITE': 'None',
+    'JWT_AUTH_SECURE': True,
+    'JWT_AUTH_COOKIE_DOMAIN': COOKIE_DOMAIN,
+}
+
+# Allow cookies to be sent cross-domain (Frontend -> Backend API)
+CSRF_COOKIE_SAMESITE = 'None'
+CSRF_COOKIE_SECURE = True
+CSRF_COOKIE_HTTPONLY = False
+SESSION_COOKIE_SAMESITE = 'None'
+SESSION_COOKIE_SECURE = True
+
 # Tell Django it's behind a secure proxy so it sends Secure cookies over HTTP from the load balancer
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+    'allauth.account.auth_backends.AuthenticationBackend',
+]
 
 ACCOUNT_EMAIL_VERIFICATION = 'none'
 ACCOUNT_AUTHENTICATION_METHOD = 'username_email'
