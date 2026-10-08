@@ -108,6 +108,13 @@ def user_has_course_access(user, course):
     if not user or not getattr(user, 'is_authenticated', False):
         return False
     if Enrollment.objects.filter(user=user, course=course).exists():
+        try:
+            from billing.services.access import student_has_billing_access
+            billing_access = student_has_billing_access(user, course)
+            if billing_access is not None:
+                return billing_access
+        except (ImportError, Exception):
+            pass
         return True
     if course.course_type != Course.CourseType.RECORDED:
         return False
@@ -137,6 +144,31 @@ def accessible_course_ids_for_user(user):
         return set()
 
     enrolled_ids = set(Enrollment.objects.filter(user=user).values_list('course_id', flat=True))
+    if enrolled_ids:
+        try:
+            from billing.models import StudentBillingPlan, BillingAccessExtension, PlanStatus
+            from datetime import date
+            today = date.today()
+            restricted_ids = set(
+                StudentBillingPlan.objects.filter(
+                    student=user,
+                    course_id__in=enrolled_ids,
+                    is_active=True,
+                    status__in=[PlanStatus.OVERDUE, PlanStatus.RESTRICTED, PlanStatus.PAUSED, PlanStatus.CANCELLED]
+                ).values_list('course_id', flat=True)
+            )
+            if restricted_ids:
+                extended_ids = set(
+                    BillingAccessExtension.objects.filter(
+                        student=user,
+                        course_id__in=restricted_ids,
+                        is_active=True,
+                        extended_until__gte=today
+                    ).values_list('course_id', flat=True)
+                )
+                enrolled_ids = enrolled_ids - (restricted_ids - extended_ids)
+        except Exception:
+            pass
 
     plan_ids = list(
         Subscription.objects.filter(_valid_subscription_filter(), user=user).values_list('plan_id', flat=True)

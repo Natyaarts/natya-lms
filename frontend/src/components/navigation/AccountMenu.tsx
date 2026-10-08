@@ -85,6 +85,15 @@ export default function AccountMenu() {
             </Link>
 
             <Link
+              href="/student/billing"
+              onClick={() => setIsOpen(false)}
+              className="flex items-center gap-3 px-4 py-2.5 text-sm text-zinc-300 hover:bg-white/5 hover:text-white transition-colors"
+            >
+              <CreditCard className="w-4 h-4 text-[#facc15]" />
+              <span>Billing & Fees</span>
+            </Link>
+
+            <Link
               href="/invoices"
               onClick={() => setIsOpen(false)}
               className="flex items-center gap-3 px-4 py-2.5 text-sm text-zinc-300 hover:bg-white/5 hover:text-white transition-colors"

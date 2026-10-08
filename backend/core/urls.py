@@ -81,6 +81,7 @@ urlpatterns = [
     path('api/courses/', include('courses.urls')),
     path('api/orders/', include('orders.urls')),
     path('api/finance/', include('finance.urls')),
+    path('api/billing/', include('billing.urls')),
     path('api/cms/', include('cms.urls')),
     # Final release-blocker fix: overrides dj_rest_auth.urls' own
     # 'login/' pattern with a throttled subclass (see

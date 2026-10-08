@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { ChevronLeft, Plus, Trash2, BookOpen, Users, DollarSign, Calendar, MessageSquare, Video, UserCircle } from "lucide-react";
+import StudentBillingSection from "@/components/admin/billing/StudentBillingSection";
 
 export default function UserDetailPage() {
   const { id } = useParams();
@@ -925,52 +926,14 @@ export default function UserDetailPage() {
         )}
 
         {activeTab === 'fees' && !isTeacherRole && !isMentorRole && (
-          <div>
-            <h2 className="text-xl font-bold mb-4">Payment & Fees History</h2>
-            <p className="text-zinc-400 text-xs mb-6">Record of online Razorpay or manual admin billing transactions.</p>
-            <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-hidden">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
-                    <th className="p-4 font-semibold">Course</th>
-                    <th className="p-4 font-semibold">Purchase Date</th>
-                    <th className="p-4 font-semibold">Amount Paid</th>
-                    <th className="p-4 font-semibold">Receipt status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5 text-zinc-300">
-                  {purchases.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="p-16 text-center text-zinc-500">No transaction records found.</td>
-                    </tr>
-                  ) : (
-                    purchases.map((purchase: any) => (
-                      <tr key={purchase.id}>
-                        <td className="p-4 text-white font-bold">{purchase.course_title}</td>
-                        <td className="p-4 text-zinc-400">{new Date(purchase.created_at).toLocaleDateString()}</td>
-                        <td className="p-4 text-[#facc15] font-bold">₹{purchase.amount}</td>
-                        <td className="p-4">
-                          <div className="flex items-center gap-3">
-                            <span className={`px-2 py-0.5 text-[10px] font-bold rounded ${purchase.status === 'SUCCESS' ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
-                              {purchase.status === 'SUCCESS' ? 'PAID' : 'UNPAID'}
-                            </span>
-                            {purchase.status === 'PENDING' && (
-                              <button 
-                                onClick={() => handleMarkAsPaid(purchase.id)}
-                                className="text-xs text-[#facc15] hover:text-yellow-400 font-semibold underline"
-                              >
-                                Mark as Paid
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <StudentBillingSection
+            studentId={Array.isArray(id) ? id[0] : (id || (user ? user.id : ''))}
+            studentName={`${user?.first_name || user?.username || ''} ${user?.last_name || ''}`.trim()}
+            studentEmail={user?.email}
+            enrolledCourses={courses}
+            legacyPurchases={purchases}
+            onRefreshData={fetchUserData}
+          />
         )}
 
         {activeTab === 'communication' && !isTeacherRole && !isMentorRole && (

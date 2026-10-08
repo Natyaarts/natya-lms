@@ -561,6 +561,25 @@ class RazorpayWebhookView(APIView):
                 self._apply_order_reconciliation(webhook_event, order, payment_id, is_success_event)
                 return
 
+            # Check if this Razorpay order belongs to a StudentInvoice (dynamic billing)
+            try:
+                from billing.models import StudentInvoice, PaymentMethod
+                from billing.services.payment import process_invoice_payment_success
+                student_invoice = StudentInvoice.objects.select_for_update().filter(razorpay_order_id=order_id).first()
+                if student_invoice:
+                    if is_success_event:
+                        process_invoice_payment_success(
+                            invoice=student_invoice,
+                            razorpay_payment_id=payment_id or '',
+                            payment_method=PaymentMethod.RAZORPAY
+                        )
+                    webhook_event.status = WebhookEvent.Status.PROCESSED
+                    webhook_event.processed_at = timezone.now()
+                    webhook_event.save(update_fields=['status', 'processed_at'])
+                    return
+            except Exception as e:
+                logger.error(f"Error reconciling student invoice in webhook: {e}", exc_info=True)
+
             # Not necessarily an error on Razorpay's side -- e.g. a test
             # webhook, or an order created through a path this app doesn't
             # track. Recorded as FAILED so it surfaces in the WebhookEvent
@@ -568,7 +587,7 @@ class RazorpayWebhookView(APIView):
             # normally (no exception) so _process_event doesn't overwrite
             # this more specific error_message with a generic one.
             webhook_event.status = WebhookEvent.Status.FAILED
-            webhook_event.error_message = f"No Purchase or Order found for razorpay_order_id={order_id}"
+            webhook_event.error_message = f"No Purchase, Order, or StudentInvoice found for razorpay_order_id={order_id}"
             webhook_event.processed_at = timezone.now()
             webhook_event.save(update_fields=['status', 'error_message', 'processed_at'])
             logger.warning(

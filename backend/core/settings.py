@@ -82,6 +82,7 @@ INSTALLED_APPS = [
     'cms',
     'notifications',
     'finance',
+    'billing',
     
     # Auth
     'rest_framework.authtoken',
@@ -606,6 +607,15 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
+from celery.schedules import crontab
+CELERY_BEAT_SCHEDULE = {
+    'billing-daily-automation': {
+        'task': 'billing.tasks.billing_daily_automation',
+        'schedule': crontab(hour=1, minute=0),  # Runs daily at 01:00 AM IST
+    },
+}
+
+
 # Phase 3.9: Django cache backend, needed to make DRF throttling (OTP
 # endpoints, REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'] above) actually
 # effective -- without an explicit CACHES setting, Django defaults to
@@ -882,4 +892,21 @@ APP_REVIEW_STATIC_OTP = os.environ.get('APP_REVIEW_STATIC_OTP', '839201').strip(
 # ---------------------------------------------------------------------------
 ZOOM_ACCOUNT_ID = os.environ.get('ZOOM_ACCOUNT_ID', 'btl6dp5ATMCqve1PVjtUbQ').strip()
 ZOOM_CLIENT_ID = os.environ.get('ZOOM_CLIENT_ID', 'ESC0pUcUSnSJXTsZS7xRgQ').strip()
-ZOOM_CLIENT_SECRET = os.environ.get('ZOOM_CLIENT_SECRET', 'FWiwOex9oFrzDQe5taK24SegAA9uvi77').strip()
+ZOOM_CLIENT_SECRET = os.environ.get('ZOOM_CLIENT_SECRET', 'FWiwOex9oFrzDQe5taK24SegAA9uvi77').strip()
+
+# ---------------------------------------------------------------------------
+# Academy Billing & Receipt Tax Metadata (Configuration-Driven)
+# ---------------------------------------------------------------------------
+# Official legal entity and tax registration details for student receipts.
+# In production, these should be supplied via server environment variables.
+# When unconfigured, the system isolates values and flags `is_tax_profile_configured=False`.
+ACADEMY_BILLING_METADATA = {
+    "NAME": os.environ.get("ACADEMY_NAME", "Natya Arts Academy"),
+    "LEGAL_NAME": os.environ.get("ACADEMY_LEGAL_NAME", ""),
+    "ADDRESS": os.environ.get("ACADEMY_ADDRESS", ""),
+    "GSTIN": os.environ.get("ACADEMY_GSTIN", ""),
+    "PAN": os.environ.get("ACADEMY_PAN", ""),
+    "EMAIL": os.environ.get("ACADEMY_BILLING_EMAIL", os.environ.get("DEFAULT_FROM_EMAIL", "support@natyaarts.com")),
+    "PHONE": os.environ.get("ACADEMY_BILLING_PHONE", ""),
+    "WEBSITE": os.environ.get("ACADEMY_WEBSITE", "https://academy.natyaarts.com"),
+}

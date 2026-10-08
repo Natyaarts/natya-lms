@@ -52,8 +52,18 @@ export default function InvoicesPage() {
   return (
     <div className="min-h-screen bg-black text-white font-sans selection:bg-[#facc15] selection:text-black pb-24">
       <div className="max-w-5xl mx-auto px-6 pt-32">
-        <h1 className="text-4xl font-bold mb-2">Invoices</h1>
-        <p className="text-zinc-400 text-sm mb-8">Receipts for every course, bundle, and subscription payment on your account.</p>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+          <div>
+            <h1 className="text-4xl font-bold mb-2">Invoices</h1>
+            <p className="text-zinc-400 text-sm">Receipts for every course, bundle, and subscription payment on your account.</p>
+          </div>
+          <Link
+            href="/student/billing"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#facc15]/10 border border-[#facc15]/30 text-[#facc15] hover:bg-[#facc15]/20 text-xs font-semibold transition-colors self-start sm:self-auto"
+          >
+            Course Fee Billing & Invoices &rarr;
+          </Link>
+        </div>
 
         {error && <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-xl mb-6 text-sm">{error}</div>}
 

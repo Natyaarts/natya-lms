@@ -222,6 +222,19 @@ export default function MobileNavDrawer({ isOpen, onClose }: MobileNavDrawerProp
                 </Link>
 
                 <Link
+                  href="/student/billing"
+                  onClick={onClose}
+                  className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${
+                    isActive("/student/billing")
+                      ? "bg-[#facc15]/15 text-[#facc15] font-semibold"
+                      : "text-zinc-300 hover:bg-white/5 hover:text-white"
+                  }`}
+                >
+                  <CreditCard className="w-4 h-4 text-[#facc15]" />
+                  <span>Fee Billing & Invoices</span>
+                </Link>
+
+                <Link
                   href="/invoices"
                   onClick={onClose}
                   className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${
