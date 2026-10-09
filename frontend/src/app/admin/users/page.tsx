@@ -21,7 +21,7 @@ export default function AdminUsers() {
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
-  const pageSize = 8;
+  const [pageSize, setPageSize] = useState<number | 'all'>(8);
 
   // Add Modals State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -211,13 +211,17 @@ export default function AdminUsers() {
   });
 
   // Paginate list
-  const totalPages = Math.max(1, Math.ceil(filteredUsers.length / pageSize));
-  const displayedUsers = filteredUsers.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const isViewAll = pageSize === 'all';
+  const effectivePageSize = isViewAll ? Math.max(1, filteredUsers.length) : pageSize;
+  const totalPages = isViewAll ? 1 : Math.max(1, Math.ceil(filteredUsers.length / effectivePageSize));
+  const displayedUsers = isViewAll
+    ? filteredUsers
+    : filteredUsers.slice((currentPage - 1) * effectivePageSize, currentPage * effectivePageSize);
 
-  // Reset page when switching filters/tabs
+  // Reset page when switching filters/tabs or page size
   useEffect(() => {
     setCurrentPage(1);
-  }, [activeTab, searchQuery, statusFilter]);
+  }, [activeTab, searchQuery, statusFilter, pageSize]);
 
   return (
     <div className="max-w-6xl mx-auto pb-20 font-sans text-white">
@@ -429,30 +433,84 @@ export default function AdminUsers() {
         </div>
 
         {/* Pagination bar */}
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between px-6 py-4 bg-white/5 border-t border-white/5 text-sm text-zinc-400">
+        {filteredUsers.length > 0 && (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-4 bg-white/5 border-t border-white/5 text-sm text-zinc-400">
             <div>
-              Showing <span className="font-semibold text-white">{(currentPage - 1) * pageSize + 1}</span> to{" "}
-              <span className="font-semibold text-white">
-                {Math.min(currentPage * pageSize, filteredUsers.length)}
-              </span>{" "}
-              of <span className="font-semibold text-white">{filteredUsers.length}</span> users
+              {isViewAll ? (
+                <span>
+                  Showing all <span className="font-semibold text-white">{filteredUsers.length}</span> users
+                </span>
+              ) : (
+                <span>
+                  Showing <span className="font-semibold text-white">{(currentPage - 1) * effectivePageSize + 1}</span> to{" "}
+                  <span className="font-semibold text-white">
+                    {Math.min(currentPage * effectivePageSize, filteredUsers.length)}
+                  </span>{" "}
+                  of <span className="font-semibold text-white">{filteredUsers.length}</span> users
+                </span>
+              )}
             </div>
-            <div className="flex gap-2">
+
+            <div className="flex items-center gap-3">
+              {/* Rows per page selector with View All option */}
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-zinc-500">Show:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    const val = e.target.value === 'all' ? 'all' : Number(e.target.value);
+                    setPageSize(val);
+                    setCurrentPage(1);
+                  }}
+                  className="bg-zinc-950 border border-white/10 hover:border-white/20 text-white text-xs rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-[#facc15] transition-colors cursor-pointer"
+                >
+                  <option value={8}>8 per page</option>
+                  <option value={20}>20 per page</option>
+                  <option value={50}>50 per page</option>
+                  <option value="all">View All ({filteredUsers.length})</option>
+                </select>
+              </div>
+
+              {/* View All quick button */}
               <button
-                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                disabled={currentPage === 1}
-                className="p-2 bg-zinc-950 border border-white/10 hover:border-white/20 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                type="button"
+                onClick={() => {
+                  setPageSize(prev => (prev === 'all' ? 8 : 'all'));
+                  setCurrentPage(1);
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+                  isViewAll
+                    ? "bg-[#facc15] text-black border-[#facc15] shadow-sm font-bold"
+                    : "bg-zinc-950 text-zinc-400 border-white/10 hover:text-white hover:border-white/20"
+                }`}
               >
-                <ChevronLeft className="w-4 h-4" />
+                {isViewAll ? "Paginate (8)" : "View All"}
               </button>
-              <button
-                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                disabled={currentPage === totalPages}
-                className="p-2 bg-zinc-950 border border-white/10 hover:border-white/20 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                <ChevronRight className="w-4 h-4" />
-              </button>
+
+              {/* Page navigation buttons */}
+              {!isViewAll && totalPages > 1 && (
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-zinc-500 mr-1 hidden sm:inline">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <button
+                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                    disabled={currentPage === 1}
+                    className="p-2 bg-zinc-950 border border-white/10 hover:border-white/20 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    title="Previous page"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                    disabled={currentPage === totalPages}
+                    className="p-2 bg-zinc-950 border border-white/10 hover:border-white/20 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    title="Next page"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}

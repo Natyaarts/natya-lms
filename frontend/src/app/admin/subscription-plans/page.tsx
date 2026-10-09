@@ -71,7 +71,7 @@ export default function SubscriptionPlansPage() {
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
-  const pageSize = 8;
+  const [pageSize, setPageSize] = useState<number | 'all'>(8);
 
   // Available courses for bundle selection
   const [availableCourses, setAvailableCourses] = useState<AvailableCourse[]>([]);
@@ -172,11 +172,14 @@ export default function SubscriptionPlansPage() {
     });
   }, [plans, searchTerm, intervalFilter, statusFilter]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredPlans.length / pageSize));
+  const isViewAll = pageSize === 'all';
+  const effectivePageSize = isViewAll ? Math.max(1, filteredPlans.length) : pageSize;
+  const totalPages = isViewAll ? 1 : Math.max(1, Math.ceil(filteredPlans.length / effectivePageSize));
   const paginatedPlans = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return filteredPlans.slice(start, start + pageSize);
-  }, [filteredPlans, currentPage, pageSize]);
+    if (isViewAll) return filteredPlans;
+    const start = (currentPage - 1) * effectivePageSize;
+    return filteredPlans.slice(start, start + effectivePageSize);
+  }, [filteredPlans, currentPage, isViewAll, effectivePageSize]);
 
   // Metric Aggregates
   const totalPlansCount = plans.length;
@@ -697,30 +700,79 @@ export default function SubscriptionPlansPage() {
         </div>
 
         {/* Pagination Footer */}
-        {filteredPlans.length > pageSize && (
-          <div className="p-4 border-t border-white/10 flex items-center justify-between text-xs text-zinc-400">
+        {filteredPlans.length > 0 && (
+          <div className="p-4 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-zinc-400">
             <div>
-              Showing {(currentPage - 1) * pageSize + 1} to{" "}
-              {Math.min(currentPage * pageSize, filteredPlans.length)} of {filteredPlans.length} plans
+              {isViewAll ? (
+                <span>
+                  Showing all <span className="font-semibold text-white">{filteredPlans.length}</span> plans
+                </span>
+              ) : (
+                <span>
+                  Showing {(currentPage - 1) * effectivePageSize + 1} to{" "}
+                  {Math.min(currentPage * effectivePageSize, filteredPlans.length)} of {filteredPlans.length} plans
+                </span>
+              )}
             </div>
-            <div className="flex items-center gap-2">
+
+            <div className="flex items-center gap-3">
+              {/* Rows selector */}
+              <div className="flex items-center gap-2">
+                <span className="text-zinc-500">Show:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    const val = e.target.value === 'all' ? 'all' : Number(e.target.value);
+                    setPageSize(val);
+                    setCurrentPage(1);
+                  }}
+                  className="bg-zinc-950 border border-white/10 hover:border-white/20 text-white text-xs rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-[#facc15] transition cursor-pointer"
+                >
+                  <option value={8}>8 per page</option>
+                  <option value={20}>20 per page</option>
+                  <option value={50}>50 per page</option>
+                  <option value="all">View All ({filteredPlans.length})</option>
+                </select>
+              </div>
+
+              {/* View All quick button */}
               <button
-                disabled={currentPage <= 1}
-                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                className="p-1.5 bg-white/5 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-zinc-300 transition"
+                type="button"
+                onClick={() => {
+                  setPageSize(prev => (prev === 'all' ? 8 : 'all'));
+                  setCurrentPage(1);
+                }}
+                className={`px-3 py-1.5 rounded-xl font-semibold border transition ${
+                  isViewAll
+                    ? "bg-[#facc15] text-black border-[#facc15] shadow-sm font-bold"
+                    : "bg-zinc-950 text-zinc-400 border-white/10 hover:text-white hover:border-white/20"
+                }`}
               >
-                <ChevronLeft className="w-4 h-4" />
+                {isViewAll ? "Paginate (8)" : "View All"}
               </button>
-              <span className="font-semibold text-white px-2">
-                Page {currentPage} of {totalPages}
-              </span>
-              <button
-                disabled={currentPage >= totalPages}
-                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                className="p-1.5 bg-white/5 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-zinc-300 transition"
-              >
-                <ChevronRight className="w-4 h-4" />
-              </button>
+
+              {/* Page arrows */}
+              {!isViewAll && totalPages > 1 && (
+                <div className="flex items-center gap-2">
+                  <button
+                    disabled={currentPage <= 1}
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    className="p-1.5 bg-white/5 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-zinc-300 transition"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <span className="font-semibold text-white px-2">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <button
+                    disabled={currentPage >= totalPages}
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    className="p-1.5 bg-white/5 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-zinc-300 transition"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
