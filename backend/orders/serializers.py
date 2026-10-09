@@ -232,27 +232,47 @@ class SubscriptionPlanCourseSerializer(serializers.ModelSerializer):
 
 class SubscriptionPlanSerializer(serializers.ModelSerializer):
     """
-    Phase 3.4.6. Public catalog representation of a SubscriptionPlan --
-    mirrors BundleSerializer's existing precedent (id/name/slug/description/
-    price/currency/is_active + nested courses), used by the new
-    SubscriptionPlanViewSet. Unlike BundleSerializer, this is entirely
-    read-only: SubscriptionPlan management already has a working path
-    (Django's own admin site, SubscriptionPlanAdmin, unchanged since Phase
-    3.4.1) and adding API write access here would edge into "admin
-    dashboard" territory this phase explicitly excludes -- so, unlike
-    Bundle, no write support was added alongside the read path.
-
-    Deliberately never exposes razorpay_plan_id -- there is no legitimate
-    reason for a browsing/subscribing client to ever see Razorpay's own
-    plan id (CreateSubscriptionView, unchanged, resolves it entirely
-    server-side from the local `id` the client submits as plan_id).
+    Public catalog and admin management representation of a SubscriptionPlan.
+    Supports read operations for the public storefront and full CRUD operations
+    for staff/administrators (with course assignment via course_ids).
     """
     courses = SubscriptionPlanCourseSerializer(many=True, read_only=True)
+    course_ids = serializers.PrimaryKeyRelatedField(
+        source='courses', queryset=Course.objects.all(), many=True, write_only=True, required=False
+    )
+    subscriber_count = serializers.SerializerMethodField()
+    razorpay_plan_id = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
 
     class Meta:
         model = SubscriptionPlan
-        fields = ['id', 'name', 'slug', 'description', 'billing_interval', 'price', 'currency', 'courses', 'is_active']
-        read_only_fields = fields
+        fields = [
+            'id', 'name', 'slug', 'description', 'billing_interval', 'price',
+            'currency', 'courses', 'course_ids', 'razorpay_plan_id', 'is_active',
+            'subscriber_count', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'slug', 'subscriber_count', 'created_at', 'updated_at']
+
+    def get_subscriber_count(self, obj):
+        if hasattr(obj, 'subscriber_count_annotated'):
+            return obj.subscriber_count_annotated
+        return obj.subscriptions.count()
+
+    def validate_price(self, value):
+        if value < 0:
+            raise serializers.ValidationError("Price must be non-negative.")
+        return value
+
+    def validate_billing_interval(self, value):
+        if value not in SubscriptionPlan.BillingInterval.values:
+            raise serializers.ValidationError(
+                f"Invalid billing interval '{value}'. Allowed intervals are: {', '.join(SubscriptionPlan.BillingInterval.values)}."
+            )
+        return value
+
+    def validate_razorpay_plan_id(self, value):
+        if value is not None and not value.strip():
+            return None
+        return value.strip() if value else value
 
 
 class SubscriptionPaymentSerializer(serializers.ModelSerializer):

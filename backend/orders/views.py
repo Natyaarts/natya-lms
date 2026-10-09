@@ -2137,40 +2137,111 @@ class AdminSubscriptionViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
 # ---------------------------------------------------------------------------
 
 from rest_framework import generics
+from rest_framework.decorators import action
+from django.db.models import Count, Q, ProtectedError
+from users.models import AdminAuditLog
 from .serializers import SubscriptionPlanSerializer, SubscriptionPaymentSerializer
 from .models import SubscriptionPayment
 
 
-class SubscriptionPlanViewSet(viewsets.ReadOnlyModelViewSet):
+class SubscriptionPlanViewSet(viewsets.ModelViewSet):
     """
-    GET /api/orders/subscription-plans/ and .../{id}/ -- public catalog of
-    subscription plans, mirroring BundleViewSet's exact read posture
-    (published/active catalog data is public, matching CourseViewSet's own
-    precedent for published courses). Read-only (ReadOnlyModelViewSet, not
-    ModelViewSet) -- unlike Bundle, no API write path was added: plan
-    management already works via Django's existing SubscriptionPlanAdmin,
-    and adding one here isn't required by this phase and would edge into
-    "admin dashboard" territory it explicitly excludes.
-
-    AllowAny (not IsSuperAdminOrAdminOrReadOnly): there is no write action
-    on this viewset for that class's admin-write branch to ever gate, so a
-    plain AllowAny is the simpler, equally-correct choice here -- the admin
-    queryset bypass below is what actually lets staff/superuser preview an
-    inactive/unlinked plan, independent of the permission class.
+    Subscription plan management and catalog API.
+    - Public read (GET list/retrieve): unauthenticated and student users only see
+      active plans that have an attached razorpay_plan_id.
+    - Admin read (GET list/retrieve): staff and superusers see all plans,
+      including inactive/draft plans, annotated with subscriber counts.
+    - Admin write (POST, PUT, PATCH, DELETE): staff and superusers can create,
+      edit, toggle activation, and safely delete plans.
+    - Safe deletion safeguard: plans with existing student subscriptions
+      cannot be deleted, preventing accidental erasure of financial history.
     """
     serializer_class = SubscriptionPlanSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [IsSuperAdminOrAdminOrReadOnly]
 
     def get_queryset(self):
-        qs = SubscriptionPlan.objects.all().prefetch_related('courses')
         user = self.request.user
-        if user.is_authenticated and (user.is_superuser or user.is_staff):
-            return qs
-        # Non-admins only ever see plans that are both active AND actually
-        # purchasable (linked to a real Razorpay Plan) -- showing a plan
-        # CreateSubscriptionView would immediately reject ("not yet
-        # available for purchase") serves no one.
+        is_admin = user.is_authenticated and (user.is_superuser or user.is_staff)
+
+        qs = SubscriptionPlan.objects.all().prefetch_related('courses')
+        if is_admin:
+            qs = qs.annotate(
+                subscriber_count_annotated=Count('subscriptions')
+            )
+            search = self.request.query_params.get('search')
+            if search:
+                qs = qs.filter(Q(name__icontains=search) | Q(description__icontains=search))
+            is_active = self.request.query_params.get('is_active')
+            if is_active is not None:
+                qs = qs.filter(is_active=is_active.lower() in ('true', '1'))
+            interval = self.request.query_params.get('billing_interval')
+            if interval:
+                qs = qs.filter(billing_interval=interval.upper())
+            return qs.order_by('-created_at')
+
+        # Non-admins only ever see plans that are both active AND actually purchasable
         return qs.filter(is_active=True, razorpay_plan_id__isnull=False)
+
+    def perform_create(self, serializer):
+        plan = serializer.save()
+        AdminAuditLog.record(
+            actor=self.request.user,
+            action="SUBSCRIPTION_PLAN_CREATED",
+            target_type="SubscriptionPlan",
+            target_id=plan.id,
+            description=f"Created subscription plan '{plan.name}' ({plan.billing_interval}, {plan.currency} {plan.price})"
+        )
+
+    def perform_update(self, serializer):
+        plan = serializer.save()
+        AdminAuditLog.record(
+            actor=self.request.user,
+            action="SUBSCRIPTION_PLAN_UPDATED",
+            target_type="SubscriptionPlan",
+            target_id=plan.id,
+            description=f"Updated subscription plan '{plan.name}'"
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.subscriptions.exists():
+            return Response(
+                {"error": "Cannot delete subscription plan with existing student subscriptions. Deactivate the plan instead."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            response = super().destroy(request, *args, **kwargs)
+            AdminAuditLog.record(
+                actor=request.user,
+                action="SUBSCRIPTION_PLAN_DELETED",
+                target_type="SubscriptionPlan",
+                target_id=instance.id,
+                description=f"Deleted subscription plan '{instance.name}'"
+            )
+            return response
+        except ProtectedError:
+            return Response(
+                {"error": "Cannot delete subscription plan with existing student subscriptions. Deactivate the plan instead."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=True, methods=['post'], url_path='toggle-active', permission_classes=[IsSuperAdminOrAdmin])
+    def toggle_active(self, request, pk=None):
+        plan = self.get_object()
+        plan.is_active = not plan.is_active
+        plan.save(update_fields=['is_active', 'updated_at'])
+        AdminAuditLog.record(
+            actor=request.user,
+            action="SUBSCRIPTION_PLAN_STATUS_TOGGLED",
+            target_type="SubscriptionPlan",
+            target_id=plan.id,
+            description=f"Toggled active status for plan '{plan.name}' to {plan.is_active}"
+        )
+        serializer = self.get_serializer(plan)
+        return Response({
+            "message": f"Plan '{plan.name}' is now {'active' if plan.is_active else 'inactive'}.",
+            "plan": serializer.data
+        }, status=status.HTTP_200_OK)
 
 
 class SubscriptionPaymentHistoryView(generics.ListAPIView):

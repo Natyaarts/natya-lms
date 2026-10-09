@@ -16,6 +16,8 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from unittest.mock import patch
+from django.db.models import ProtectedError
 from courses.models import Course
 from orders.models import Subscription, SubscriptionPlan, SubscriptionPayment
 from django.core.cache import cache
@@ -95,13 +97,178 @@ class SubscriptionPlanPublicAPITests(APITestCase):
         self.assertIn(self.inactive_plan.id, ids)
         self.assertIn(self.unlinked_plan.id, ids)
 
-    def test_plan_viewset_is_read_only(self):
-        staff = User.objects.create_user(username="plan_api_staff_write", password="password123")
+    def test_anonymous_cannot_create_plan(self):
+        response = self.client.post(self.list_url, {"name": "New Plan", "billing_interval": "MONTHLY", "price": "1.00"}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_regular_student_cannot_create_plan(self):
+        student = User.objects.create_user(username="plan_student_fail", password="password123")
+        self.client.force_authenticate(user=student)
+        response = self.client.post(self.list_url, {"name": "New Plan", "billing_interval": "MONTHLY", "price": "1.00"}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_staff_can_create_plan_with_courses(self):
+        staff = User.objects.create_user(username="plan_api_staff_create", password="password123")
         staff.is_staff = True
         staff.save()
         self.client.force_authenticate(user=staff)
-        response = self.client.post(self.list_url, {"name": "New Plan", "billing_interval": "MONTHLY", "price": "1.00"}, format='json')
-        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        payload = {
+            "name": "Staff Created Plan",
+            "description": "Comprehensive Kathak bundle plan",
+            "billing_interval": "MONTHLY",
+            "price": "1499.00",
+            "course_ids": [self.course.id]
+        }
+        response = self.client.post(self.list_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['name'], "Staff Created Plan")
+        self.assertEqual(len(response.data['courses']), 1)
+        self.assertEqual(response.data['courses'][0]['id'], self.course.id)
+        self.assertIn('subscriber_count', response.data)
+
+    def test_staff_can_update_plan(self):
+        staff = User.objects.create_user(username="plan_api_staff_update", password="password123")
+        staff.is_staff = True
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        detail_url = reverse('subscription-plan-detail', kwargs={'pk': self.active_plan.pk})
+        response = self.client.patch(detail_url, {"name": "Updated Active Plan", "price": "1299.00"}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['name'], "Updated Active Plan")
+        self.assertEqual(float(response.data['price']), 1299.00)
+
+    def test_staff_can_toggle_plan_active(self):
+        staff = User.objects.create_user(username="plan_api_staff_toggle", password="password123")
+        staff.is_staff = True
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        toggle_url = reverse('subscription-plan-toggle-active', kwargs={'pk': self.active_plan.pk})
+        response = self.client.post(toggle_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data['plan']['is_active'])
+
+    def test_delete_plan_with_subscriptions_prevented(self):
+        student = User.objects.create_user(username="plan_sub_user", password="password123")
+        Subscription.objects.create(
+            user=student,
+            plan=self.active_plan,
+            status=Subscription.Status.ACTIVE
+        )
+        staff = User.objects.create_user(username="plan_api_staff_del_fail", password="password123")
+        staff.is_staff = True
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        detail_url = reverse('subscription-plan-detail', kwargs={'pk': self.active_plan.pk})
+        response = self.client.delete(detail_url)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Cannot delete subscription plan with existing student subscriptions", response.data['error'])
+
+    def test_staff_can_delete_unused_plan(self):
+        unused_plan = SubscriptionPlan.objects.create(
+            name="Unused Plan To Delete", billing_interval="MONTHLY", price="100.00"
+        )
+        staff = User.objects.create_user(username="plan_api_staff_del_ok", password="password123")
+        staff.is_staff = True
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        detail_url = reverse('subscription-plan-detail', kwargs={'pk': unused_plan.pk})
+        response = self.client.delete(detail_url)
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(SubscriptionPlan.objects.filter(pk=unused_plan.pk).exists())
+
+    def test_plan_validation_negative_price(self):
+        staff = User.objects.create_user(username="plan_val_staff", password="password123")
+        staff.is_staff = True
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        response = self.client.post(self.list_url, {"name": "Negative Price", "billing_interval": "MONTHLY", "price": "-10.00"}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_plan_validation_invalid_interval(self):
+        staff = User.objects.create_user(username="plan_val_staff2", password="password123")
+        staff.is_staff = True
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        response = self.client.post(self.list_url, {"name": "Bad Interval", "billing_interval": "WEEKLY", "price": "100.00"}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_razorpay_plan_id_normalized_empty_string(self):
+        staff = User.objects.create_user(username="plan_rzp_empty_staff", password="password123")
+        staff.is_staff = True
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        payload = {
+            "name": "Empty RZP Plan",
+            "billing_interval": "MONTHLY",
+            "price": "500.00",
+            "razorpay_plan_id": ""
+        }
+        response = self.client.post(self.list_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        plan = SubscriptionPlan.objects.get(id=response.data['id'])
+        self.assertIsNone(plan.razorpay_plan_id)
+
+    def test_razorpay_plan_id_normalized_whitespace(self):
+        staff = User.objects.create_user(username="plan_rzp_ws_staff", password="password123")
+        staff.is_staff = True
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        payload = {
+            "name": "Whitespace RZP Plan",
+            "billing_interval": "MONTHLY",
+            "price": "600.00",
+            "razorpay_plan_id": "   "
+        }
+        response = self.client.post(self.list_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        plan = SubscriptionPlan.objects.get(id=response.data['id'])
+        self.assertIsNone(plan.razorpay_plan_id)
+
+    def test_razorpay_plan_id_valid_preserved(self):
+        staff = User.objects.create_user(username="plan_rzp_valid_staff", password="password123")
+        staff.is_staff = True
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        payload = {
+            "name": "Valid RZP Plan",
+            "billing_interval": "MONTHLY",
+            "price": "700.00",
+            "razorpay_plan_id": "plan_valid_abc_123"
+        }
+        response = self.client.post(self.list_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        plan = SubscriptionPlan.objects.get(id=response.data['id'])
+        self.assertEqual(plan.razorpay_plan_id, "plan_valid_abc_123")
+
+    def test_razorpay_plan_id_patch_omitted_preserves_existing(self):
+        plan = SubscriptionPlan.objects.create(
+            name="Patch Plan", billing_interval="MONTHLY", price="800.00", razorpay_plan_id="plan_existing_orig"
+        )
+        staff = User.objects.create_user(username="plan_rzp_patch_staff", password="password123")
+        staff.is_staff = True
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        detail_url = reverse('subscription-plan-detail', kwargs={'pk': plan.pk})
+        response = self.client.patch(detail_url, {"name": "Patched Plan Name"}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        plan.refresh_from_db()
+        self.assertEqual(plan.name, "Patched Plan Name")
+        self.assertEqual(plan.razorpay_plan_id, "plan_existing_orig")
+
+    def test_delete_plan_concurrent_protected_error_handled(self):
+        unused_plan = SubscriptionPlan.objects.create(
+            name="Unused Plan Race Delete", billing_interval="MONTHLY", price="100.00"
+        )
+        staff = User.objects.create_user(username="plan_del_race_staff", password="password123")
+        staff.is_staff = True
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        detail_url = reverse('subscription-plan-detail', kwargs={'pk': unused_plan.pk})
+
+        with patch.object(SubscriptionPlan, 'delete', side_effect=ProtectedError("Protected by concurrent subscription", [unused_plan])):
+            response = self.client.delete(detail_url)
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+            self.assertIn("Cannot delete subscription plan with existing student subscriptions. Deactivate the plan instead.", response.data['error'])
 
 
 class MySubscriptionAPITests(APITestCase):

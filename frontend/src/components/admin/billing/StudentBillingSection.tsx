@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Calendar,
   CreditCard,
@@ -17,7 +17,11 @@ import {
   ExternalLink,
   ChevronDown,
   ChevronUp,
-  FileText
+  FileText,
+  Layers,
+  Info,
+  Sparkles,
+  X
 } from "lucide-react";
 
 interface Props {
@@ -43,6 +47,11 @@ export default function StudentBillingSection({
   const [actionLoading, setActionLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+
+  // Reusable Subscription Plans (Catalog templates)
+  const [subscriptionPlans, setSubscriptionPlans] = useState<any[]>([]);
+  const [planCreationMode, setPlanCreationMode] = useState<"TEMPLATE" | "CUSTOM">("TEMPLATE");
+  const [selectedTemplatePlanId, setSelectedTemplatePlanId] = useState<string>("");
 
   // Modals state
   const [showCreatePlanModal, setShowCreatePlanModal] = useState(false);
@@ -109,6 +118,21 @@ export default function StudentBillingSection({
     return csrfToken;
   };
 
+  const fetchSubscriptionPlans = async () => {
+    try {
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const res = await fetch(`${baseUrl}/api/orders/subscription-plans/`, {
+        credentials: "include"
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSubscriptionPlans(Array.isArray(data) ? data : data.results || []);
+      }
+    } catch (err: any) {
+      console.error("Failed to load subscription plans:", err);
+    }
+  };
+
   const fetchBillingData = async () => {
     setLoading(true);
     setErrorMsg("");
@@ -142,8 +166,57 @@ export default function StudentBillingSection({
   useEffect(() => {
     if (studentId) {
       fetchBillingData();
+      fetchSubscriptionPlans();
     }
   }, [studentId]);
+
+  // Combined selectable courses (from student enrollments and selected plan template)
+  const selectableCourses = useMemo(() => {
+    const list: { id: number | string; title: string }[] = [];
+    const seen = new Set<string>();
+
+    enrolledCourses.forEach((c: any) => {
+      const id = c.course_id || c.id;
+      if (id && !seen.has(String(id))) {
+        seen.add(String(id));
+        list.push({ id, title: c.title || `Course #${id}` });
+      }
+    });
+
+    if (selectedTemplatePlanId) {
+      const plan = subscriptionPlans.find(p => String(p.id) === selectedTemplatePlanId);
+      if (plan && plan.courses) {
+        plan.courses.forEach((c: any) => {
+          if (c.id && !seen.has(String(c.id))) {
+            seen.add(String(c.id));
+            list.push({ id: c.id, title: c.title });
+          }
+        });
+      }
+    }
+    return list;
+  }, [enrolledCourses, selectedTemplatePlanId, subscriptionPlans]);
+
+  const handleSelectTemplatePlan = (planId: string) => {
+    setSelectedTemplatePlanId(planId);
+    if (!planId) return;
+    const plan = subscriptionPlans.find(p => String(p.id) === planId);
+    if (plan) {
+      const updated: any = {
+        ...createPlanForm,
+        billing_type: plan.billing_interval,
+        amount: String(plan.price),
+        notes: `Assigned via template: ${plan.name}`
+      };
+      if (plan.courses && plan.courses.length > 0) {
+        const hasCurrentCourse = plan.courses.some((c: any) => String(c.id) === String(createPlanForm.course));
+        if (!hasCurrentCourse) {
+          updated.course = String(plan.courses[0].id);
+        }
+      }
+      setCreatePlanForm(updated);
+    }
+  };
 
   const handleCreatePlanSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -476,10 +549,18 @@ export default function StudentBillingSection({
           <button
             onClick={() => {
               setSelectedCourseForNewPlan(null);
+              setSelectedTemplatePlanId("");
+              setPlanCreationMode("TEMPLATE");
               setCreatePlanForm({
                 ...createPlanForm,
-                course: enrolledCourses.length > 0 ? String(enrolledCourses[0].course_id) : ""
+                course: enrolledCourses.length > 0 ? String(enrolledCourses[0].course_id || enrolledCourses[0].id) : "",
+                billing_type: "MONTHLY",
+                amount: "",
+                notes: ""
               });
+              if (subscriptionPlans.length === 0) {
+                fetchSubscriptionPlans();
+              }
               setShowCreatePlanModal(true);
             }}
             className="flex items-center gap-2 px-4 py-2 bg-[#facc15] hover:bg-yellow-500 text-black text-xs font-bold rounded-xl transition-all shadow-md"
@@ -494,6 +575,24 @@ export default function StudentBillingSection({
           >
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>
+        </div>
+      </div>
+
+      {/* Informational Guidance Banner */}
+      <div className="bg-zinc-950/80 border border-white/10 rounded-2xl p-4 flex items-start gap-3.5">
+        <div className="w-8 h-8 rounded-xl bg-[#facc15]/10 border border-[#facc15]/20 flex items-center justify-center text-[#facc15] shrink-0 mt-0.5">
+          <Info className="w-4 h-4" />
+        </div>
+        <div className="text-xs">
+          <div className="font-bold text-white flex items-center gap-2">
+            <span>Student Billing Arrangements vs Catalog Plans</span>
+            <span className="px-2 py-0.5 bg-white/5 border border-white/10 text-zinc-400 text-[10px] rounded-md font-mono">
+              Individual Fee Agreements
+            </span>
+          </div>
+          <div className="text-zinc-400 mt-1 leading-relaxed">
+            This section manages this student’s active billing cycles, grace periods, due dates, and manual payments for their enrolled courses. You can quickly assign a reusable <strong className="text-zinc-200">Subscription Plan template</strong> (which pre-fills pricing and intervals) or configure a custom course fee.
+          </div>
         </div>
       </div>
 
@@ -882,10 +981,86 @@ export default function StudentBillingSection({
       {showCreatePlanModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-zinc-900 border border-white/10 rounded-2xl max-w-lg w-full p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <h3 className="text-lg font-bold text-white mb-1">Configure Student Billing Plan</h3>
-            <p className="text-zinc-400 text-xs mb-6">Set up a recurring or one-time fee arrangement for this student.</p>
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-lg font-bold text-white">Configure Student Billing Plan</h3>
+              <button
+                onClick={() => setShowCreatePlanModal(false)}
+                className="text-zinc-400 hover:text-white p-1"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-zinc-400 text-xs mb-4">
+              Set up a recurring or one-time fee arrangement for this student.
+            </p>
+
+            {/* Mode Switcher */}
+            <div className="flex bg-black/40 border border-white/10 rounded-xl p-1 mb-5">
+              <button
+                type="button"
+                onClick={() => {
+                  setPlanCreationMode("TEMPLATE");
+                  if (subscriptionPlans.length === 0) fetchSubscriptionPlans();
+                }}
+                className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition ${
+                  planCreationMode === "TEMPLATE"
+                    ? "bg-[#facc15] text-black shadow-sm"
+                    : "text-zinc-400 hover:text-white"
+                }`}
+              >
+                Apply Subscription Plan Template
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPlanCreationMode("CUSTOM");
+                  setSelectedTemplatePlanId("");
+                }}
+                className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition ${
+                  planCreationMode === "CUSTOM"
+                    ? "bg-[#facc15] text-black shadow-sm"
+                    : "text-zinc-400 hover:text-white"
+                }`}
+              >
+                Configure Custom Fee
+              </button>
+            </div>
 
             <form onSubmit={handleCreatePlanSubmit} className="space-y-4">
+              {/* Template Picker */}
+              {planCreationMode === "TEMPLATE" && (
+                <div className="space-y-3 p-3.5 bg-black/30 border border-white/5 rounded-xl">
+                  <div>
+                    <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-1.5">
+                      Select Subscription Plan Template *
+                    </label>
+                    <select
+                      value={selectedTemplatePlanId}
+                      onChange={(e) => handleSelectTemplatePlan(e.target.value)}
+                      className="w-full bg-zinc-950 border border-white/10 rounded-xl p-3 text-white text-xs focus:outline-none focus:border-[#facc15]"
+                    >
+                      <option value="">-- Choose Reusable Plan Template --</option>
+                      {subscriptionPlans.map((sp: any) => (
+                        <option key={sp.id} value={sp.id}>
+                          {sp.name} — ₹{parseFloat(sp.price).toLocaleString()} / {sp.billing_interval.toLowerCase()} ({sp.courses?.length || 0} courses)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {selectedTemplatePlanId && (
+                    <div className="p-2.5 bg-[#facc15]/10 border border-[#facc15]/20 rounded-lg text-xs text-[#facc15] flex items-center justify-between">
+                      <span className="font-semibold">
+                        Template Applied: {subscriptionPlans.find(p => String(p.id) === selectedTemplatePlanId)?.name}
+                      </span>
+                      <span className="text-[11px] font-bold">
+                        ₹{createPlanForm.amount} / {createPlanForm.billing_type.toLowerCase()}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-1.5">
                   Target Course *
@@ -897,12 +1072,15 @@ export default function StudentBillingSection({
                   className="w-full bg-zinc-950 border border-white/10 rounded-xl p-3 text-white text-sm focus:outline-none focus:border-[#facc15]"
                 >
                   <option value="">-- Select Course --</option>
-                  {enrolledCourses.map((c: any) => (
-                    <option key={c.course_id} value={c.course_id}>
+                  {selectableCourses.map((c: any) => (
+                    <option key={c.id} value={c.id}>
                       {c.title}
                     </option>
                   ))}
                 </select>
+                <span className="text-[10px] text-zinc-500 mt-1 block">
+                  Course covered by this fee plan for {studentName}.
+                </span>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
