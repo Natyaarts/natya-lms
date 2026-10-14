@@ -2,6 +2,10 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    AdminConversationDetailView,
+    AdminConversationListView,
+    AdminConversationMessagesView,
+    AdminMessageModerateView,
     AttachmentDownloadView,
     AttachmentPresignedUrlView,
     ConversationViewSet,
@@ -12,6 +16,28 @@ router = DefaultRouter()
 router.register(r'conversations', ConversationViewSet, basename='conversation')
 
 urlpatterns = [
+    # Admin-only platform-wide conversation management & moderation
+    path(
+        'admin/conversations/',
+        AdminConversationListView.as_view(),
+        name='admin-chat-conversation-list'
+    ),
+    path(
+        'admin/conversations/<uuid:conversation_id>/',
+        AdminConversationDetailView.as_view(),
+        name='admin-chat-conversation-detail'
+    ),
+    path(
+        'admin/conversations/<uuid:conversation_id>/messages/',
+        AdminConversationMessagesView.as_view(),
+        name='admin-chat-conversation-messages'
+    ),
+    path(
+        'admin/messages/<int:pk>/moderate/',
+        AdminMessageModerateView.as_view(),
+        name='admin-chat-message-moderate'
+    ),
+
     # Message listing (with cursor pagination) and sending for a conversation
     path(
         'conversations/<uuid:conversation_id>/messages/',

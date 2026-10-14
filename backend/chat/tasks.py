@@ -22,6 +22,10 @@ def send_chat_push_notification(self, message_id):
         logger.warning(f"Chat push delivery: Message {message_id} no longer exists; skipping.")
         return
 
+    if message.is_deleted:
+        logger.info(f"Chat push delivery: Message {message_id} was deleted/moderated; skipping push.")
+        return
+
     conversation = message.conversation
 
     # Find recipient users in this conversation who have not muted it

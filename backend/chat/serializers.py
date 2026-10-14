@@ -126,7 +126,7 @@ class ConversationListSerializer(serializers.ModelSerializer):
         if not participant:
             return 0
 
-        qs = obj.messages.exclude(sender=request.user)
+        qs = obj.messages.filter(is_deleted=False).exclude(sender=request.user)
         if participant.last_read_at:
             qs = qs.filter(created_at__gt=participant.last_read_at)
         return qs.count()
@@ -213,3 +213,93 @@ class CreateConversationSerializer(serializers.Serializer):
             attrs['course_instance'] = course
 
         return attrs
+
+
+class AdminUserDetailSerializer(serializers.ModelSerializer):
+    role = serializers.SerializerMethodField()
+    full_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'username', 'first_name', 'last_name', 'full_name',
+            'email', 'phone_number', 'role',
+            'is_teacher', 'is_mentor', 'is_student', 'is_staff', 'is_superuser',
+        ]
+
+    def get_role(self, obj):
+        if obj.is_superuser or obj.is_staff:
+            return 'ADMIN'
+        if getattr(obj, 'is_teacher', False):
+            return 'TEACHER'
+        if getattr(obj, 'is_mentor', False):
+            return 'MENTOR'
+        return 'STUDENT'
+
+    def get_full_name(self, obj):
+        name = f"{obj.first_name or ''} {obj.last_name or ''}".strip()
+        return name or obj.username
+
+
+class AdminConversationParticipantSerializer(serializers.ModelSerializer):
+    user = AdminUserDetailSerializer(read_only=True)
+
+    class Meta:
+        model = ConversationParticipant
+        fields = [
+            'id', 'user', 'is_admin', 'is_muted',
+            'last_read_at', 'joined_at',
+        ]
+
+
+class AdminConversationListSerializer(serializers.ModelSerializer):
+    conversation_type_display = serializers.CharField(source='get_conversation_type_display', read_only=True)
+    participants = AdminConversationParticipantSerializer(many=True, read_only=True)
+    message_count = serializers.IntegerField(read_only=True, default=0)
+    course_title = serializers.CharField(source='course.title', read_only=True, default=None)
+    batch_name = serializers.SerializerMethodField()
+    created_by_user = UserMinimalSerializer(source='created_by', read_only=True)
+
+    class Meta:
+        model = Conversation
+        fields = [
+            'id', 'conversation_type', 'conversation_type_display', 'title',
+            'course', 'course_title', 'batch', 'batch_name',
+            'created_by', 'created_by_user',
+            'last_message_at', 'last_message_preview',
+            'message_count', 'created_at', 'updated_at',
+            'participants',
+        ]
+
+    def get_batch_name(self, obj):
+        if not obj.batch:
+            return None
+        return f"{obj.batch.get_batch_type_display()} Batch"
+
+
+class AdminMessageSerializer(serializers.ModelSerializer):
+    sender = AdminUserDetailSerializer(read_only=True)
+    has_attachment = serializers.SerializerMethodField()
+    attachment_url = serializers.SerializerMethodField()
+    deleted_by = UserMinimalSerializer(read_only=True)
+
+    class Meta:
+        model = Message
+        fields = [
+            'id', 'conversation', 'sender', 'content', 'message_type',
+            'attachment_name', 'attachment_size', 'attachment_mime_type',
+            'has_attachment', 'attachment_url',
+            'is_deleted', 'deleted_at', 'deleted_by', 'moderation_reason',
+            'created_at',
+        ]
+
+    def get_has_attachment(self, obj):
+        return bool(obj.attachment)
+
+    def get_attachment_url(self, obj):
+        if not obj.attachment:
+            return None
+        request = self.context.get('request')
+        relative_url = f"/api/chat/messages/{obj.id}/attachment/"
+        return request.build_absolute_uri(relative_url) if request else relative_url
+

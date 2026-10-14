@@ -12,7 +12,7 @@ from rest_framework.test import APITestCase
 
 from courses.models import Course, CourseInstructor, Enrollment, LiveBatch, LiveBatchStudent
 from notifications.models import DeviceToken
-from users.models import Mentorship
+from users.models import AdminAuditLog, Mentorship
 from .models import Conversation, ConversationParticipant, ConversationType, Message
 from .tasks import send_chat_push_notification
 from .validators import (
@@ -639,4 +639,423 @@ class ChatFixesRegressionTests(APITestCase):
         res_no_redirect = self.client.get(f'/api/chat/messages/{msg.id}/attachment/?redirect=false')
         self.assertEqual(res_no_redirect.status_code, status.HTTP_200_OK)
         self.assertIn('download_url', res_no_redirect.data)
+
+
+class AdminChatManagementTests(APITestCase):
+    """
+    Comprehensive tests for the Admin Chat Management API module:
+    1. Admin can list all platform conversations with pagination and message counts.
+    2. Admin filtering by type, course, batch, participant user ID, and date range.
+    3. Admin search across conversation titles and participant names, phones, emails, and IDs.
+    4. Admin can inspect conversation details and full message transcript (audited).
+    5. Admin can moderate (soft-delete) and restore messages with mandatory reason (audited).
+    6. Non-admins (students, mentors, teachers) cannot access admin chat endpoints (403 Forbidden).
+    7. Admin can access attachments via presigned URL / download endpoint.
+    8. Existing student/mentor chat permissions and endpoints continue functioning normally.
+    """
+    def setUp(self):
+        self.admin = User.objects.create_superuser(
+            username='superadmin', email='super@example.com', password='password123'
+        )
+        self.staff_admin = User.objects.create_user(
+            username='staffadmin', email='staff@example.com', password='password123', is_staff=True
+        )
+        self.student = User.objects.create_user(
+            username='student1', email='student1@example.com', password='password123',
+            first_name='Ananya', last_name='Sharma', phone_number='+919876543210', is_student=True
+        )
+        self.mentor = User.objects.create_user(
+            username='mentor1', email='mentor1@example.com', password='password123',
+            first_name='Guru', last_name='Prasad', phone_number='+919876543211', is_mentor=True
+        )
+        self.teacher = User.objects.create_user(
+            username='teacher1', email='teacher1@example.com', password='password123',
+            first_name='Meera', last_name='Nair', is_teacher=True
+        )
+        self.course = Course.objects.create(
+            title="Bharatanatyam Masterclass",
+            description="Test Masterclass",
+            price=1999,
+            course_type=Course.CourseType.LIVE
+        )
+        self.batch = LiveBatch.objects.create(
+            course=self.course,
+            instructor=self.teacher,
+            batch_type=LiveBatch.BatchType.GROUP
+        )
+
+        # Direct conversation between student and mentor
+        self.direct_conv = Conversation.objects.create(
+            conversation_type=ConversationType.DIRECT,
+            title="Direct Chat",
+            created_by=self.student,
+        )
+        ConversationParticipant.objects.create(conversation=self.direct_conv, user=self.student)
+        ConversationParticipant.objects.create(conversation=self.direct_conv, user=self.mentor)
+
+        # Batch conversation
+        self.batch_conv = Conversation.objects.create(
+            conversation_type=ConversationType.BATCH_GROUP,
+            title="Morning Raga Discussion",
+            batch=self.batch,
+            course=self.course,
+            created_by=self.teacher,
+        )
+        ConversationParticipant.objects.create(conversation=self.batch_conv, user=self.teacher, is_admin=True)
+        ConversationParticipant.objects.create(conversation=self.batch_conv, user=self.student)
+
+        # Messages
+        self.msg1 = Message.objects.create(
+            conversation=self.direct_conv,
+            sender=self.student,
+            content="Namaste Guru ji, I have completed the Adavus practice."
+        )
+        self.msg2 = Message.objects.create(
+            conversation=self.direct_conv,
+            sender=self.mentor,
+            content="Well done Ananya! Remember to keep your Aramandi posture steady."
+        )
+        self.batch_msg = Message.objects.create(
+            conversation=self.batch_conv,
+            sender=self.teacher,
+            content="Welcome everyone to the Morning Raga Batch!"
+        )
+
+    def test_admin_list_conversations(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.get('/api/chat/admin/conversations/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 2)
+        # Message count annotation
+        conv_direct = next(c for c in res.data['results'] if c['id'] == str(self.direct_conv.id))
+        self.assertEqual(conv_direct['message_count'], 2)
+        self.assertEqual(len(conv_direct['participants']), 2)
+
+    def test_staff_admin_can_also_list(self):
+        self.client.force_authenticate(user=self.staff_admin)
+        res = self.client.get('/api/chat/admin/conversations/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 2)
+
+    def test_non_admins_forbidden_from_admin_conversation_list(self):
+        for user in [self.student, self.mentor, self.teacher]:
+            self.client.force_authenticate(user=user)
+            res = self.client.get('/api/chat/admin/conversations/')
+            self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Unauthenticated
+        self.client.logout()
+        res_anon = self.client.get('/api/chat/admin/conversations/')
+        self.assertEqual(res_anon.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_admin_filter_by_type(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.get('/api/chat/admin/conversations/?type=DIRECT')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['id'], str(self.direct_conv.id))
+
+        res_batch = self.client.get('/api/chat/admin/conversations/?type=BATCH_GROUP')
+        self.assertEqual(res_batch.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_batch.data['count'], 1)
+        self.assertEqual(res_batch.data['results'][0]['id'], str(self.batch_conv.id))
+
+    def test_admin_filter_by_course_and_batch(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.get(f'/api/chat/admin/conversations/?course_id={self.course.id}')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data['count'], 1)
+        self.assertEqual(res.data['results'][0]['id'], str(self.batch_conv.id))
+
+        res_batch = self.client.get(f'/api/chat/admin/conversations/?batch_id={self.batch.id}')
+        self.assertEqual(res_batch.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_batch.data['count'], 1)
+
+    def test_admin_search_by_participant_phone_and_name(self):
+        self.client.force_authenticate(user=self.admin)
+        # Search by phone number
+        res_phone = self.client.get('/api/chat/admin/conversations/?search=9876543210')
+        self.assertEqual(res_phone.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_phone.data['count'], 2)  # student is in both conversations
+
+        # Search by first name
+        res_name = self.client.get('/api/chat/admin/conversations/?search=Ananya')
+        self.assertEqual(res_name.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_name.data['count'], 2)
+
+        # Search by mentor name
+        res_mentor = self.client.get('/api/chat/admin/conversations/?search=Prasad')
+        self.assertEqual(res_mentor.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_mentor.data['count'], 1)
+        self.assertEqual(res_mentor.data['results'][0]['id'], str(self.direct_conv.id))
+
+    def test_admin_inspect_conversation_detail_and_messages(self):
+        self.client.force_authenticate(user=self.admin)
+        res_detail = self.client.get(f'/api/chat/admin/conversations/{self.direct_conv.id}/')
+        self.assertEqual(res_detail.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_detail.data['title'], "Direct Chat")
+
+        # Verify audit log was recorded for inspection
+        log = AdminAuditLog.objects.filter(
+            action='CHAT_CONVERSATION_INSPECTED',
+            target_id=str(self.direct_conv.id)
+        ).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.actor, self.admin)
+
+        # Inspect messages
+        res_msgs = self.client.get(f'/api/chat/admin/conversations/{self.direct_conv.id}/messages/')
+        self.assertEqual(res_msgs.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_msgs.data['count'], 2)
+        self.assertEqual(res_msgs.data['results'][0]['content'], "Namaste Guru ji, I have completed the Adavus practice.")
+        self.assertEqual(res_msgs.data['results'][0]['sender']['username'], "student1")
+
+    def test_admin_soft_delete_and_restore_message(self):
+        self.client.force_authenticate(user=self.admin)
+        # Moderate message with reason
+        res_mod = self.client.post(
+            f'/api/chat/admin/messages/{self.msg1.id}/moderate/',
+            {'action': 'soft_delete', 'reason': 'Violates community guidelines: inappropriate content.'},
+            format='json'
+        )
+        self.assertEqual(res_mod.status_code, status.HTTP_200_OK)
+        self.assertTrue(res_mod.data['is_deleted'])
+        self.assertEqual(res_mod.data['moderation_reason'], 'Violates community guidelines: inappropriate content.')
+        self.assertEqual(res_mod.data['deleted_by']['username'], self.admin.username)
+
+        # Message is updated in DB
+        self.msg1.refresh_from_db()
+        self.assertTrue(self.msg1.is_deleted)
+        self.assertEqual(self.msg1.deleted_by, self.admin)
+        self.assertIsNotNone(self.msg1.deleted_at)
+
+        # Verify audit record
+        mod_log = AdminAuditLog.objects.filter(
+            action='CHAT_MESSAGE_MODERATED',
+            target_id=str(self.msg1.id)
+        ).first()
+        self.assertIsNotNone(mod_log)
+        self.assertEqual(mod_log.actor, self.admin)
+
+        # Normal student query should now NOT see the soft-deleted message
+        self.client.force_authenticate(user=self.student)
+        res_student = self.client.get(f'/api/chat/conversations/{self.direct_conv.id}/messages/')
+        self.assertEqual(res_student.status_code, status.HTTP_200_OK)
+        msg_ids = [m['id'] for m in res_student.data['results']]
+        self.assertNotIn(self.msg1.id, msg_ids)
+
+        # Admin message view STILL shows it with is_deleted=True
+        self.client.force_authenticate(user=self.admin)
+        res_admin_msgs = self.client.get(f'/api/chat/admin/conversations/{self.direct_conv.id}/messages/')
+        admin_msg1 = next(m for m in res_admin_msgs.data['results'] if m['id'] == self.msg1.id)
+        self.assertTrue(admin_msg1['is_deleted'])
+
+        # Restore message
+        res_restore = self.client.post(
+            f'/api/chat/admin/messages/{self.msg1.id}/moderate/',
+            {'action': 'restore'},
+            format='json'
+        )
+        self.assertEqual(res_restore.status_code, status.HTTP_200_OK)
+        self.assertFalse(res_restore.data['is_deleted'])
+
+        self.msg1.refresh_from_db()
+        self.assertFalse(self.msg1.is_deleted)
+
+        restore_log = AdminAuditLog.objects.filter(
+            action='CHAT_MESSAGE_RESTORED',
+            target_id=str(self.msg1.id)
+        ).first()
+        self.assertIsNotNone(restore_log)
+
+    def test_moderate_missing_reason_rejected(self):
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(
+            f'/api/chat/admin/messages/{self.msg1.id}/moderate/',
+            {'action': 'soft_delete', 'reason': ''},
+            format='json'
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_student_cannot_moderate_message(self):
+        self.client.force_authenticate(user=self.student)
+        res = self.client.post(
+            f'/api/chat/admin/messages/{self.msg1.id}/moderate/',
+            {'action': 'soft_delete', 'reason': 'Unauthorized attempt'},
+            format='json'
+        )
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_migration_defaults_and_model_consistency(self):
+        """
+        Verify Message model defaults for moderation fields remain backward compatible.
+        """
+        msg = Message.objects.create(
+            conversation=self.direct_conv,
+            sender=self.student,
+            content="Testing default fields without moderation"
+        )
+        self.assertEqual(msg.moderation_reason, "")
+        self.assertIsNone(msg.deleted_at)
+        self.assertIsNone(msg.deleted_by)
+        self.assertFalse(msg.is_deleted)
+
+    def test_non_admin_blocked_from_moderated_attachment_download_and_presigned_url(self):
+        """
+        Non-admin participants receive 404 Not Found when trying to download or request
+        presigned URLs for attachments belonging to soft-deleted messages.
+        """
+        pdf_file = SimpleUploadedFile("confidential.pdf", b"%PDF-1.4\ncontent", content_type="application/pdf")
+        msg = Message.objects.create(
+            conversation=self.direct_conv,
+            sender=self.student,
+            content="Sensitive document",
+            attachment=pdf_file,
+            attachment_name="confidential.pdf",
+            attachment_size=len(b"%PDF-1.4\ncontent"),
+            attachment_mime_type="application/pdf"
+        )
+
+        # Before moderation, student can request presigned URL
+        self.client.force_authenticate(user=self.student)
+        res_before = self.client.get(f'/api/chat/messages/{msg.id}/attachment-url/')
+        self.assertEqual(res_before.status_code, status.HTTP_200_OK)
+
+        # Admin moderates the message
+        self.client.force_authenticate(user=self.admin)
+        res_mod = self.client.post(
+            f'/api/chat/admin/messages/{msg.id}/moderate/',
+            {'action': 'soft_delete', 'reason': 'Inappropriate document'},
+            format='json'
+        )
+        self.assertEqual(res_mod.status_code, status.HTTP_200_OK)
+
+        # Now student request -> 404 Not Found
+        self.client.force_authenticate(user=self.student)
+        res_presigned_blocked = self.client.get(f'/api/chat/messages/{msg.id}/attachment-url/')
+        self.assertEqual(res_presigned_blocked.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(res_presigned_blocked.data['detail'], "This attachment is no longer available.")
+
+        res_download_blocked = self.client.get(f'/api/chat/messages/{msg.id}/attachment/?redirect=false')
+        self.assertEqual(res_download_blocked.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(res_download_blocked.data['detail'], "This attachment is no longer available.")
+
+    def test_admin_can_still_inspect_moderated_attachment(self):
+        """
+        Admins retain authorization to inspect and generate presigned URLs for moderated attachments.
+        """
+        pdf_file = SimpleUploadedFile("evidence.pdf", b"%PDF-1.4\ncontent", content_type="application/pdf")
+        msg = Message.objects.create(
+            conversation=self.direct_conv,
+            sender=self.student,
+            content="Evidence document",
+            attachment=pdf_file,
+            attachment_name="evidence.pdf",
+            attachment_size=len(b"%PDF-1.4\ncontent"),
+            attachment_mime_type="application/pdf",
+            is_deleted=True,
+            moderation_reason="Under investigation"
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        res_presigned = self.client.get(f'/api/chat/messages/{msg.id}/attachment-url/')
+        self.assertEqual(res_presigned.status_code, status.HTTP_200_OK)
+        self.assertIn('download_url', res_presigned.data)
+
+        res_download = self.client.get(f'/api/chat/messages/{msg.id}/attachment/?redirect=false')
+        self.assertEqual(res_download.status_code, status.HTTP_200_OK)
+        self.assertIn('download_url', res_download.data)
+
+    def test_soft_deleted_messages_excluded_from_unread_counts(self):
+        """
+        Soft-deleted messages are excluded from both /unread-count/ and ConversationListSerializer.
+        """
+        self.client.force_authenticate(user=self.student)
+        initial_unread = self.client.get('/api/chat/conversations/unread-count/').data['total_unread_count']
+
+        res_list_initial = self.client.get('/api/chat/conversations/')
+        conv_initial = next(c for c in res_list_initial.data if c['id'] == str(self.direct_conv.id))
+        conv_initial_unread = conv_initial['unread_count']
+
+        # Create 2 unread messages for student
+        msg_keep = Message.objects.create(
+            conversation=self.direct_conv,
+            sender=self.mentor,
+            content="Valid unread message 1"
+        )
+        msg_delete = Message.objects.create(
+            conversation=self.direct_conv,
+            sender=self.mentor,
+            content="Inappropriate unread message 2"
+        )
+
+        res_unread = self.client.get('/api/chat/conversations/unread-count/')
+        self.assertEqual(res_unread.data['total_unread_count'], initial_unread + 2)
+
+        # Admin soft-deletes msg_delete
+        self.client.force_authenticate(user=self.admin)
+        res_mod = self.client.post(
+            f'/api/chat/admin/messages/{msg_delete.id}/moderate/',
+            {'action': 'soft_delete', 'reason': 'Spam'},
+            format='json'
+        )
+        self.assertEqual(res_mod.status_code, status.HTTP_200_OK)
+
+        # Student's unread count drops by 1
+        self.client.force_authenticate(user=self.student)
+        res_unread_after = self.client.get('/api/chat/conversations/unread-count/')
+        self.assertEqual(res_unread_after.data['total_unread_count'], initial_unread + 1)
+
+        # ConversationListSerializer unread_count also drops by 1
+        res_list = self.client.get('/api/chat/conversations/')
+        conv_item = next(c for c in res_list.data if c['id'] == str(self.direct_conv.id))
+        self.assertEqual(conv_item['unread_count'], conv_initial_unread + 1)
+
+    @patch('chat.tasks.send_expo_push_messages')
+    def test_push_task_skips_soft_deleted_messages(self, mock_send_push):
+        """
+        send_chat_push_notification skips delivery if message is marked is_deleted.
+        """
+        # Create device token for mentor
+        DeviceToken.objects.create(
+            user=self.mentor,
+            token="ExponentPushToken[mentor_dummy_token]",
+            platform="ios",
+            is_active=True
+        )
+
+        deleted_msg = Message.objects.create(
+            conversation=self.direct_conv,
+            sender=self.student,
+            content="Deleted message that shouldn't notify",
+            is_deleted=True,
+            moderation_reason="Flagged content"
+        )
+
+        send_chat_push_notification(deleted_msg.id)
+        mock_send_push.assert_not_called()
+
+        # Active message DOES call push delivery
+        active_msg = Message.objects.create(
+            conversation=self.direct_conv,
+            sender=self.student,
+            content="Active message"
+        )
+        send_chat_push_notification(active_msg.id)
+        mock_send_push.assert_called_once()
+
+    def test_unsupported_moderation_action_returns_400(self):
+        """
+        Only 'soft_delete' and 'restore' are supported; unknown actions return 400 Bad Request.
+        """
+        self.client.force_authenticate(user=self.admin)
+        res = self.client.post(
+            f'/api/chat/admin/messages/{self.msg1.id}/moderate/',
+            {'action': 'permanent_destroy', 'reason': 'Attempt permanent delete'},
+            format='json'
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Invalid action", res.data['action'])
+
+
 

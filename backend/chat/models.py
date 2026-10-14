@@ -130,6 +130,15 @@ class Message(models.Model):
     )
     attachment_mime_type = models.CharField(max_length=100, blank=True)
     is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='moderated_chat_messages',
+    )
+    moderation_reason = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:

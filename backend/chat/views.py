@@ -3,18 +3,23 @@ import boto3
 from botocore.config import Config
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Count, Q
 from django.http import FileResponse, HttpResponseRedirect
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from users.models import AdminAuditLog
 
 from .models import Conversation, ConversationParticipant, ConversationType, Message
 from .permissions import IsConversationParticipant
 from .serializers import (
+    AdminConversationListSerializer,
+    AdminMessageSerializer,
     ConversationListSerializer,
     CreateConversationSerializer,
     MessageSerializer,
@@ -256,7 +261,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
 
         total_unread = 0
         for p in participations:
-            qs = Message.objects.filter(conversation_id=p.conversation_id).exclude(sender=user)
+            qs = Message.objects.filter(conversation_id=p.conversation_id, is_deleted=False).exclude(sender=user)
             if p.last_read_at:
                 qs = qs.filter(created_at__gt=p.last_read_at)
             total_unread += qs.count()
@@ -372,12 +377,12 @@ class AttachmentPresignedUrlView(APIView):
         if not message.attachment:
             return Response({"detail": "This message has no attachment."}, status=status.HTTP_404_NOT_FOUND)
 
+        is_admin = bool(request.user.is_superuser or request.user.is_staff)
+        if message.is_deleted and not is_admin:
+            return Response({"detail": "This attachment is no longer available."}, status=status.HTTP_404_NOT_FOUND)
+
         conversation = message.conversation
-        is_authorized = (
-            request.user.is_superuser or
-            request.user.is_staff or
-            conversation.participants.filter(user=request.user).exists()
-        )
+        is_authorized = is_admin or conversation.participants.filter(user=request.user).exists()
 
         if not is_authorized:
             return Response(
@@ -410,12 +415,12 @@ class AttachmentDownloadView(APIView):
         if not message.attachment:
             return Response({"detail": "This message has no attachment."}, status=status.HTTP_404_NOT_FOUND)
 
+        is_admin = bool(request.user.is_superuser or request.user.is_staff)
+        if message.is_deleted and not is_admin:
+            return Response({"detail": "This attachment is no longer available."}, status=status.HTTP_404_NOT_FOUND)
+
         conversation = message.conversation
-        is_authorized = (
-            request.user.is_superuser or
-            request.user.is_staff or
-            conversation.participants.filter(user=request.user).exists()
-        )
+        is_authorized = is_admin or conversation.participants.filter(user=request.user).exists()
 
         if not is_authorized:
             return Response(
@@ -446,3 +451,217 @@ class AttachmentDownloadView(APIView):
             return response
         except FileNotFoundError:
             return Response({"detail": "Attachment file not found on disk."}, status=status.HTTP_404_NOT_FOUND)
+
+
+class IsAdminRole(permissions.BasePermission):
+    """
+    Permission class granting access strictly to Superusers and Staff members.
+    Regular students, teachers, and mentors receive 403 Forbidden.
+    """
+    def has_permission(self, request, view):
+        return bool(
+            request.user and
+            request.user.is_authenticated and
+            (request.user.is_superuser or request.user.is_staff)
+        )
+
+
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class AdminConversationListView(APIView):
+    """
+    Admin-only endpoint listing all conversations across the platform.
+    Supports server-side filtering by type, course, batch, participant user ID,
+    date ranges, and searching across titles and user names/emails/phones.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def get(self, request):
+        qs = Conversation.objects.all().select_related(
+            'course', 'batch', 'created_by'
+        ).prefetch_related(
+            'participants__user'
+        ).annotate(
+            message_count=Count('messages')
+        ).order_by('-last_message_at', '-created_at')
+
+        # Filter by conversation type
+        conv_type = request.query_params.get('type') or request.query_params.get('conversation_type')
+        if conv_type:
+            conv_type = conv_type.upper().strip()
+            if conv_type in ConversationType.values:
+                qs = qs.filter(conversation_type=conv_type)
+
+        # Filter by course
+        course_id = request.query_params.get('course_id')
+        if course_id:
+            qs = qs.filter(course_id=course_id)
+
+        # Filter by batch
+        batch_id = request.query_params.get('batch_id')
+        if batch_id:
+            qs = qs.filter(batch_id=batch_id)
+
+        # Filter by participant (user ID)
+        participant_id = request.query_params.get('participant_id') or request.query_params.get('user_id')
+        if participant_id:
+            qs = qs.filter(participants__user_id=participant_id)
+
+        # Filter by date range
+        date_from = request.query_params.get('date_from')
+        if date_from:
+            qs = qs.filter(created_at__date__gte=date_from)
+
+        date_to = request.query_params.get('date_to')
+        if date_to:
+            qs = qs.filter(created_at__date__lte=date_to)
+
+        # Full text search across title, participant name/email/phone/ID
+        search = request.query_params.get('search', '').strip()
+        if search:
+            search_filter = (
+                Q(title__icontains=search) |
+                Q(participants__user__username__icontains=search) |
+                Q(participants__user__first_name__icontains=search) |
+                Q(participants__user__last_name__icontains=search) |
+                Q(participants__user__email__icontains=search) |
+                Q(participants__user__phone_number__icontains=search)
+            )
+            if search.isdigit():
+                search_filter |= Q(participants__user__id=int(search))
+            qs = qs.filter(search_filter)
+
+        qs = qs.distinct()
+
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(qs, request)
+        serializer = AdminConversationListSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
+
+
+class AdminConversationDetailView(APIView):
+    """
+    Admin-only endpoint returning complete conversation metadata.
+    Audits administrative inspection.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def get(self, request, conversation_id):
+        conversation = get_object_or_404(
+            Conversation.objects.select_related('course', 'batch', 'created_by')
+            .prefetch_related('participants__user')
+            .annotate(message_count=Count('messages')),
+            id=conversation_id
+        )
+
+        # Audit administrative inspection
+        AdminAuditLog.record(
+            actor=request.user,
+            action='CHAT_CONVERSATION_INSPECTED',
+            target_type='Conversation',
+            target_id=str(conversation.id),
+            description=f"Admin {request.user.username} inspected conversation {conversation.id} ({conversation.get_conversation_type_display()})",
+            metadata={
+                'conversation_type': conversation.conversation_type,
+                'participant_count': conversation.participants.count(),
+            }
+        )
+
+        serializer = AdminConversationListSerializer(conversation, context={'request': request})
+        return Response(serializer.data)
+
+
+class AdminConversationMessagesView(APIView):
+    """
+    Admin-only endpoint returning paginated messages for a conversation in chronological order.
+    Includes both active and moderated messages so administrators can inspect full chat history.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def get(self, request, conversation_id):
+        conversation = get_object_or_404(Conversation, id=conversation_id)
+
+        qs = Message.objects.filter(conversation=conversation).select_related(
+            'sender', 'deleted_by'
+        ).order_by('created_at')
+
+        paginator = StandardResultsSetPagination()
+        paginator.page_size = 50
+        page = paginator.paginate_queryset(qs, request)
+        serializer = AdminMessageSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
+
+
+class AdminMessageModerateView(APIView):
+    """
+    Admin-only endpoint to soft-delete or restore a message with an audited reason.
+    Never permanently deletes chat history.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def post(self, request, pk):
+        message = get_object_or_404(
+            Message.objects.select_related('conversation', 'sender', 'deleted_by'),
+            pk=pk
+        )
+
+        action_name = str(request.data.get('action', 'soft_delete')).lower().strip()
+        reason = str(request.data.get('reason', '')).strip()
+
+        if action_name not in ('soft_delete', 'restore'):
+            return Response(
+                {"action": "Invalid action. Supported actions are 'soft_delete' and 'restore'."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if action_name == 'restore':
+            message.is_deleted = False
+            message.deleted_by = None
+            message.deleted_at = None
+            message.moderation_reason = ""
+            message.save(update_fields=['is_deleted', 'deleted_by', 'deleted_at', 'moderation_reason'])
+
+            AdminAuditLog.record(
+                actor=request.user,
+                action='CHAT_MESSAGE_RESTORED',
+                target_type='Message',
+                target_id=str(message.id),
+                description=f"Admin {request.user.username} restored message {message.id} in conversation {message.conversation_id}",
+                metadata={
+                    'conversation_id': str(message.conversation_id),
+                    'sender_id': message.sender_id,
+                }
+            )
+        else:
+            if not reason:
+                return Response(
+                    {"reason": "A moderation reason is required when soft-deleting a message."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            message.is_deleted = True
+            message.deleted_by = request.user
+            message.deleted_at = timezone.now()
+            message.moderation_reason = reason
+            message.save(update_fields=['is_deleted', 'deleted_by', 'deleted_at', 'moderation_reason'])
+
+            AdminAuditLog.record(
+                actor=request.user,
+                action='CHAT_MESSAGE_MODERATED',
+                target_type='Message',
+                target_id=str(message.id),
+                description=f"Admin {request.user.username} moderated message {message.id} in conversation {message.conversation_id}: {reason}",
+                metadata={
+                    'conversation_id': str(message.conversation_id),
+                    'sender_id': message.sender_id,
+                    'reason': reason,
+                }
+            )
+
+        serializer = AdminMessageSerializer(message, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
