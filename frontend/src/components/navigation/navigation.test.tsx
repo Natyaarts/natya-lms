@@ -46,6 +46,7 @@ describe("Navigation Components", () => {
     expect(screen.getByText("Bundles")).toBeDefined();
     expect(screen.getByText("My Learning")).toBeDefined();
     expect(screen.getByText("Live Classes")).toBeDefined();
+    expect(screen.getByText("Messages")).toBeDefined();
     expect(screen.getByTestId("notification-bell")).toBeDefined();
   });
 

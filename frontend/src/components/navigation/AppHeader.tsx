@@ -39,10 +39,12 @@ export default function AppHeader() {
     { name: "Bundles", href: "/bundles" },
     { name: "My Learning", href: "/dashboard" },
     { name: "Live Classes", href: "/live-classes" },
+    ...(isAuthenticated ? [{ name: "Messages", href: "/chat" }] : []),
   ];
 
   const isLinkActive = (href: string) => {
     if (href === "/dashboard") return pathname === "/dashboard";
+    if (href === "/chat") return pathname.startsWith("/chat");
     return pathname.startsWith(href);
   };
 

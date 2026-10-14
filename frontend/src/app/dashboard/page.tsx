@@ -4,6 +4,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import { MessageSquare } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
 export default function Dashboard() {
@@ -62,9 +63,18 @@ export default function Dashboard() {
           <div className="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent" />
           
           <div className="absolute bottom-0 left-0 w-full p-6">
-            <div className="max-w-7xl mx-auto">
-              <h1 className="text-4xl md:text-5xl font-bold mb-2">My Learning</h1>
-              <p className="text-zinc-300 text-lg">Pick up right where you left off.</p>
+            <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+              <div>
+                <h1 className="text-4xl md:text-5xl font-bold mb-2">My Learning</h1>
+                <p className="text-zinc-300 text-lg">Pick up right where you left off.</p>
+              </div>
+              <Link
+                href="/chat"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-white/10 hover:bg-[#facc15] hover:text-black border border-white/15 text-white font-semibold text-sm transition-all backdrop-blur-md shrink-0 w-fit group"
+              >
+                <MessageSquare className="w-4 h-4 text-[#facc15] group-hover:text-black transition-colors" />
+                <span>Messages & Chat</span>
+              </Link>
             </div>
           </div>
         </div>
@@ -156,14 +166,38 @@ export default function Dashboard() {
               )}
             </div>
 
-            {/* Right 1 Col: Announcements */}
-            <div className="lg:col-span-1">
-              <h2 className="text-2xl font-bold mb-6 text-white flex items-center gap-2">
-                Announcements
-                {!loading && announcements.length > 0 && (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-purple-950/40 text-purple-400 border border-purple-500/20">{announcements.length}</span>
-                )}
-              </h2>
+            {/* Right 1 Col: Announcements & Chat */}
+            <div className="lg:col-span-1 space-y-8">
+              {/* Mentor Chat Quick Access Card */}
+              <div className="p-6 bg-gradient-to-br from-[#141414] to-[#0a0a0a] border border-white/10 rounded-3xl relative overflow-hidden shadow-lg">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#facc15]/10 border border-[#facc15]/20 flex items-center justify-center text-[#facc15]">
+                    <MessageSquare className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white">Mentor Chat</h3>
+                    <p className="text-xs text-zinc-400">Direct 1-on-1 messaging</p>
+                  </div>
+                </div>
+                <p className="text-xs text-zinc-300 mb-4 leading-relaxed">
+                  Have questions about your lessons or practice routines? Connect directly with your instructors and mentors.
+                </p>
+                <Link
+                  href="/chat"
+                  className="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-[#facc15] hover:bg-yellow-400 text-black font-bold text-xs transition-colors shadow-sm"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>Open Messages</span>
+                </Link>
+              </div>
+
+              <div>
+                <h2 className="text-2xl font-bold mb-6 text-white flex items-center gap-2">
+                  Announcements
+                  {!loading && announcements.length > 0 && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-purple-950/40 text-purple-400 border border-purple-500/20">{announcements.length}</span>
+                  )}
+                </h2>
 
               {loading ? (
                 <div className="space-y-4">
@@ -211,6 +245,7 @@ export default function Dashboard() {
                   ))}
                 </div>
               )}
+              </div>
             </div>
           </div>
         </div>

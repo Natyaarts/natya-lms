@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, Suspense } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -38,7 +38,7 @@ import {
   formatFileSize,
 } from "@/lib/chatApi";
 
-export default function ChatPage() {
+function ChatPageContent() {
   const { user, isAuthenticated, loading: authLoading } = useAuth();
   const searchParams = useSearchParams();
   const initialConvId = searchParams.get("conversation");
@@ -76,12 +76,12 @@ export default function ChatPage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Load conversations list
-  const loadConversations = useCallback(async (selectId?: number) => {
+  const loadConversations = useCallback(async (selectId?: number | string) => {
     try {
       const data = await fetchConversations();
       setConversations(data);
       if (selectId) {
-        const found = data.find((c) => c.id === selectId);
+        const found = data.find((c) => String(c.id) === String(selectId));
         if (found) {
           setActiveConversation(found);
           setMobileShowThread(true);
@@ -96,12 +96,12 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      loadConversations(initialConvId ? Number(initialConvId) : undefined);
+      loadConversations(initialConvId || undefined);
     }
   }, [isAuthenticated, initialConvId, loadConversations]);
 
   // Load messages for the active conversation
-  const loadActiveMessages = useCallback(async (conversationId: number) => {
+  const loadActiveMessages = useCallback(async (conversationId: number | string) => {
     setLoadingMessages(true);
     try {
       const res = await fetchMessages(conversationId);
@@ -112,7 +112,7 @@ export default function ChatPage() {
       markConversationRead(conversationId);
       // Update unread count locally
       setConversations((prev) =>
-        prev.map((c) => (c.id === conversationId ? { ...c, unread_count: 0 } : c))
+        prev.map((c) => (String(c.id) === String(conversationId) ? { ...c, unread_count: 0 } : c))
       );
     } catch (err) {
       console.error("Failed to load messages:", err);
@@ -583,7 +583,7 @@ export default function ChatPage() {
                                   isMe
                                     ? "bg-black/10 border-black/20"
                                     : "bg-black/40 border-white/10"
-                                Dark-card}`}
+                                }`}
                               >
                                 {msg.message_type === "IMAGE" ? (
                                   <div className="flex flex-col gap-1.5">
@@ -848,5 +848,19 @@ export default function ChatPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function ChatPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-black text-white flex items-center justify-center">
+          <div className="w-8 h-8 rounded-full border-2 border-[#facc15] border-t-transparent animate-spin" />
+        </div>
+      }
+    >
+      <ChatPageContent />
+    </Suspense>
   );
 }
