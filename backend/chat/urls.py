@@ -8,6 +8,7 @@ from .views import (
     AdminMessageModerateView,
     AttachmentDownloadView,
     AttachmentPresignedUrlView,
+    ChatRecipientsView,
     ConversationViewSet,
     MessageListCreateView,
 )
@@ -55,6 +56,12 @@ urlpatterns = [
         'messages/<int:pk>/attachment-url/',
         AttachmentPresignedUrlView.as_view(),
         name='message-attachment-presigned-url'
+    ),
+    # Direct chat recipients discovery
+    path(
+        'recipients/',
+        ChatRecipientsView.as_view(),
+        name='chat-recipients'
     ),
     path('', include(router.urls)),
 ]

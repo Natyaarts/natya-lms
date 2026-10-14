@@ -1058,6 +1058,26 @@ class CurrentUserView(APIView):
     def get(self, request):
         if not request.user.is_authenticated:
             return Response({"error": "Not authenticated"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        mentor_data = None
+        if getattr(request.user, 'is_student', False) and not getattr(request.user, 'is_mentor', False):
+            from .models import Mentorship
+            active_m = Mentorship.objects.filter(
+                student=request.user,
+                status=Mentorship.Status.ACTIVE
+            ).select_related('mentor').first()
+            if active_m and active_m.mentor:
+                m_user = active_m.mentor
+                m_name = f"{m_user.first_name} {m_user.last_name}".strip() or m_user.username
+                mentor_data = {
+                    "id": m_user.id,
+                    "username": m_user.username,
+                    "first_name": m_user.first_name,
+                    "last_name": m_user.last_name,
+                    "name": m_name,
+                    "email": m_user.email,
+                }
+
         return Response({
             "id": request.user.id,
             "username": request.user.username,
@@ -1069,7 +1089,8 @@ class CurrentUserView(APIView):
             "is_superuser": request.user.is_superuser,
             "is_staff": request.user.is_staff,
             "is_admin": bool(request.user.is_staff and not request.user.is_superuser),
-            "is_onboarded": getattr(request.user, 'is_onboarded', False)
+            "is_onboarded": getattr(request.user, 'is_onboarded', False),
+            "mentor": mentor_data,
         })
 
 
@@ -1090,29 +1111,42 @@ class MyStudentsView(APIView):
 
     def get(self, request):
         user = request.user
+        is_mentor = getattr(user, 'is_mentor', False)
+        is_teacher = getattr(user, 'is_teacher', False)
 
-        if getattr(user, 'is_mentor', False):
+        if not (is_mentor or is_teacher):
+            return Response(
+                {"error": "Only teacher or mentor accounts have a student roster."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        students_dict = {}
+
+        if is_mentor:
             from .models import Mentorship
             mentorships = Mentorship.objects.filter(
                 mentor=user, status=Mentorship.Status.ACTIVE
             ).select_related('student').order_by('-assigned_at')
-            students = [m.student for m in mentorships]
-        elif getattr(user, 'is_teacher', False):
+            for m in mentorships:
+                if m.student and m.student.id not in students_dict:
+                    students_dict[m.student.id] = m.student
+
+        if is_teacher:
             from courses.models import Course, Enrollment
             from django.db.models import Q
             teacher_courses = Course.objects.filter(
                 Q(instructors__user=user, instructors__role='TEACHER') |
                 Q(enrollments__user=user)  # legacy fallback, see CourseViewSet.get_queryset
             ).distinct()
-            students = User.objects.filter(
+            course_students = User.objects.filter(
                 is_student=True, is_teacher=False, is_superuser=False,
                 enrollments__course__in=teacher_courses
             ).distinct().order_by('-date_joined')
-        else:
-            return Response(
-                {"error": "Only teacher or mentor accounts have a student roster."},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            for s in course_students:
+                if s.id not in students_dict:
+                    students_dict[s.id] = s
+
+        students = list(students_dict.values())
 
         data = [{
             "id": s.id,
@@ -1282,6 +1316,10 @@ class MentorshipViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = Mentorship.objects.all().select_related('student', 'mentor', 'assigned_by')
+        status_param = self.request.query_params.get('status')
+        if status_param:
+            qs = qs.filter(status=status_param)
+
         if user.is_superuser or user.is_staff:
             # Admin use, e.g. a specific user's detail page: ?student= or
             # ?mentor= narrows the "see everything" queryset, same pattern

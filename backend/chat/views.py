@@ -665,3 +665,150 @@ class AdminMessageModerateView(APIView):
         serializer = AdminMessageSerializer(message, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+
+class ChatRecipientsView(APIView):
+    """
+    Returns eligible 1-on-1 direct chat contacts for the authenticated user,
+    strictly adhering to the authorization rules in can_initiate_direct_conversation():
+    - Students see all active assigned mentors and instructors of their enrolled courses.
+    - Mentors see their active assigned students.
+    - Teachers see students enrolled in courses they instruct.
+    - Dual-role (teacher + mentor) users see the merged set of students without duplicates.
+    - Staff / Superusers see platform users.
+    - Inactive mentorships and inactive accounts are strictly excluded.
+    - Returns minimal user display data required by the recipient UI.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from django.contrib.auth import get_user_model
+        from courses.models import Course, CourseInstructor
+        from users.models import Mentorship
+        from .permissions import can_initiate_direct_conversation
+
+        user = request.user
+        User = get_user_model()
+        recipients_map = {}
+
+        def _format_recipient(u, role_override=None):
+            if role_override:
+                role = role_override
+            elif u.is_superuser or u.is_staff:
+                role = 'STAFF'
+            elif getattr(u, 'is_mentor', False):
+                role = 'MENTOR'
+            elif getattr(u, 'is_teacher', False):
+                role = 'TEACHER'
+            else:
+                role = 'STUDENT'
+
+            full_name = f"{u.first_name or ''} {u.last_name or ''}".strip()
+            display_name = full_name or u.username
+
+            profile_image_url = None
+            if hasattr(u, 'mentor_profile') and u.mentor_profile and u.mentor_profile.profile_image:
+                try:
+                    profile_image_url = u.mentor_profile.profile_image.url
+                except Exception:
+                    profile_image_url = None
+            elif hasattr(u, 'teacher_profile') and u.teacher_profile and u.teacher_profile.profile_image:
+                try:
+                    profile_image_url = u.teacher_profile.profile_image.url
+                except Exception:
+                    profile_image_url = None
+
+            return {
+                "id": u.id,
+                "username": u.username,
+                "first_name": u.first_name or "",
+                "last_name": u.last_name or "",
+                "name": display_name,
+                "email": u.email or "",
+                "role": role,
+                "profile_image_url": profile_image_url,
+            }
+
+        # 1. Staff / SuperUser: platform directory
+        if user.is_superuser or user.is_staff:
+            all_users = User.objects.filter(is_active=True).exclude(pk=user.pk).order_by('first_name', 'last_name', 'username')
+            return Response([_format_recipient(u) for u in all_users])
+
+        is_student = getattr(user, 'is_student', False)
+        is_mentor = getattr(user, 'is_mentor', False)
+        is_teacher = getattr(user, 'is_teacher', False)
+
+        # 2. Mentor -> Assigned Active Students
+        if is_mentor:
+            active_mentorships = Mentorship.objects.filter(
+                mentor=user,
+                status=Mentorship.Status.ACTIVE,
+                student__is_active=True
+            ).select_related('student')
+            for m in active_mentorships:
+                s = m.student
+                if s and s.pk != user.pk and s.pk not in recipients_map:
+                    recipients_map[s.pk] = _format_recipient(s, role_override='STUDENT')
+
+        # 3. Teacher -> Enrolled Course Students
+        if is_teacher:
+            teacher_courses = Course.objects.filter(
+                Q(instructors__user=user, instructors__role='TEACHER') |
+                Q(enrollments__user=user)
+            ).distinct()
+            course_students = User.objects.filter(
+                is_active=True,
+                enrollments__course__in=teacher_courses
+            ).exclude(pk=user.pk).distinct().order_by('first_name', 'last_name', 'username')
+            for s in course_students:
+                if s.pk not in recipients_map:
+                    recipients_map[s.pk] = _format_recipient(s, role_override='STUDENT')
+
+        # 4. Student -> Active Mentors and Enrolled Course Instructors
+        if is_student:
+            # Active mentors (supports multiple active mentors)
+            mentorships = Mentorship.objects.filter(
+                student=user,
+                status=Mentorship.Status.ACTIVE,
+                mentor__is_active=True
+            ).select_related('mentor')
+            for m in mentorships:
+                mentor = m.mentor
+                if mentor and mentor.pk != user.pk and mentor.pk not in recipients_map:
+                    recipients_map[mentor.pk] = _format_recipient(mentor, role_override='MENTOR')
+
+            # Instructors of enrolled courses
+            enrolled_instructors = CourseInstructor.objects.filter(
+                course__enrollments__user=user,
+                user__is_active=True
+            ).select_related('user').exclude(user=user)
+            for ci in enrolled_instructors:
+                inst = ci.user
+                if inst and inst.pk not in recipients_map:
+                    inst_role = 'MENTOR' if getattr(inst, 'is_mentor', False) else 'TEACHER'
+                    recipients_map[inst.pk] = _format_recipient(inst, role_override=inst_role)
+
+            # Legacy teachers for courses where teacher self-enrolled
+            legacy_teacher_courses = Course.objects.filter(enrollments__user=user).exclude(instructors__isnull=False)
+            legacy_teachers = User.objects.filter(
+                is_teacher=True,
+                is_active=True,
+                enrollments__course__in=legacy_teacher_courses
+            ).exclude(pk=user.pk).distinct()
+            for lt in legacy_teachers:
+                if lt.pk not in recipients_map:
+                    recipients_map[lt.pk] = _format_recipient(lt, role_override='TEACHER')
+
+        # Enforce can_initiate_direct_conversation validation on all candidates
+        final_list = []
+        candidate_users = User.objects.filter(pk__in=recipients_map.keys())
+        user_by_id = {u.id: u for u in candidate_users}
+        for r_id, r_data in recipients_map.items():
+            candidate = user_by_id.get(r_id)
+            if candidate and can_initiate_direct_conversation(user, candidate)[0]:
+                final_list.append(r_data)
+
+        # Sort: Mentors first, then alphabetically by display name
+        final_list.sort(key=lambda x: (x['role'] != 'MENTOR', x['name'].lower()))
+        return Response(final_list, status=status.HTTP_200_OK)
+
+

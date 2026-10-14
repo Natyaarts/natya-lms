@@ -21,7 +21,7 @@ describe("Admin Chat API Client", () => {
 
   it("constructs query params correctly for fetchAdminConversations", async () => {
     let capturedUrl = "";
-    globalThis.fetch = vi.fn(async (url: string) => {
+    globalThis.fetch = vi.fn(async (url: any) => {
       capturedUrl = url;
       return {
         ok: true,
@@ -70,7 +70,7 @@ describe("Admin Chat API Client", () => {
     let capturedDetailUrl = "";
     let capturedMessagesUrl = "";
 
-    globalThis.fetch = vi.fn(async (url: string) => {
+    globalThis.fetch = vi.fn(async (url: any) => {
       if (url.includes("/messages/")) {
         capturedMessagesUrl = url;
         return {
@@ -98,7 +98,7 @@ describe("Admin Chat API Client", () => {
     let capturedOptions: any = null;
     let capturedUrl = "";
 
-    globalThis.fetch = vi.fn(async (url: string, options: any) => {
+    globalThis.fetch = vi.fn(async (url: any, options: any) => {
       capturedUrl = url;
       capturedOptions = options;
       return {
@@ -119,7 +119,7 @@ describe("Admin Chat API Client", () => {
 
   it("requests presigned URL for attachment download", async () => {
     let capturedUrl = "";
-    globalThis.fetch = vi.fn(async (url: string) => {
+    globalThis.fetch = vi.fn(async (url: any) => {
       capturedUrl = url;
       return {
         ok: true,

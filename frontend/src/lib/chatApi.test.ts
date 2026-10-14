@@ -82,6 +82,54 @@ describe("Chat API Contract & Deep Linking", () => {
     expect(count).toBe(5);
   });
 
+  it("queries unified /api/chat/recipients/ in fetchDirectChatRecipients", async () => {
+    let requestedUrl = "";
+    globalThis.fetch = (async (url: string) => {
+      requestedUrl = url;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [
+          { id: 10, username: "mentor1", first_name: "Priya", last_name: "Nair", role: "MENTOR" },
+          { id: 15, username: "teacher1", first_name: "Kavita", last_name: "K", role: "TEACHER" },
+        ],
+      } as any;
+    }) as any;
+
+    const { fetchDirectChatRecipients } = await import("./chatApi");
+    const list = await fetchDirectChatRecipients();
+    expect(requestedUrl).toContain("/api/chat/recipients/");
+    expect(list).toHaveLength(2);
+    expect(list[0].role).toBe("MENTOR");
+    expect(list[1].role).toBe("TEACHER");
+  });
+
+  it("throws authentication required error when fetchDirectChatRecipients gets 401", async () => {
+    globalThis.fetch = (async () => {
+      return {
+        ok: false,
+        status: 401,
+        json: async () => ({ detail: "Authentication credentials were not provided." }),
+      } as any;
+    }) as any;
+
+    const { fetchDirectChatRecipients } = await import("./chatApi");
+    await expect(fetchDirectChatRecipients()).rejects.toThrow("Authentication required");
+  });
+
+  it("throws server error message when fetchDirectChatRecipients fails", async () => {
+    globalThis.fetch = (async () => {
+      return {
+        ok: false,
+        status: 500,
+        json: async () => ({ error: "Internal service error" }),
+      } as any;
+    }) as any;
+
+    const { fetchDirectChatRecipients } = await import("./chatApi");
+    await expect(fetchDirectChatRecipients()).rejects.toThrow("Internal service error");
+  });
+
   it("handles push deep-link route resolution with UUIDs, integers, and invalid paths", () => {
     // Pure function logic identical to mobile resolveActionUrlToRoute
     const resolveRoute = (actionUrl?: string | null) => {

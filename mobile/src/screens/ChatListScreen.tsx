@@ -45,6 +45,7 @@ export default function ChatListScreen({ navigation }: any) {
   const [showModal, setShowModal] = useState(false);
   const [recipients, setRecipients] = useState<UserMinimal[]>([]);
   const [loadingRecipients, setLoadingRecipients] = useState(false);
+  const [recipientsError, setRecipientsError] = useState<string | null>(null);
   const [connectingId, setConnectingId] = useState<number | null>(null);
 
   const fetchConversationsList = useCallback(async () => {
@@ -72,62 +73,27 @@ export default function ChatListScreen({ navigation }: any) {
     fetchConversationsList();
   };
 
-  const openNewChat = async () => {
-    setShowModal(true);
+  const fetchRecipientsList = async () => {
     setLoadingRecipients(true);
+    setRecipientsError(null);
     try {
-      // 1. Fetch current user data to find assigned mentor
-      const userRes = await client.get('users/me/');
-      const list: UserMinimal[] = [];
-      const seen = new Set<number>();
-
-      if (userRes.data?.mentor && !seen.has(userRes.data.mentor.id)) {
-        list.push({
-          id: userRes.data.mentor.id,
-          username: userRes.data.mentor.username || 'Mentor',
-          first_name: userRes.data.mentor.first_name || '',
-          last_name: userRes.data.mentor.last_name || '',
-          email: userRes.data.mentor.email || '',
-          role: 'MENTOR',
-        });
-        seen.add(userRes.data.mentor.id);
-      }
-
-      // 2. Fetch instructors from enrolled courses
-      try {
-        const coursesRes = await client.get('courses/my-learning/');
-        const coursesList = Array.isArray(coursesRes.data)
-          ? coursesRes.data
-          : coursesRes.data?.results || [];
-
-        coursesList.forEach((c: any) => {
-          if (c.instructors && Array.isArray(c.instructors)) {
-            c.instructors.forEach((inst: any) => {
-              const u = inst.user || inst;
-              if (u && u.id && !seen.has(u.id)) {
-                list.push({
-                  id: u.id,
-                  username: u.username || 'Instructor',
-                  first_name: u.first_name || '',
-                  last_name: u.last_name || '',
-                  email: u.email || '',
-                  role: 'TEACHER',
-                });
-                seen.add(u.id);
-              }
-            });
-          }
-        });
-      } catch {
-        // Enrolled courses check fallback
-      }
-
+      const res = await client.get('chat/recipients/');
+      const list: UserMinimal[] = Array.isArray(res.data) ? res.data : res.data?.results || [];
       setRecipients(list);
     } catch (err: any) {
       console.warn('Failed to load chat recipients:', err);
+      const errMsg = err?.response?.status === 401
+        ? 'Session expired. Please log in again to message contacts.'
+        : (err?.response?.data?.detail || err?.response?.data?.error || err?.message || 'Could not load contacts.');
+      setRecipientsError(errMsg);
     } finally {
       setLoadingRecipients(false);
     }
+  };
+
+  const openNewChat = () => {
+    setShowModal(true);
+    fetchRecipientsList();
   };
 
   const handleStartConversation = async (recipientId: number, partnerName: string) => {
@@ -338,6 +304,19 @@ export default function ChatListScreen({ navigation }: any) {
               <View style={styles.modalLoading}>
                 <ActivityIndicator size="small" color={colors.accent} />
                 <Text style={styles.modalLoadingText}>Finding contacts...</Text>
+              </View>
+            ) : recipientsError ? (
+              <View style={styles.modalEmpty}>
+                <Icon name="alert-circle" size={36} color={colors.danger} />
+                <Text style={styles.modalEmptyTitle}>Unable to Load Contacts</Text>
+                <Text style={styles.modalEmptySub}>{recipientsError}</Text>
+                <TouchableOpacity
+                  style={[styles.connectPill, { marginTop: spacing.md, flexDirection: 'row', alignItems: 'center', gap: 6 }]}
+                  onPress={fetchRecipientsList}
+                >
+                  <Icon name="refresh-cw" size={12} color={colors.textInverse} />
+                  <Text style={styles.connectPillText}>Retry</Text>
+                </TouchableOpacity>
               </View>
             ) : recipients.length === 0 ? (
               <View style={styles.modalEmpty}>

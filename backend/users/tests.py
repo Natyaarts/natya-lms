@@ -119,6 +119,58 @@ class MentorshipTests(APITestCase):
         self.assertFalse(self.plain_teacher.is_mentor)
         self.assertTrue(self.plain_teacher.is_teacher)
 
+    def test_mentorship_list_filters_by_status(self):
+        m1 = Mentorship.objects.create(student=self.student1, mentor=self.mentor1, assigned_by=self.admin)
+        m2 = Mentorship.objects.create(student=self.student1, mentor=self.mentor2, assigned_by=self.admin)
+        m2.status = Mentorship.Status.INACTIVE
+        m2.save()
+
+        self.client.force_authenticate(user=self.student1)
+        res_all = self.client.get(self.list_url)
+        self.assertEqual(res_all.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res_all.data), 2)
+
+        res_active = self.client.get(f"{self.list_url}?status=ACTIVE")
+        self.assertEqual(res_active.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res_active.data), 1)
+        self.assertEqual(res_active.data[0]['id'], m1.id)
+
+    def test_current_user_me_includes_active_mentor_for_student(self):
+        self.client.force_authenticate(user=self.student1)
+        res = self.client.get('/api/users/me/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIsNone(res.data['mentor'])
+
+        m = Mentorship.objects.create(student=self.student1, mentor=self.mentor1, assigned_by=self.admin)
+        res2 = self.client.get('/api/users/me/')
+        self.assertEqual(res2.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(res2.data['mentor'])
+        self.assertEqual(res2.data['mentor']['id'], self.mentor1.id)
+        self.assertEqual(res2.data['mentor']['username'], self.mentor1.username)
+
+        # Inactive mentorship should not be returned as active mentor
+        m.status = Mentorship.Status.INACTIVE
+        m.save()
+        res3 = self.client.get('/api/users/me/')
+        self.assertEqual(res3.status_code, status.HTTP_200_OK)
+        self.assertIsNone(res3.data['mentor'])
+
+    def test_my_students_dual_teacher_and_mentor(self):
+        dual_user = User.objects.create_user(
+            username="p1_dual_teacher_mentor",
+            password="pw",
+            is_teacher=True,
+            is_mentor=True,
+            is_student=False
+        )
+        Mentorship.objects.create(student=self.student1, mentor=dual_user, assigned_by=self.admin)
+
+        self.client.force_authenticate(user=dual_user)
+        res = self.client.get(reverse('my-students'))
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        student_ids = [s['id'] for s in res.data]
+        self.assertIn(self.student1.id, student_ids)
+
 
 class AdminRoleAndPrivilegeEscalationTests(APITestCase):
     """

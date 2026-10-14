@@ -66,6 +66,7 @@ function ChatPageContent() {
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [recipients, setRecipients] = useState<UserMinimal[]>([]);
   const [loadingRecipients, setLoadingRecipients] = useState(false);
+  const [recipientsError, setRecipientsError] = useState<string | null>(null);
   const [startingChat, setStartingChat] = useState<number | null>(null);
 
   // Mobile navigation state
@@ -258,17 +259,23 @@ function ChatPageContent() {
   };
 
   // Start new conversation modal
-  const openNewChatModal = async () => {
-    setShowNewChatModal(true);
+  const loadRecipientsList = async () => {
     setLoadingRecipients(true);
+    setRecipientsError(null);
     try {
       const list = await fetchDirectChatRecipients();
       setRecipients(list);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to load recipients:", err);
+      setRecipientsError(err.message || "Failed to load contacts. Please try again.");
     } finally {
       setLoadingRecipients(false);
     }
+  };
+
+  const openNewChatModal = () => {
+    setShowNewChatModal(true);
+    loadRecipientsList();
   };
 
   const handleStartChatWithUser = async (recipientId: number) => {
@@ -796,7 +803,20 @@ function ChatPageContent() {
               {loadingRecipients ? (
                 <div className="py-8 text-center text-zinc-500">
                   <div className="w-6 h-6 border-2 border-[#facc15] border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-                  <p className="text-xs">Finding available mentors and teachers...</p>
+                  <p className="text-xs">Finding available contacts...</p>
+                </div>
+              ) : recipientsError ? (
+                <div className="py-6 text-center text-zinc-400">
+                  <AlertCircle className="w-10 h-10 text-red-500 mx-auto mb-2" />
+                  <p className="text-sm font-semibold text-white mb-1">Unable to Load Contacts</p>
+                  <p className="text-xs text-zinc-400 max-w-xs mx-auto mb-4">{recipientsError}</p>
+                  <button
+                    onClick={loadRecipientsList}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg text-xs font-semibold transition-colors"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Retry
+                  </button>
                 </div>
               ) : recipients.length === 0 ? (
                 <div className="py-6 text-center text-zinc-400">

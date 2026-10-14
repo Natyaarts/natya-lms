@@ -254,54 +254,19 @@ export async function fetchUnreadCount(): Promise<number> {
 }
 
 export async function fetchDirectChatRecipients(): Promise<UserMinimal[]> {
-  try {
-    // 1. Fetch current user data to see mentor if assigned
-    const userRes = await fetch(`${API_BASE}/api/users/me/`, { credentials: 'include' });
-    const recipients: UserMinimal[] = [];
-    const seen = new Set<number>();
-
-    if (userRes.ok) {
-      const userData = await userRes.json();
-      if (userData.mentor && !seen.has(userData.mentor.id)) {
-        recipients.push({
-          id: userData.mentor.id,
-          username: userData.mentor.username || 'Mentor',
-          first_name: userData.mentor.first_name || '',
-          last_name: userData.mentor.last_name || '',
-          email: userData.mentor.email || '',
-          role: 'MENTOR',
-        });
-        seen.add(userData.mentor.id);
-      }
+  const res = await fetch(`${API_BASE}/api/chat/recipients/`, {
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error('Authentication required. Please sign in to view contacts.');
     }
-
-    // 2. Fetch instructors from enrolled courses
-    const coursesRes = await fetch(`${API_BASE}/api/courses/my-learning/`, { credentials: 'include' });
-    if (coursesRes.ok) {
-      const coursesData = await coursesRes.json();
-      const coursesList = Array.isArray(coursesData) ? coursesData : coursesData.results || [];
-      coursesList.forEach((c: any) => {
-        if (c.instructors && Array.isArray(c.instructors)) {
-          c.instructors.forEach((inst: any) => {
-            const u = inst.user || inst;
-            if (u && u.id && !seen.has(u.id)) {
-              recipients.push({
-                id: u.id,
-                username: u.username || 'Instructor',
-                first_name: u.first_name || '',
-                last_name: u.last_name || '',
-                email: u.email || '',
-                role: 'TEACHER',
-              });
-              seen.add(u.id);
-            }
-          });
-        }
-      });
-    }
-
-    return recipients;
-  } catch {
-    return [];
+    const errData = await res.json().catch(() => ({}));
+    const message = errData.detail || errData.error || `Failed to load contacts (HTTP ${res.status})`;
+    throw new Error(message);
   }
+  const data = await res.json();
+  return Array.isArray(data) ? data : data.results || [];
 }
+

@@ -1058,4 +1058,145 @@ class AdminChatManagementTests(APITestCase):
         self.assertIn("Invalid action", res.data['action'])
 
 
+class ChatRecipientsAPITests(APITestCase):
+    """
+    Tests for GET /api/chat/recipients/ endpoint covering all roles,
+    multiple active mentors, inactive relationships, deduplication, empty results,
+    and authorization guards.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_user(username='admin_recip', password='pw', is_staff=True, is_superuser=True)
+        self.student1 = User.objects.create_user(username='student_recip1', first_name='Aarav', last_name='Kumar', password='pw', is_student=True)
+        self.student2 = User.objects.create_user(username='student_recip2', first_name='Diya', last_name='Patel', password='pw', is_student=True)
+        self.student3 = User.objects.create_user(username='student_recip3', first_name='Rohan', last_name='Sharma', password='pw', is_student=True)
+        self.mentor1 = User.objects.create_user(username='mentor_recip1', first_name='Priya', last_name='Nair', password='pw', is_mentor=True)
+        self.mentor2 = User.objects.create_user(username='mentor_recip2', first_name='Meera', last_name='Iyer', password='pw', is_mentor=True)
+        self.teacher1 = User.objects.create_user(username='teacher_recip1', first_name='Kavita', last_name='Krishnan', password='pw', is_teacher=True)
+        self.dual_user = User.objects.create_user(
+            username='dual_recip', first_name='Suresh', last_name='Menon', password='pw',
+            is_teacher=True, is_mentor=True, is_student=False
+        )
+
+        self.course1 = Course.objects.create(title="Mohiniyattam Foundation", price=2000, is_published=True)
+        CourseInstructor.objects.create(course=self.course1, user=self.teacher1, role=CourseInstructor.InstructorRole.TEACHER)
+
+        self.course_dual = Course.objects.create(title="Abhinaya Masterclass", price=3000, is_published=True)
+        CourseInstructor.objects.create(course=self.course_dual, user=self.dual_user, role=CourseInstructor.InstructorRole.TEACHER)
+
+        self.url = '/api/chat/recipients/'
+
+    def test_unauthenticated_request_rejected(self):
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_student_with_no_relationships_sees_empty_list(self):
+        self.client.force_authenticate(user=self.student1)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data, [])
+
+    def test_student_sees_active_assigned_mentor(self):
+        Mentorship.objects.create(student=self.student1, mentor=self.mentor1, status=Mentorship.Status.ACTIVE)
+        self.client.force_authenticate(user=self.student1)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 1)
+        recip = res.data[0]
+        self.assertEqual(recip['id'], self.mentor1.id)
+        self.assertEqual(recip['role'], 'MENTOR')
+        self.assertEqual(recip['name'], 'Priya Nair')
+
+    def test_student_sees_multiple_active_mentors(self):
+        Mentorship.objects.create(student=self.student1, mentor=self.mentor1, status=Mentorship.Status.ACTIVE)
+        Mentorship.objects.create(student=self.student1, mentor=self.mentor2, status=Mentorship.Status.ACTIVE)
+        self.client.force_authenticate(user=self.student1)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 2)
+        recip_ids = {r['id'] for r in res.data}
+        self.assertEqual(recip_ids, {self.mentor1.id, self.mentor2.id})
+
+    def test_student_does_not_see_inactive_mentor(self):
+        Mentorship.objects.create(student=self.student1, mentor=self.mentor1, status=Mentorship.Status.INACTIVE)
+        self.client.force_authenticate(user=self.student1)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 0)
+
+    def test_student_sees_enrolled_course_instructors(self):
+        Enrollment.objects.create(user=self.student1, course=self.course1)
+        self.client.force_authenticate(user=self.student1)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 1)
+        recip = res.data[0]
+        self.assertEqual(recip['id'], self.teacher1.id)
+        self.assertEqual(recip['role'], 'TEACHER')
+        self.assertEqual(recip['name'], 'Kavita Krishnan')
+
+    def test_student_cannot_see_peer_students(self):
+        # student1 and student2 enrolled in course1
+        Enrollment.objects.create(user=self.student1, course=self.course1)
+        Enrollment.objects.create(user=self.student2, course=self.course1)
+        self.client.force_authenticate(user=self.student1)
+        res = self.client.get(self.url)
+        recip_ids = [r['id'] for r in res.data]
+        self.assertNotIn(self.student2.id, recip_ids)
+        self.assertIn(self.teacher1.id, recip_ids)
+
+    def test_mentor_sees_assigned_students(self):
+        Mentorship.objects.create(student=self.student1, mentor=self.mentor1, status=Mentorship.Status.ACTIVE)
+        Mentorship.objects.create(student=self.student2, mentor=self.mentor1, status=Mentorship.Status.ACTIVE)
+        Mentorship.objects.create(student=self.student3, mentor=self.mentor1, status=Mentorship.Status.INACTIVE)
+
+        self.client.force_authenticate(user=self.mentor1)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 2)
+        recip_ids = {r['id'] for r in res.data}
+        self.assertEqual(recip_ids, {self.student1.id, self.student2.id})
+        self.assertNotIn(self.student3.id, recip_ids)
+
+    def test_teacher_sees_course_enrolled_students(self):
+        Enrollment.objects.create(user=self.student1, course=self.course1)
+        Enrollment.objects.create(user=self.student2, course=self.course1)
+
+        self.client.force_authenticate(user=self.teacher1)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        recip_ids = {r['id'] for r in res.data}
+        self.assertEqual(recip_ids, {self.student1.id, self.student2.id})
+
+    def test_dual_teacher_and_mentor_merges_and_deduplicates(self):
+        # student1 is mentored by dual_user AND enrolled in dual_user's course
+        Mentorship.objects.create(student=self.student1, mentor=self.dual_user, status=Mentorship.Status.ACTIVE)
+        Enrollment.objects.create(user=self.student1, course=self.course_dual)
+        # student2 is only enrolled in course
+        Enrollment.objects.create(user=self.student2, course=self.course_dual)
+        # student3 is only mentored
+        Mentorship.objects.create(student=self.student3, mentor=self.dual_user, status=Mentorship.Status.ACTIVE)
+
+        self.client.force_authenticate(user=self.dual_user)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data), 3)
+        recip_ids = [r['id'] for r in res.data]
+        self.assertEqual(len(recip_ids), len(set(recip_ids)), "Recipients must contain no duplicate user IDs")
+        self.assertEqual(set(recip_ids), {self.student1.id, self.student2.id, self.student3.id})
+
+    def test_recipient_fields_are_minimal_and_safe(self):
+        Mentorship.objects.create(student=self.student1, mentor=self.mentor1, status=Mentorship.Status.ACTIVE)
+        self.client.force_authenticate(user=self.student1)
+        res = self.client.get(self.url)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        recip = res.data[0]
+        allowed_keys = {'id', 'username', 'first_name', 'last_name', 'name', 'email', 'role', 'profile_image_url'}
+        self.assertTrue(set(recip.keys()).issubset(allowed_keys))
+        # Ensure sensitive fields are never present
+        for sensitive in ('password', 'phone_number', 'parent_phone', 'onboarding_data', 'is_superuser'):
+            self.assertNotIn(sensitive, recip)
+
+
+
 
