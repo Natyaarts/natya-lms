@@ -1,5 +1,19 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ActivityIndicator, ScrollView, TextInput, Alert, Linking } from 'react-native';
+import React, { useEffect, useState, useRef } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  SafeAreaView,
+  ActivityIndicator,
+  ScrollView,
+  TextInput,
+  Alert,
+  Linking,
+  KeyboardAvoidingView,
+  Platform,
+  Keyboard,
+} from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import client from '../api/client';
 
@@ -43,6 +57,7 @@ export default function AssignmentScreen({ route, navigation }: any) {
   const [content, setContent] = useState('');
   const [selectedFile, setSelectedFile] = useState<DocumentPicker.DocumentPickerAsset | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const scrollViewRef = useRef<ScrollView>(null);
 
   const loadSubmissions = async () => {
     const res = await client.get(`courses/assignment-submissions/my/?assignment_id=${assignmentId}`);
@@ -90,6 +105,7 @@ export default function AssignmentScreen({ route, navigation }: any) {
   };
 
   const handleSubmit = async () => {
+    Keyboard.dismiss();
     if (!content.trim() && !selectedFile) {
       Alert.alert('Error', 'Provide submission text or a file.');
       return;
@@ -140,98 +156,114 @@ export default function AssignmentScreen({ route, navigation }: any) {
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.backText}>← Back</Text></TouchableOpacity>
       </View>
-      <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.title}>{assignment.title}</Text>
-        {!!assignment.description && <Text style={styles.description}>{assignment.description}</Text>}
-        <View style={styles.maxMarksBox}>
-          <Text style={styles.maxMarksLabel}>Max Marks</Text>
-          <Text style={styles.maxMarksValue}>{assignment.max_marks}</Text>
-        </View>
-
-        {latest && (
-          <View style={styles.latestBox}>
-            <View style={styles.statusRow}>
-              <Text style={[styles.statusBadge, { color: statusMeta(latest.status).color }]}>{statusMeta(latest.status).label}</Text>
-              <Text style={styles.attemptText}>Attempt {latest.attempt_number}</Text>
-            </View>
-
-            {!!latest.content && (
-              <View style={styles.submissionBox}>
-                <Text style={styles.submissionLabel}>Your Submission</Text>
-                <Text style={styles.submissionText}>{latest.content}</Text>
-              </View>
-            )}
-            {!!latest.submitted_file && (
-              <TouchableOpacity onPress={() => Linking.openURL(latest.submitted_file)}>
-                <Text style={styles.fileLink}>View submitted file</Text>
-              </TouchableOpacity>
-            )}
-
-            {latest.status === 'GRADED' && (
-              <View style={styles.gradeBox}>
-                <Text style={styles.gradeText}>Grade: {latest.marks_awarded} / {assignment.max_marks}</Text>
-                {!!latest.feedback && <Text style={styles.feedbackText}>{latest.feedback}</Text>}
-              </View>
-            )}
-            {latest.status === 'RETURNED_FOR_REVISION' && !!latest.feedback && (
-              <View style={styles.revisionBox}>
-                <Text style={styles.revisionLabel}>Feedback</Text>
-                <Text style={styles.feedbackText}>{latest.feedback}</Text>
-              </View>
-            )}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView
+          ref={scrollViewRef}
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+        >
+          <Text style={styles.title}>{assignment.title}</Text>
+          {!!assignment.description && <Text style={styles.description}>{assignment.description}</Text>}
+          <View style={styles.maxMarksBox}>
+            <Text style={styles.maxMarksLabel}>Max Marks</Text>
+            <Text style={styles.maxMarksValue}>{assignment.max_marks}</Text>
           </View>
-        )}
 
-        {canSubmit && (
-          <View style={styles.formBox}>
-            <Text style={styles.formLabel}>{latest ? 'Resubmit Assignment' : 'Submit Assignment'}</Text>
-            <TextInput
-              style={styles.textArea}
-              placeholder="Write your submission here (optional if attaching a file)..."
-              placeholderTextColor="#666"
-              value={content}
-              onChangeText={setContent}
-              multiline
-              numberOfLines={6}
-              textAlignVertical="top"
-            />
+          {latest && (
+            <View style={styles.latestBox}>
+              <View style={styles.statusRow}>
+                <Text style={[styles.statusBadge, { color: statusMeta(latest.status).color }]}>{statusMeta(latest.status).label}</Text>
+                <Text style={styles.attemptText}>Attempt {latest.attempt_number}</Text>
+              </View>
 
-            {selectedFile ? (
-              <View style={styles.filePickedRow}>
-                <Text style={styles.filePickedName} numberOfLines={1}>📎 {selectedFile.name}</Text>
-                {typeof selectedFile.size === 'number' && (
-                  <Text style={styles.filePickedSize}>{formatFileSize(selectedFile.size)}</Text>
-                )}
-                <TouchableOpacity onPress={() => setSelectedFile(null)}>
-                  <Text style={styles.fileRemoveText}>✕</Text>
+              {!!latest.content && (
+                <View style={styles.submissionBox}>
+                  <Text style={styles.submissionLabel}>Your Submission</Text>
+                  <Text style={styles.submissionText}>{latest.content}</Text>
+                </View>
+              )}
+              {!!latest.submitted_file && (
+                <TouchableOpacity onPress={() => Linking.openURL(latest.submitted_file)}>
+                  <Text style={styles.fileLink}>View submitted file</Text>
                 </TouchableOpacity>
-              </View>
-            ) : (
-              <TouchableOpacity style={styles.filePickButton} onPress={handlePickFile}>
-                <Text style={styles.filePickButtonText}>📎 Attach a File</Text>
+              )}
+
+              {latest.status === 'GRADED' && (
+                <View style={styles.gradeBox}>
+                  <Text style={styles.gradeText}>Grade: {latest.marks_awarded} / {assignment.max_marks}</Text>
+                  {!!latest.feedback && <Text style={styles.feedbackText}>{latest.feedback}</Text>}
+                </View>
+              )}
+              {latest.status === 'RETURNED_FOR_REVISION' && !!latest.feedback && (
+                <View style={styles.revisionBox}>
+                  <Text style={styles.revisionLabel}>Feedback</Text>
+                  <Text style={styles.feedbackText}>{latest.feedback}</Text>
+                </View>
+              )}
+            </View>
+          )}
+
+          {canSubmit && (
+            <View style={styles.formBox}>
+              <Text style={styles.formLabel}>{latest ? 'Resubmit Assignment' : 'Submit Assignment'}</Text>
+              <TextInput
+                style={styles.textArea}
+                placeholder="Write your submission here (optional if attaching a file)..."
+                placeholderTextColor="#666"
+                value={content}
+                onChangeText={setContent}
+                onFocus={() => {
+                  setTimeout(() => {
+                    scrollViewRef.current?.scrollToEnd({ animated: true });
+                  }, 100);
+                }}
+                multiline
+                numberOfLines={6}
+                textAlignVertical="top"
+              />
+
+              {selectedFile ? (
+                <View style={styles.filePickedRow}>
+                  <Text style={styles.filePickedName} numberOfLines={1}>📎 {selectedFile.name}</Text>
+                  {typeof selectedFile.size === 'number' && (
+                    <Text style={styles.filePickedSize}>{formatFileSize(selectedFile.size)}</Text>
+                  )}
+                  <TouchableOpacity onPress={() => setSelectedFile(null)}>
+                    <Text style={styles.fileRemoveText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity style={styles.filePickButton} onPress={handlePickFile}>
+                  <Text style={styles.filePickButtonText}>📎 Attach a File</Text>
+                </TouchableOpacity>
+              )}
+              <Text style={styles.fileHint}>Allowed: PDF, Word, TXT, JPG, PNG, ZIP -- up to 10 MB.</Text>
+
+              <TouchableOpacity style={styles.submitButton} onPress={handleSubmit} disabled={submitting}>
+                {submitting ? <ActivityIndicator color="#000" /> : <Text style={styles.submitButtonText}>{latest ? 'Resubmit' : 'Submit'}</Text>}
               </TouchableOpacity>
-            )}
-            <Text style={styles.fileHint}>Allowed: PDF, Word, TXT, JPG, PNG, ZIP -- up to 10 MB.</Text>
+            </View>
+          )}
 
-            <TouchableOpacity style={styles.submitButton} onPress={handleSubmit} disabled={submitting}>
-              {submitting ? <ActivityIndicator color="#000" /> : <Text style={styles.submitButtonText}>{latest ? 'Resubmit' : 'Submit'}</Text>}
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {submissions.length > 1 && (
-          <View style={styles.historyBox}>
-            <Text style={styles.historyLabel}>Submission History</Text>
-            {submissions.map((s) => (
-              <View key={s.id} style={styles.historyRow}>
-                <Text style={styles.historyAttempt}>Attempt {s.attempt_number}</Text>
-                <Text style={[styles.historyStatus, { color: statusMeta(s.status).color }]}>{statusMeta(s.status).label}</Text>
-                {s.status === 'GRADED' && <Text style={styles.historyGrade}>{s.marks_awarded} / {assignment.max_marks}</Text>}
-              </View>
-            ))}
-          </View>
-        )}
-      </ScrollView>
+          {submissions.length > 1 && (
+            <View style={styles.historyBox}>
+              <Text style={styles.historyLabel}>Submission History</Text>
+              {submissions.map((s) => (
+                <View key={s.id} style={styles.historyRow}>
+                  <Text style={styles.historyAttempt}>Attempt {s.attempt_number}</Text>
+                  <Text style={[styles.historyStatus, { color: statusMeta(s.status).color }]}>{statusMeta(s.status).label}</Text>
+                  {s.status === 'GRADED' && <Text style={styles.historyGrade}>{s.marks_awarded} / {assignment.max_marks}</Text>}
+                </View>
+              ))}
+            </View>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -243,7 +275,7 @@ const styles = StyleSheet.create({
   backLink: { color: '#facc15', fontSize: 14 },
   header: { flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#27272a' },
   backText: { color: '#facc15', fontSize: 16 },
-  content: { padding: 24 },
+  content: { padding: 24, paddingBottom: 60 },
   title: { color: '#fff', fontSize: 24, fontWeight: 'bold', marginBottom: 8 },
   description: { color: '#a1a1aa', fontSize: 14, marginBottom: 16, lineHeight: 20 },
   maxMarksBox: { backgroundColor: '#18181b', borderRadius: 12, padding: 12, alignSelf: 'flex-start', marginBottom: 20 },

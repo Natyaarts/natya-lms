@@ -73,6 +73,7 @@ export default function ProfileScreen({ navigation }: any) {
     { label: 'Live Classes', icon: 'video', screen: 'LiveClasses' },
     { label: 'Subscription & Payments', icon: 'credit-card', screen: 'Subscription' },
     { label: 'Purchase History', icon: 'file-text', screen: 'PurchaseHistory' },
+    { label: 'Messages', icon: 'message-square', screen: 'ChatList' },
     { label: 'Notifications', icon: 'bell', screen: 'Notifications', badge: unreadCount },
     { label: 'Certificates', icon: 'award', screen: 'Certificates' },
     { label: 'Invoices', icon: 'file-text', screen: 'Invoices' },

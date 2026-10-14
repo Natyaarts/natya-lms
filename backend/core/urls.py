@@ -83,6 +83,7 @@ urlpatterns = [
     path('api/finance/', include('finance.urls')),
     path('api/billing/', include('billing.urls')),
     path('api/cms/', include('cms.urls')),
+    path('api/chat/', include('chat.urls')),
     # Final release-blocker fix: overrides dj_rest_auth.urls' own
     # 'login/' pattern with a throttled subclass (see
     # users.views.ThrottledLoginView) -- same URL, same name ('rest_login',

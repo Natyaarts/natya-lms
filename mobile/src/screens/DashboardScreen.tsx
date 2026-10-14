@@ -116,6 +116,14 @@ export default function DashboardScreen({ navigation }: any) {
         </View>
         <View style={styles.headerActions}>
           <TouchableOpacity
+            onPress={() => navigation.navigate('ChatList')}
+            style={styles.iconButton}
+            accessibilityRole="button"
+            accessibilityLabel="Messages"
+          >
+            <Icon name="message-square" size={20} color={colors.text} />
+          </TouchableOpacity>
+          <TouchableOpacity
             onPress={() => navigation.navigate('Notifications')}
             style={styles.iconButton}
             accessibilityRole="button"

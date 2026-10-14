@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
-import { User, ShoppingBag, CreditCard, FileText, Shield, LogOut } from "lucide-react";
+import { User, ShoppingBag, CreditCard, FileText, Shield, LogOut, MessageSquare } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
 export default function AccountMenu() {
@@ -64,6 +64,15 @@ export default function AccountMenu() {
             >
               <User className="w-4 h-4 text-zinc-400" />
               <span>My Profile</span>
+            </Link>
+
+            <Link
+              href="/chat"
+              onClick={() => setIsOpen(false)}
+              className="flex items-center gap-3 px-4 py-2.5 text-sm text-zinc-300 hover:bg-white/5 hover:text-white transition-colors"
+            >
+              <MessageSquare className="w-4 h-4 text-[#facc15]" />
+              <span>Messages</span>
             </Link>
 
             <Link

@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation";
 import { Menu } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import NotificationBell from "@/components/NotificationBell";
+import ChatNotificationBadge from "./ChatNotificationBadge";
 import AccountMenu from "./AccountMenu";
 import MobileNavDrawer from "./MobileNavDrawer";
 
@@ -83,9 +84,10 @@ export default function AppHeader() {
 
           {/* Desktop & Mobile Actions */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-            {/* Notification Bell (always visible if authenticated, even on mobile) */}
+            {/* Chat Messages & Notification Bell */}
             {isAuthenticated && (
-              <div className="flex items-center">
+              <div className="flex items-center gap-1 sm:gap-1.5">
+                <ChatNotificationBadge />
                 <NotificationBell />
               </div>
             )}

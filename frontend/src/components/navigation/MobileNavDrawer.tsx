@@ -18,7 +18,8 @@ import {
   Shield,
   LogOut,
   LogIn,
-  UserPlus
+  UserPlus,
+  MessageSquare
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
@@ -174,6 +175,21 @@ export default function MobileNavDrawer({ isOpen, onClose }: MobileNavDrawerProp
                 <Bell className="w-4 h-4" />
                 <span>Notifications</span>
               </Link>
+
+              {isAuthenticated && (
+                <Link
+                  href="/chat"
+                  onClick={onClose}
+                  className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${
+                    isActive("/chat")
+                      ? "bg-[#facc15]/15 text-[#facc15] font-semibold"
+                      : "text-zinc-300 hover:bg-white/5 hover:text-white"
+                  }`}
+                >
+                  <MessageSquare className="w-4 h-4" />
+                  <span>Messages</span>
+                </Link>
+              )}
             </div>
           </div>
 

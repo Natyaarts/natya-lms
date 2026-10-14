@@ -1,5 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView, Alert, SafeAreaView, Modal } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+  ScrollView,
+  Alert,
+  SafeAreaView,
+  Modal,
+  KeyboardAvoidingView,
+  Platform,
+  Keyboard,
+} from 'react-native';
 import client from '../api/client';
 
 export default function OnboardingScreen({ navigation }: any) {
@@ -10,6 +24,21 @@ export default function OnboardingScreen({ navigation }: any) {
   
   // Custom dropdown selection modal state
   const [activeDropdownField, setActiveDropdownField] = useState<any>(null);
+
+  const scrollViewRef = useRef<ScrollView>(null);
+  const fieldOffsets = useRef<Record<string, number>>({});
+
+  const handleFieldFocus = (fieldName: string) => {
+    const y = fieldOffsets.current[fieldName];
+    if (typeof y === 'number' && scrollViewRef.current) {
+      setTimeout(() => {
+        scrollViewRef.current?.scrollTo({
+          y: Math.max(0, y - 24),
+          animated: true,
+        });
+      }, 100);
+    }
+  };
 
   useEffect(() => {
     fetchFields();
@@ -58,6 +87,7 @@ export default function OnboardingScreen({ navigation }: any) {
   };
 
   const handleSubmit = async () => {
+    Keyboard.dismiss();
     // Basic validation
     for (const f of fields) {
       if (f.required) {
@@ -101,88 +131,106 @@ export default function OnboardingScreen({ navigation }: any) {
         <Text style={styles.headerSubtitle}>Please fill in a few details to get started.</Text>
       </View>
 
-      <ScrollView contentContainerStyle={styles.formContainer}>
-        {fields.map((field) => (
-          <View key={field.name} style={styles.inputGroup}>
-            <Text style={styles.label}>
-              {field.label} {field.required && <Text style={{ color: 'red' }}>*</Text>}
-            </Text>
-            
-            {/* TEXT INPUT */}
-            {field.type === 'text' && (
-              <TextInput
-                style={styles.input}
-                placeholder={`Enter ${field.label}`}
-                placeholderTextColor="#666"
-                value={formData[field.name]}
-                onChangeText={(val) => handleInputChange(field.name, val)}
-              />
-            )}
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoidingView}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView
+          ref={scrollViewRef}
+          contentContainerStyle={styles.formContainer}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+        >
+          {fields.map((field) => (
+            <View
+              key={field.name}
+              style={styles.inputGroup}
+              onLayout={(e) => { fieldOffsets.current[field.name] = e.nativeEvent.layout.y; }}
+            >
+              <Text style={styles.label}>
+                {field.label} {field.required && <Text style={{ color: 'red' }}>*</Text>}
+              </Text>
+              
+              {/* TEXT INPUT */}
+              {field.type === 'text' && (
+                <TextInput
+                  style={styles.input}
+                  placeholder={`Enter ${field.label}`}
+                  placeholderTextColor="#666"
+                  value={formData[field.name]}
+                  onChangeText={(val) => handleInputChange(field.name, val)}
+                  onFocus={() => handleFieldFocus(field.name)}
+                />
+              )}
 
-            {/* TEXTAREA INPUT */}
-            {field.type === 'textarea' && (
-              <TextInput
-                style={[styles.input, styles.textarea]}
-                placeholder={`Enter ${field.label}`}
-                placeholderTextColor="#666"
-                value={formData[field.name]}
-                onChangeText={(val) => handleInputChange(field.name, val)}
-                multiline={true}
-                numberOfLines={4}
-                textAlignVertical="top"
-              />
-            )}
+              {/* TEXTAREA INPUT */}
+              {field.type === 'textarea' && (
+                <TextInput
+                  style={[styles.input, styles.textarea]}
+                  placeholder={`Enter ${field.label}`}
+                  placeholderTextColor="#666"
+                  value={formData[field.name]}
+                  onChangeText={(val) => handleInputChange(field.name, val)}
+                  onFocus={() => handleFieldFocus(field.name)}
+                  multiline={true}
+                  numberOfLines={4}
+                  textAlignVertical="top"
+                />
+              )}
 
-            {/* DATE INPUT */}
-            {field.type === 'date' && (
-              <TextInput
-                style={styles.input}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor="#666"
-                value={formData[field.name]}
-                onChangeText={(val) => handleDateChange(field.name, val)}
-                keyboardType="numeric"
-                maxLength={10}
-              />
-            )}
+              {/* DATE INPUT */}
+              {field.type === 'date' && (
+                <TextInput
+                  style={styles.input}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#666"
+                  value={formData[field.name]}
+                  onChangeText={(val) => handleDateChange(field.name, val)}
+                  onFocus={() => handleFieldFocus(field.name)}
+                  keyboardType="numeric"
+                  maxLength={10}
+                />
+              )}
 
-            {/* DROPDOWN SELECT INPUT */}
-            {field.type === 'dropdown' && (
-              <TouchableOpacity
-                style={styles.dropdownButton}
-                activeOpacity={0.8}
-                onPress={() => setActiveDropdownField(field)}
-              >
-                <Text style={formData[field.name] ? styles.dropdownButtonText : styles.dropdownButtonPlaceholder}>
-                  {formData[field.name] || `Select ${field.label}`}
-                </Text>
-                <Text style={styles.dropdownArrow}>▼</Text>
-              </TouchableOpacity>
-            )}
+              {/* DROPDOWN SELECT INPUT */}
+              {field.type === 'dropdown' && (
+                <TouchableOpacity
+                  style={styles.dropdownButton}
+                  activeOpacity={0.8}
+                  onPress={() => setActiveDropdownField(field)}
+                >
+                  <Text style={formData[field.name] ? styles.dropdownButtonText : styles.dropdownButtonPlaceholder}>
+                    {formData[field.name] || `Select ${field.label}`}
+                  </Text>
+                  <Text style={styles.dropdownArrow}>▼</Text>
+                </TouchableOpacity>
+              )}
 
-            {/* CHECKBOX INPUT */}
-            {field.type === 'checkbox' && (
-              <TouchableOpacity
-                style={styles.checkboxRow}
-                activeOpacity={0.8}
-                onPress={() => handleInputChange(field.name, !formData[field.name])}
-              >
-                <View style={[
-                  styles.checkboxBox,
-                  formData[field.name] && styles.checkboxBoxChecked
-                ]}>
-                  {formData[field.name] && <Text style={styles.checkboxCheckmark}>✓</Text>}
-                </View>
-                <Text style={styles.checkboxLabel}>Yes, I agree</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        ))}
+              {/* CHECKBOX INPUT */}
+              {field.type === 'checkbox' && (
+                <TouchableOpacity
+                  style={styles.checkboxRow}
+                  activeOpacity={0.8}
+                  onPress={() => handleInputChange(field.name, !formData[field.name])}
+                >
+                  <View style={[
+                    styles.checkboxBox,
+                    formData[field.name] && styles.checkboxBoxChecked
+                  ]}>
+                    {formData[field.name] && <Text style={styles.checkboxCheckmark}>✓</Text>}
+                  </View>
+                  <Text style={styles.checkboxLabel}>Yes, I agree</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ))}
 
-        <TouchableOpacity style={styles.button} onPress={handleSubmit} disabled={submitting}>
-          {submitting ? <ActivityIndicator color="#000" /> : <Text style={styles.buttonText}>Save Profile</Text>}
-        </TouchableOpacity>
-      </ScrollView>
+          <TouchableOpacity style={styles.button} onPress={handleSubmit} disabled={submitting}>
+            {submitting ? <ActivityIndicator color="#000" /> : <Text style={styles.buttonText}>Save Profile</Text>}
+          </TouchableOpacity>
+        </ScrollView>
+      </KeyboardAvoidingView>
 
       {/* DROPDOWN OPTIONS LIST MODAL */}
       {activeDropdownField && (
@@ -233,11 +281,12 @@ export default function OnboardingScreen({ navigation }: any) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#050505' },
+  keyboardAvoidingView: { flex: 1 },
   centered: { justifyContent: 'center', alignItems: 'center' },
   header: { padding: 20, paddingTop: 40, borderBottomWidth: 1, borderBottomColor: '#27272a' },
   headerTitle: { color: '#fff', fontSize: 28, fontWeight: 'bold' },
   headerSubtitle: { color: '#a1a1aa', fontSize: 16, marginTop: 8 },
-  formContainer: { padding: 20 },
+  formContainer: { padding: 20, paddingBottom: 64 },
   inputGroup: { marginBottom: 20 },
   label: { color: '#fff', fontSize: 16, marginBottom: 8, fontWeight: '500' },
   input: { 

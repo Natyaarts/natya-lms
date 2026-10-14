@@ -83,6 +83,7 @@ INSTALLED_APPS = [
     'notifications',
     'finance',
     'billing',
+    'chat',
     
     # Auth
     'rest_framework.authtoken',
@@ -209,6 +210,8 @@ REST_FRAMEWORK = {
         'assessment_start': '30/hour',
         'assessment_submit': '30/hour',
         'assignment_submit': '20/hour',
+        'chat_message': '60/min',
+        'chat_conversation': '10/hour',
     },
 }
 
@@ -831,6 +834,7 @@ if SENTRY_DSN:
         'otp', 'otp_code',
         'razorpay_signature', 'razorpay_key_secret', 'razorpay_webhook_secret',
         'phone_number', 'parent_phone',
+        'message_content', 'attachment_url',
     ]
 
     def _sentry_before_send(event, hint):

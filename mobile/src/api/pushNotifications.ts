@@ -167,5 +167,18 @@ export function resolveActionUrlToRoute(actionUrl: string | null | undefined): R
     return { name: 'LiveClasses' };
   }
 
+  if (url === '/chat') {
+    return { name: 'ChatList' };
+  }
+
+  // Support both UUID (canonical) and numeric conversation IDs
+  match = url.match(/^\/chat\/conversations\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/i) ||
+          url.match(/^\/chat\/conversations\/(\d+)$/);
+  if (match) {
+    const rawId = match[1];
+    const conversationId = /^\d+$/.test(rawId) ? Number(rawId) : rawId;
+    return { name: 'Conversation', params: { conversationId } };
+  }
+
   return fallback;
 }

@@ -1,5 +1,21 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Image, Linking, Platform } from 'react-native';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+  Alert,
+  Image,
+  Linking,
+  Platform,
+  KeyboardAvoidingView,
+  ScrollView,
+  TouchableWithoutFeedback,
+  Keyboard,
+  InputAccessoryView,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import client from '../api/client';
@@ -8,6 +24,8 @@ import { colors, radius } from '../theme';
 import { Country, DEFAULT_COUNTRY, flagEmoji } from '../data/countries';
 import CountryPicker from '../components/CountryPicker';
 import Icon from '../components/Icon';
+
+const INPUT_ACCESSORY_ID = 'loginDoneBar';
 
 export default function LoginScreen({ navigation }: any) {
   const [step, setStep] = useState<'PHONE' | 'OTP'>('PHONE');
@@ -44,6 +62,7 @@ export default function LoginScreen({ navigation }: any) {
   const buildIdentifier = () => country.dialCode + getCleanPhone();
 
   const handleSendOtp = async () => {
+    Keyboard.dismiss();
     const cleanPhone = getCleanPhone();
     if (cleanPhone.length < minPhoneLength) {
       return Alert.alert("Error", country.iso2 === 'IN' ? "Please enter a valid 10-digit mobile number" : "Please enter a valid phone number");
@@ -56,13 +75,22 @@ export default function LoginScreen({ navigation }: any) {
       await client.post('users/send-otp/', { identifier: buildIdentifier() });
       setStep('OTP');
     } catch (err: any) {
-      Alert.alert("Error", err.response?.data?.error || "Failed to send OTP");
+      const errorMsg =
+        err.response?.data?.error ||
+        err.response?.data?.detail ||
+        (err.code === 'ECONNABORTED'
+          ? "Request timed out. Please check your internet connection and try again."
+          : !err.response
+          ? "Network error. Please check your internet connection."
+          : "Failed to send OTP");
+      Alert.alert("Error", errorMsg);
     } finally {
       setLoading(false);
     }
   };
 
   const handleVerifyOtp = async () => {
+    Keyboard.dismiss();
     const trimmedOtp = otp.trim();
     if (trimmedOtp.length !== 4 && trimmedOtp.length !== 6) return Alert.alert("Error", "Enter correct OTP");
     setLoading(true);
@@ -82,7 +110,15 @@ export default function LoginScreen({ navigation }: any) {
         Alert.alert("Error", "Invalid verification response");
       }
     } catch (err: any) {
-      Alert.alert("Error", err.response?.data?.error || "Invalid OTP");
+      const errorMsg =
+        err.response?.data?.error ||
+        err.response?.data?.detail ||
+        (err.code === 'ECONNABORTED'
+          ? "Request timed out. Please check your internet connection and try again."
+          : !err.response
+          ? "Network error. Please check your internet connection."
+          : "Invalid OTP");
+      Alert.alert("Error", errorMsg);
     } finally {
       setLoading(false);
     }
@@ -90,229 +126,292 @@ export default function LoginScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
-        <View style={styles.logoContainer}>
-          <Image source={require('../../assets/logo.png')} style={styles.logoImage} />
-        </View>
-        <Text style={styles.title}>Learning Hub</Text>
-        <Text style={styles.subtitle}>Welcome back! Sign in to continue your learning journey.</Text>
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoidingView}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+          bounces={false}
+        >
+          <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+            <View style={styles.content}>
+              <View style={styles.logoContainer}>
+                <Image source={require('../../assets/logo.png')} style={styles.logoImage} />
+              </View>
+              <Text style={styles.title}>Learning Hub</Text>
+              <Text style={styles.subtitle}>Welcome back! Sign in to continue your learning journey.</Text>
 
-        {step === 'PHONE' ? (
-          <>
-            <View style={styles.inputContainer}>
-              <TouchableOpacity
-                key={country.iso2}
-                style={styles.countrySelector}
-                onPress={() => setShowCountryPicker(true)}
-                accessibilityRole="button"
-                accessibilityLabel={`Country: ${country.name}, dial code ${country.dialCode}`}
-              >
-                <Text style={styles.flag}>{flagEmoji(country.iso2)}</Text>
-                <Text style={styles.prefix}>{country.dialCode}</Text>
-                <Icon name="chevron-down" size={14} color={colors.textSecondary} />
-              </TouchableOpacity>
-              <TextInput
-                style={styles.input}
-                placeholder="Mobile Number"
-                placeholderTextColor="#666"
-                keyboardType="phone-pad"
-                value={phone}
-                onChangeText={setPhone}
-                maxLength={maxPhoneLength}
-              />
-            </View>
+              {step === 'PHONE' ? (
+                <>
+                  <View style={styles.inputContainer}>
+                    <TouchableOpacity
+                      key={country.iso2}
+                      style={styles.countrySelector}
+                      onPress={() => {
+                        Keyboard.dismiss();
+                        setShowCountryPicker(true);
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Country: ${country.name}, dial code ${country.dialCode}`}
+                    >
+                      <Text style={styles.flag}>{flagEmoji(country.iso2)}</Text>
+                      <Text style={styles.prefix}>{country.dialCode}</Text>
+                      <Icon name="chevron-down" size={14} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Mobile Number"
+                      placeholderTextColor="#666"
+                      keyboardType="phone-pad"
+                      value={phone}
+                      onChangeText={setPhone}
+                      maxLength={maxPhoneLength}
+                      inputAccessoryViewID={Platform.OS === 'ios' ? INPUT_ACCESSORY_ID : undefined}
+                      returnKeyType="done"
+                      onSubmitEditing={Keyboard.dismiss}
+                    />
+                  </View>
 
-            <CountryPicker
-              visible={showCountryPicker}
-              selected={country}
-              onSelect={(c) => {
-                setCountry(c);
-                setShowCountryPicker(false);
-              }}
-              onClose={() => setShowCountryPicker(false)}
-            />
-            <TouchableOpacity style={styles.button} onPress={handleSendOtp} disabled={loading}>
-              {loading ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.buttonText}>Send OTP</Text>}
-            </TouchableOpacity>
+                  <CountryPicker
+                    visible={showCountryPicker}
+                    selected={country}
+                    onSelect={(c) => {
+                      setCountry(c);
+                      setShowCountryPicker(false);
+                    }}
+                    onClose={() => setShowCountryPicker(false)}
+                  />
+                  <TouchableOpacity style={styles.button} onPress={handleSendOtp} disabled={loading}>
+                    {loading ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.buttonText}>Send OTP</Text>}
+                  </TouchableOpacity>
 
-            {Platform.OS === 'android' && (
-              <>
-                <View style={styles.divider}>
-                  <View style={styles.dividerLine} />
-                  <Text style={styles.dividerText}>OR</Text>
-                  <View style={styles.dividerLine} />
-                </View>
+                  {Platform.OS === 'android' && (
+                    <>
+                      <View style={styles.divider}>
+                        <View style={styles.dividerLine} />
+                        <Text style={styles.dividerText}>OR</Text>
+                        <View style={styles.dividerLine} />
+                      </View>
 
-                <TouchableOpacity
-                  style={styles.secondaryButton}
-                  onPress={async () => {
-                    // Stage 3B: Google Sign-In is strictly Android-only; prevent any iOS execution
-                    if (Platform.OS !== 'android') return;
+                      <TouchableOpacity
+                        style={styles.secondaryButton}
+                        onPress={async () => {
+                          // Stage 3B: Google Sign-In is strictly Android-only; prevent any iOS execution
+                          if (Platform.OS !== 'android') return;
 
-                    // In Expo Go, the custom native module RNGoogleSignin is not linked in the binary.
-                    // Guard against importing or calling GoogleSignin in Expo Go so it never crashes.
-                    if (isExpoGo) {
-                      Alert.alert(
-                        'Development Build Required',
-                        'Google Sign-In requires custom native modules that are not available in Expo Go. Please use Phone/OTP login, or run the app using a development build (APK).'
-                      );
-                      return;
-                    }
-
-                    let GoogleSignin: any;
-                    let statusCodes: any;
-                    let isErrorWithCode: any;
-                    let isCancelledResponse: any;
-
-                    try {
-                      const gSignin = require('@react-native-google-signin/google-signin');
-                      GoogleSignin = gSignin?.GoogleSignin;
-                      statusCodes = gSignin?.statusCodes;
-                      isErrorWithCode = gSignin?.isErrorWithCode;
-                      isCancelledResponse = gSignin?.isCancelledResponse;
-                      if (!GoogleSignin) {
-                        throw new Error('GoogleSignin native module is undefined');
-                      }
-                    } catch (loadError: any) {
-                      console.warn('Failed to load GoogleSignin native module:', loadError);
-                      Alert.alert(
-                        'Google Sign-In Unavailable',
-                        'Native Google Sign-In is not supported in this build. Please use phone/OTP login instead.'
-                      );
-                      return;
-                    }
-
-                    try {
-                      const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
-                      if (!webClientId) {
-                        Alert.alert(
-                          'Google Sign-In unavailable',
-                          'This build is not configured with a Google Web Client ID. Please configure EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID or use phone/OTP login.'
-                        );
-                        return;
-                      }
-                      GoogleSignin.configure({
-                        webClientId: webClientId.trim(),
-                        scopes: ['profile', 'email'],
-                      });
-                      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
-                      const userInfo = await GoogleSignin.signIn();
-
-                      // In @react-native-google-signin/google-signin v13+, cancelling returns { type: 'cancelled', data: null }
-                      if (
-                        (isCancelledResponse && isCancelledResponse(userInfo)) ||
-                        (userInfo as any)?.type === 'cancelled'
-                      ) {
-                        return;
-                      }
-
-                      const idToken = userInfo?.data?.idToken || (userInfo as any)?.idToken;
-
-                      if (idToken) {
-                        setLoading(true);
-                        const res = await client.post('users/mobile-google-login/', { token: idToken });
-                        if (res.data.tokens) {
-                          await AsyncStorage.setItem('access_token', res.data.tokens.access);
-                          await AsyncStorage.setItem('refresh_token', res.data.tokens.refresh);
-                          if (res.data.is_onboarded) {
-                            navigation.replace('MainTabs');
-                          } else {
-                            navigation.replace('Onboarding');
+                          // In Expo Go, the custom native module RNGoogleSignin is not linked in the binary.
+                          // Guard against importing or calling GoogleSignin in Expo Go so it never crashes.
+                          if (isExpoGo) {
+                            Alert.alert(
+                              'Development Build Required',
+                              'Google Sign-In requires custom native modules that are not available in Expo Go. Please use Phone/OTP login, or run the app using a development build (APK).'
+                            );
+                            return;
                           }
-                        }
-                      } else {
-                        Alert.alert('Google Sign-In failed', 'Google did not return a valid sign-in token. Please try again or use phone/OTP login.');
-                      }
-                    } catch (error: any) {
-                      console.error('Google Sign-In error:', error);
-                      const errorCode = String(error?.code || '');
-                      const errorMsg = String(error?.message || '');
 
-                      if (isErrorWithCode && isErrorWithCode(error)) {
-                        if (error.code === statusCodes?.SIGN_IN_CANCELLED || error.code === statusCodes?.IN_PROGRESS) {
-                          // User backed out, or a sign-in is already underway -- no alert needed.
-                          return;
-                        } else if (error.code === statusCodes?.PLAY_SERVICES_NOT_AVAILABLE) {
-                          Alert.alert('Google Play Services required', 'Google Sign-In needs Google Play Services, which isn\'t available or up to date on this device. Please use phone/OTP login instead.');
-                          return;
-                        }
-                      }
+                          let GoogleSignin: any;
+                          let statusCodes: any;
+                          let isErrorWithCode: any;
+                          let isCancelledResponse: any;
 
-                      // DEVELOPER_ERROR / code 10: SHA-1 fingerprint or package mismatch in Google Cloud Console
-                      if (errorCode === '10' || errorMsg.includes('DEVELOPER_ERROR')) {
-                        Alert.alert(
-                          'Google Sign-In Configuration Error',
-                          'Developer Error (code 10): Ensure this app\'s SHA-1 certificate fingerprint and package name (com.natyaarts.academy) are registered under Android OAuth clients in Google Cloud Console.'
-                        );
-                        return;
-                      }
+                          try {
+                            const gSignin = require('@react-native-google-signin/google-signin');
+                            GoogleSignin = gSignin?.GoogleSignin;
+                            statusCodes = gSignin?.statusCodes;
+                            isErrorWithCode = gSignin?.isErrorWithCode;
+                            isCancelledResponse = gSignin?.isCancelledResponse;
+                            if (!GoogleSignin) {
+                              throw new Error('GoogleSignin native module is undefined');
+                            }
+                          } catch (loadError: any) {
+                            console.warn('Failed to load GoogleSignin native module:', loadError);
+                            Alert.alert(
+                              'Google Sign-In Unavailable',
+                              'Native Google Sign-In is not supported in this build. Please use phone/OTP login instead.'
+                            );
+                            return;
+                          }
 
-                      Alert.alert(
-                        'Google Sign-In unavailable',
-                        __DEV__ && errorMsg
-                          ? `Google Sign-In error: ${errorMsg}`
-                          : 'Google Sign-In couldn\'t complete on this device. Please use phone/OTP login instead.'
-                      );
-                    } finally {
-                      setLoading(false);
-                    }
-                  }}
-                >
-                  <Text style={styles.secondaryButtonText}>Continue with Google</Text>
-                </TouchableOpacity>
-                {isExpoGo && (
-                  <Text style={styles.expoGoNote}>
-                    Google Sign-In requires a development build. Use phone/OTP in Expo Go.
-                  </Text>
-                )}
-              </>
-            )}
+                          try {
+                            const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+                            if (!webClientId) {
+                              Alert.alert(
+                                'Google Sign-In unavailable',
+                                'This build is not configured with a Google Web Client ID. Please configure EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID or use phone/OTP login.'
+                              );
+                              return;
+                            }
+                            GoogleSignin.configure({
+                              webClientId: webClientId.trim(),
+                              scopes: ['profile', 'email'],
+                            });
+                            await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+                            const userInfo = await GoogleSignin.signIn();
 
-            <View style={styles.footer}>
-              <Text style={styles.footerText}>Don't have an account? </Text>
-              <TouchableOpacity onPress={() => Linking.openURL('https://academy.natyaarts.com/register')}>
-                <Text style={styles.signupText}>Sign up</Text>
-              </TouchableOpacity>
+                            // In @react-native-google-signin/google-signin v13+, cancelling returns { type: 'cancelled', data: null }
+                            if (
+                              (isCancelledResponse && isCancelledResponse(userInfo)) ||
+                              (userInfo as any)?.type === 'cancelled'
+                            ) {
+                              return;
+                            }
+
+                            const idToken = userInfo?.data?.idToken || (userInfo as any)?.idToken;
+
+                            if (idToken) {
+                              setLoading(true);
+                              const res = await client.post('users/mobile-google-login/', { token: idToken });
+                              if (res.data.tokens) {
+                                await AsyncStorage.setItem('access_token', res.data.tokens.access);
+                                await AsyncStorage.setItem('refresh_token', res.data.tokens.refresh);
+                                if (res.data.is_onboarded) {
+                                  navigation.replace('MainTabs');
+                                } else {
+                                  navigation.replace('Onboarding');
+                                }
+                              }
+                            } else {
+                              Alert.alert('Google Sign-In failed', 'Google did not return a valid sign-in token. Please try again or use phone/OTP login.');
+                            }
+                          } catch (error: any) {
+                            console.error('Google Sign-In error:', error);
+                            const errorCode = String(error?.code || '');
+                            const errorMsg = String(error?.message || '');
+
+                            if (isErrorWithCode && isErrorWithCode(error)) {
+                              if (error.code === statusCodes?.SIGN_IN_CANCELLED || error.code === statusCodes?.IN_PROGRESS) {
+                                // User backed out, or a sign-in is already underway -- no alert needed.
+                                return;
+                              } else if (error.code === statusCodes?.PLAY_SERVICES_NOT_AVAILABLE) {
+                                Alert.alert('Google Play Services required', 'Google Sign-In needs Google Play Services, which isn\'t available or up to date on this device. Please use phone/OTP login instead.');
+                                return;
+                              }
+                            }
+
+                            // DEVELOPER_ERROR / code 10: SHA-1 fingerprint or package mismatch in Google Cloud Console
+                            if (errorCode === '10' || errorMsg.includes('DEVELOPER_ERROR')) {
+                              Alert.alert(
+                                'Google Sign-In Configuration Error',
+                                'Developer Error (code 10): Ensure this app\'s SHA-1 certificate fingerprint and package name (com.natyaarts.academy) are registered under Android OAuth clients in Google Cloud Console.'
+                              );
+                              return;
+                            }
+
+                            Alert.alert(
+                              'Google Sign-In unavailable',
+                              __DEV__ && errorMsg
+                                ? `Google Sign-In error: ${errorMsg}`
+                                : 'Google Sign-In couldn\'t complete on this device. Please use phone/OTP login instead.'
+                            );
+                          } finally {
+                            setLoading(false);
+                          }
+                        }}
+                      >
+                        <Text style={styles.secondaryButtonText}>Continue with Google</Text>
+                      </TouchableOpacity>
+                      {isExpoGo && (
+                        <Text style={styles.expoGoNote}>
+                          Google Sign-In requires a development build. Use phone/OTP in Expo Go.
+                        </Text>
+                      )}
+                    </>
+                  )}
+
+                  <View style={styles.footer}>
+                    <Text style={styles.footerText}>Don't have an account? </Text>
+                    <TouchableOpacity onPress={() => Linking.openURL('https://academy.natyaarts.com/register')}>
+                      <Text style={styles.signupText}>Sign up</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.label}>Enter OTP sent to {country.dialCode} {getCleanPhone()}</Text>
+                  <TextInput
+                    style={styles.otpInput}
+                    placeholder="000000"
+                    placeholderTextColor="#666"
+                    keyboardType="number-pad"
+                    value={otp}
+                    onChangeText={setOtp}
+                    maxLength={6}
+                    secureTextEntry
+                    inputAccessoryViewID={Platform.OS === 'ios' ? INPUT_ACCESSORY_ID : undefined}
+                    returnKeyType="done"
+                    onSubmitEditing={Keyboard.dismiss}
+                  />
+                  <TouchableOpacity style={styles.button} onPress={handleVerifyOtp} disabled={loading}>
+                    {loading ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.buttonText}>Verify & Login</Text>}
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.textButton}
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setStep('PHONE');
+                    }}
+                    disabled={loading}
+                  >
+                    <Text style={styles.textButtonText}>Change Phone Number</Text>
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
-          </>
-        ) : (
-          <>
-            <Text style={styles.label}>Enter OTP sent to {country.dialCode} {getCleanPhone()}</Text>
-            <TextInput
-              style={styles.otpInput}
-              placeholder="000000"
-              placeholderTextColor="#666"
-              keyboardType="number-pad"
-              value={otp}
-              onChangeText={setOtp}
-              maxLength={6}
-              secureTextEntry
-            />
-            <TouchableOpacity style={styles.button} onPress={handleVerifyOtp} disabled={loading}>
-              {loading ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.buttonText}>Verify & Login</Text>}
+          </TouchableWithoutFeedback>
+        </ScrollView>
+      </KeyboardAvoidingView>
+
+      {Platform.OS === 'ios' && (
+        <InputAccessoryView nativeID={INPUT_ACCESSORY_ID}>
+          <View style={styles.accessoryBar}>
+            <TouchableOpacity
+              style={styles.accessoryDoneButton}
+              onPress={Keyboard.dismiss}
+              accessibilityRole="button"
+              accessibilityLabel="Done"
+            >
+              <Text style={styles.accessoryDoneText}>Done</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.textButton} onPress={() => setStep('PHONE')} disabled={loading}>
-              <Text style={styles.textButtonText}>Change Phone Number</Text>
-            </TouchableOpacity>
-          </>
-        )}
-      </View>
+          </View>
+        </InputAccessoryView>
+      )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.bg, justifyContent: 'center' },
-  content: { padding: 24 },
-  logoContainer: { alignItems: 'center', marginBottom: 16 },
-  logoImage: { width: 240, height: 240, resizeMode: 'contain' },
-  title: { fontSize: 30, fontWeight: '700', color: colors.text, marginBottom: 8, textAlign: 'center', marginTop: 12 },
-  subtitle: { fontSize: 15, color: colors.textSecondary, marginBottom: 32, textAlign: 'center', lineHeight: 22 },
+  container: { flex: 1, backgroundColor: colors.bg },
+  keyboardAvoidingView: { flex: 1 },
+  scrollContent: { flexGrow: 1, justifyContent: 'center' },
+  content: { padding: 24, flex: 1, justifyContent: 'center' },
+  logoContainer: { alignItems: 'center', marginBottom: 12 },
+  logoImage: { width: 120, height: 120, resizeMode: 'contain' },
+  title: { fontSize: 28, fontWeight: '700', color: colors.text, marginBottom: 6, textAlign: 'center' },
+  subtitle: { fontSize: 14, color: colors.textSecondary, marginBottom: 24, textAlign: 'center', lineHeight: 20 },
+  accessoryBar: {
+    backgroundColor: '#1C1C1E',
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  accessoryDoneButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  accessoryDoneText: {
+    color: colors.accent,
+    fontSize: 16,
+    fontWeight: '600',
+  },
   inputContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.card, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, marginBottom: 24 },
-  // No fixed width -- the row sizes itself to flag + dial code + chevron,
-  // shrinks/grows safely with longer dial codes (e.g. +971) and Android's
-  // font-scale settings (capped via maxFontSizeMultiplier on the Text
-  // itself) instead of clipping on smaller screens.
   countrySelector: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
     paddingHorizontal: 12, paddingVertical: 16,

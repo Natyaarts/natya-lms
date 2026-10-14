@@ -15,6 +15,7 @@ export const resolveMediaUrl = (url?: string | null): string | undefined => {
 
 const client = axios.create({
   baseURL: API_URL,
+  timeout: 15000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -52,7 +53,10 @@ const notifySessionExpired = () => {
 // A plain axios instance (NOT `client`) for the refresh call itself -- it
 // must never go through this same interceptor, or a failed refresh would
 // recursively trigger another refresh attempt.
-const refreshClient = axios.create({ baseURL: API_URL });
+const refreshClient = axios.create({
+  baseURL: API_URL,
+  timeout: 15000,
+});
 
 // Single-flight: if several requests 401 at (roughly) the same moment
 // (e.g. a screen that fires 3 parallel GETs right after the access token

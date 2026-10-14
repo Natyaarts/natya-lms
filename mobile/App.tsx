@@ -25,6 +25,8 @@ import NotificationsScreen from './src/screens/NotificationsScreen';
 import CertificatesScreen from './src/screens/CertificatesScreen';
 import InvoicesScreen from './src/screens/InvoicesScreen';
 import PurchaseHistoryScreen from './src/screens/PurchaseHistoryScreen';
+import ChatListScreen from './src/screens/ChatListScreen';
+import ConversationScreen from './src/screens/ConversationScreen';
 import client, { onSessionExpired } from './src/api/client';
 import type { NotificationResponse } from 'expo-notifications';
 import { resolveActionUrlToRoute, isExpoGo, getNotifications } from './src/api/pushNotifications';
@@ -245,6 +247,8 @@ function App() {
           <Stack.Screen name="Invoices" component={InvoicesScreen} />
           <Stack.Screen name="PurchaseHistory" component={PurchaseHistoryScreen} />
           <Stack.Screen name="EditProfile" component={EditProfileScreen} />
+          <Stack.Screen name="ChatList" component={ChatListScreen} />
+          <Stack.Screen name="Conversation" component={ConversationScreen} />
         </Stack.Navigator>
       </NavigationContainer>
     </>
