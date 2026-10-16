@@ -6,7 +6,7 @@ from .views import (
     OnboardingFieldsView, SaveProfileView, MobileGoogleLoginView, OnboardingFieldViewSet,
     MentorshipViewSet, MyStudentsView, MyTeacherProfileView, MyMentorProfileView,
     AdminAuditLogListView, RequestAccountDeletionOTPView, VerifyAccountDeletionOTPView,
-    AccountDeletionStatusView, CancelAccountDeletionRequestView
+    AccountDeletionStatusView, CancelAccountDeletionRequestView, WatermarkLookupView
 )
 
 router = DefaultRouter()
@@ -23,6 +23,7 @@ urlpatterns = [
     path('delete-account/cancel/', CancelAccountDeletionRequestView.as_view(), name='delete-account-cancel'),
     path('admin-stats/', AdminStatsView.as_view(), name='admin-stats'),
     path('admin/audit-logs/', AdminAuditLogListView.as_view(), name='admin-audit-logs'),
+    path('lookup-watermark/', WatermarkLookupView.as_view(), name='lookup-watermark'),
     path('me/', CurrentUserView.as_view(), name='current-user'),
     path('me/students/', MyStudentsView.as_view(), name='my-students'),
     path('me/teacher-profile/', MyTeacherProfileView.as_view(), name='my-teacher-profile'),

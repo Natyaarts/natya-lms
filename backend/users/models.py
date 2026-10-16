@@ -24,6 +24,47 @@ class User(AbstractUser):
     parent_name = models.CharField(max_length=255, blank=True, null=True)
     parent_phone = models.CharField(max_length=15, blank=True, null=True)
 
+    # Unique student watermark identifier
+    student_id = models.CharField(
+        max_length=32,
+        unique=True,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Stable, unique student identifier for dynamic video watermarking (e.g. NAT-XXXXXX)."
+    )
+
+    @classmethod
+    def generate_unique_student_id(cls):
+        """
+        Generate a collision-safe unique student watermark identifier in format NAT-XXXXXX.
+        Uses 6 uppercase hex characters (over 16.7 million combinations) with iterative collision check,
+        falling back to 12 hex characters if congested.
+        """
+        import secrets
+        for _ in range(50):
+            candidate = f"NAT-{secrets.token_hex(3).upper()}"
+            if not cls.objects.filter(student_id=candidate).exists():
+                return candidate
+        return f"NAT-{secrets.token_hex(6).upper()}"
+
+    def get_or_create_student_id(self):
+        """
+        Returns the user's student_id, generating and persisting one if not yet assigned.
+        """
+        if self.student_id:
+            return self.student_id
+        self.student_id = self.generate_unique_student_id()
+        self.save(update_fields=['student_id'])
+        return self.student_id
+
+    def save(self, *args, **kwargs):
+        if not self.student_id:
+            self.student_id = self.generate_unique_student_id()
+            if kwargs.get('update_fields') is not None and 'student_id' not in kwargs['update_fields']:
+                kwargs['update_fields'] = list(kwargs['update_fields']) + ['student_id']
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.username
 

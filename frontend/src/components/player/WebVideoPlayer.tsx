@@ -26,6 +26,15 @@ export interface AudioTrackOption {
   status?: string;
 }
 
+export interface WatermarkConfig {
+  enabled?: boolean;
+  text?: string;
+  student_id?: string;
+  moving?: boolean;
+  interval_seconds?: number;
+  opacity?: number;
+}
+
 export interface WebVideoPlayerProps {
   videoUrl: string;
   poster?: string;
@@ -35,6 +44,8 @@ export interface WebVideoPlayerProps {
   savedProgressPosition?: number;
   onSaveProgress?: (position: number, duration: number, completed: boolean) => Promise<void> | void;
   onEnded?: () => void;
+  watermark?: WatermarkConfig;
+  downloadEnabled?: boolean;
 }
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -85,10 +96,38 @@ export default function WebVideoPlayer({
   savedProgressPosition = 0,
   onSaveProgress,
   onEnded,
+  watermark,
+  downloadEnabled = false,
 }: WebVideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+
+  // Watermark configuration & dynamic positioning
+  const watermarkEnabled = watermark?.enabled !== false && !!(watermark?.text || watermark?.student_id);
+  const watermarkText = watermark?.text || watermark?.student_id || "";
+  const isMovingWatermark = watermark?.moving !== false;
+  const watermarkInterval =
+    watermark?.interval_seconds && watermark.interval_seconds >= 3
+      ? watermark.interval_seconds * 1000
+      : 15000;
+  const watermarkOpacity = typeof watermark?.opacity === "number" ? watermark.opacity : 0.35;
+
+  const [watermarkPos, setWatermarkPos] = useState({ top: 18, left: 18 });
+
+  useEffect(() => {
+    if (!watermarkEnabled || !isMovingWatermark) return;
+
+    const moveWatermark = () => {
+      // Keep watermark within safe visible bounds (top: 8%..75%, left: 6%..70%)
+      const nextTop = Math.floor(8 + Math.random() * 67);
+      const nextLeft = Math.floor(6 + Math.random() * 64);
+      setWatermarkPos({ top: nextTop, left: nextLeft });
+    };
+
+    const intervalId = setInterval(moveWatermark, watermarkInterval);
+    return () => clearInterval(intervalId);
+  }, [watermarkEnabled, isMovingWatermark, watermarkInterval]);
 
   // Playback state
   const [isPlaying, setIsPlaying] = useState(true);
@@ -540,13 +579,17 @@ export default function WebVideoPlayer({
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       onDoubleClick={toggleFullscreen}
+      onContextMenu={(e) => e.preventDefault()}
     >
-      {/* HTML5 Video Element */}
+      {/* HTML5 Video Element with download and pip deterrence */}
       <video
         ref={videoRef}
         src={videoUrl}
         poster={poster}
         className="w-full h-full object-contain cursor-pointer"
+        controlsList={downloadEnabled ? undefined : "nodownload"}
+        disablePictureInPicture={!downloadEnabled}
+        onContextMenu={(e) => e.preventDefault()}
         onPlay={handlePlay}
         onPause={handlePause}
         onTimeUpdate={handleTimeUpdate}
@@ -567,6 +610,25 @@ export default function WebVideoPlayer({
 
       {/* Hidden Audio Element for translated voice-over */}
       <audio ref={audioRef} onError={handleAudioError} className="hidden" />
+
+      {/* Dynamic Student Watermark Overlay (visible in normal and fullscreen playback) */}
+      {watermarkEnabled && watermarkText && (
+        <div
+          data-testid="student-watermark"
+          aria-hidden="true"
+          className="absolute pointer-events-none z-20 select-none transition-all duration-1000 ease-in-out"
+          style={{
+            top: `${watermarkPos.top}%`,
+            left: `${watermarkPos.left}%`,
+            opacity: watermarkOpacity,
+          }}
+        >
+          <div className="flex flex-col items-start px-2.5 py-1 rounded bg-black/40 backdrop-blur-[1px] border border-white/10 font-mono text-[11px] sm:text-xs font-semibold text-white tracking-wider drop-shadow-[0_2px_4px_rgba(0,0,0,0.85)]">
+            <span>{watermarkText}</span>
+            <span className="text-[9px] font-normal text-white/60 tracking-normal">Natya LMS</span>
+          </div>
+        </div>
+      )}
 
       {/* Buffering Spinner */}
       {isBuffering && !hasError && (

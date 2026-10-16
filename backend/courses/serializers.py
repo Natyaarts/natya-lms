@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
-from .models import Course, Module, VideoLesson, TranslatedAudio, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, CourseInstructor, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswerOptionSnapshot, Certificate, CertificateTemplate, Assignment, AssignmentSubmission
+from .models import Course, Module, VideoLesson, TranslatedAudio, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, CourseInstructor, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswerOptionSnapshot, Certificate, CertificateTemplate, Assignment, AssignmentSubmission, VideoProtectionSetting
 from .languages import get_language_name
 
 User = get_user_model()
@@ -1021,3 +1021,32 @@ class AssignmentSubmissionSerializer(serializers.ModelSerializer):
     def get_student_name(self, obj):
         name = f"{obj.student.first_name} {obj.student.last_name}".strip()
         return name or obj.student.username
+
+
+class VideoProtectionSettingSerializer(serializers.ModelSerializer):
+    """
+    Serializer for global video protection configuration.
+    Validates position interval bounds (5 to 300 seconds).
+    """
+    updated_by_username = serializers.ReadOnlyField(source='updated_by.username')
+
+    class Meta:
+        model = VideoProtectionSetting
+        fields = [
+            'id',
+            'watermark_enabled',
+            'download_enabled',
+            'screen_capture_protection_enabled',
+            'moving_watermark_enabled',
+            'watermark_position_interval',
+            'updated_at',
+            'updated_by',
+            'updated_by_username',
+        ]
+        read_only_fields = ['id', 'updated_at', 'updated_by', 'updated_by_username']
+
+    def validate_watermark_position_interval(self, value):
+        if value < 5 or value > 300:
+            raise serializers.ValidationError("Watermark position interval must be between 5 and 300 seconds.")
+        return value
+

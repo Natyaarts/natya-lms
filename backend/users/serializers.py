@@ -44,12 +44,12 @@ class CustomUserDetailsSerializer(UserDetailsSerializer):
     class Meta(UserDetailsSerializer.Meta):
         model = User
         fields = (
-            'pk', 'username', 'email', 'phone_number', 'first_name', 'last_name',
+            'pk', 'username', 'email', 'phone_number', 'student_id', 'first_name', 'last_name',
             'is_superuser', 'is_staff', 'is_teacher', 'is_student', 'is_mentor',
             'parent_name', 'parent_phone',
         )
         read_only_fields = (
-            'pk', 'email', 'phone_number', 'is_superuser', 'is_staff',
+            'pk', 'email', 'phone_number', 'student_id', 'is_superuser', 'is_staff',
             'is_teacher', 'is_student', 'is_mentor',
         )
 
@@ -59,8 +59,8 @@ class AdminUserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'email', 'phone_number', 'first_name', 'last_name', 'is_superuser', 'is_staff', 'is_teacher', 'is_student', 'is_mentor', 'is_active', 'date_joined', 'parent_name', 'parent_phone', 'courses_count', 'password')
-        read_only_fields = ('id', 'date_joined', 'courses_count')
+        fields = ('id', 'username', 'email', 'phone_number', 'student_id', 'first_name', 'last_name', 'is_superuser', 'is_staff', 'is_teacher', 'is_student', 'is_mentor', 'is_active', 'date_joined', 'parent_name', 'parent_phone', 'courses_count', 'password')
+        read_only_fields = ('id', 'student_id', 'date_joined', 'courses_count')
 
     def validate_phone_number(self, value):
         if value and not value.startswith('+'):

@@ -78,4 +78,16 @@ export const typography = {
 export const layout = {
   screenPadding: spacing.lg,
   cardImageAspect: 16 / 9,
+  headerTopGap: 10,
+};
+
+export const headerLayout = {
+  // Shared additional top gap (~8-12 dp below safe-area inset)
+  topGap: 10,
+  // Tab screens (Dashboard, Catalog, My Learning): 8 + 10 = 18dp
+  tabHeaderPaddingTop: spacing.sm + 10,
+  // Stack navigation screens (Notifications, Edit Profile, Invoices, etc.): 16 + 10 = 26dp
+  stackHeaderPaddingTop: spacing.lg + 10,
+  // Compact / icon headers (Learn player, Chat list, Conversation): 12 + 10 = 22dp
+  compactHeaderPaddingTop: spacing.md + 10,
 };

@@ -142,4 +142,74 @@ describe("WebVideoPlayer Component", () => {
     fireEvent.click(retryBtn);
     expect(window.HTMLMediaElement.prototype.load).toHaveBeenCalled();
   });
+
+  it("renders moving watermark overlay with stable student id", () => {
+    render(
+      <WebVideoPlayer
+        videoUrl="https://example.com/test-video.mp4"
+        watermark={{
+          enabled: true,
+          text: "NAT-99AA88",
+          student_id: "NAT-99AA88",
+          moving: true,
+          interval_seconds: 15,
+        }}
+      />
+    );
+
+    const watermark = screen.getByTestId("student-watermark");
+    expect(watermark).toBeDefined();
+    expect(watermark.textContent).toContain("NAT-99AA88");
+    expect(watermark.textContent).toContain("Natya LMS");
+  });
+
+  it("hides watermark when watermark is explicitly disabled", () => {
+    render(
+      <WebVideoPlayer
+        videoUrl="https://example.com/test-video.mp4"
+        watermark={{
+          enabled: false,
+          text: "NAT-99AA88",
+        }}
+      />
+    );
+
+    expect(screen.queryByTestId("student-watermark")).toBeNull();
+  });
+
+  it("enforces nodownload, disablePictureInPicture, and suppresses contextmenu when download is disabled", () => {
+    const { container } = render(
+      <WebVideoPlayer
+        videoUrl="https://example.com/test-video.mp4"
+        downloadEnabled={false}
+      />
+    );
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    expect(video.getAttribute("controlslist")).toBe("nodownload");
+    expect(video.hasAttribute("disablepictureinpicture")).toBe(true);
+
+    // Context menu events on both container and video should prevent default
+    const playerContainer = container.querySelector("#web-video-player") as HTMLElement;
+    const contextMenuContainerEvent = new MouseEvent("contextmenu", { cancelable: true, bubbles: true });
+    playerContainer.dispatchEvent(contextMenuContainerEvent);
+    expect(contextMenuContainerEvent.defaultPrevented).toBe(true);
+
+    const contextMenuVideoEvent = new MouseEvent("contextmenu", { cancelable: true, bubbles: true });
+    video.dispatchEvent(contextMenuVideoEvent);
+    expect(contextMenuVideoEvent.defaultPrevented).toBe(true);
+  });
+
+  it("removes nodownload restriction when downloadEnabled is true", () => {
+    const { container } = render(
+      <WebVideoPlayer
+        videoUrl="https://example.com/test-video.mp4"
+        downloadEnabled={true}
+      />
+    );
+
+    const video = container.querySelector("video") as HTMLVideoElement;
+    expect(video.getAttribute("controlslist")).toBeNull();
+    expect(video.hasAttribute("disablepictureinpicture")).toBe(false);
+  });
 });

@@ -1101,3 +1101,80 @@ class AssignmentSubmission(models.Model):
 
     def __str__(self):
         return f"{self.student.username} - {self.assignment.title} - attempt {self.attempt_number} ({self.status})"
+
+
+class VideoProtectionSetting(models.Model):
+    """
+    Global configuration controlling recorded video playback security and deterrence.
+    Implements a singleton pattern: only one active settings record exists (pk=1).
+    """
+    watermark_enabled = models.BooleanField(
+        default=True,
+        help_text="Display dynamic student watermark over recorded videos."
+    )
+    download_enabled = models.BooleanField(
+        default=False,
+        help_text="If False, disable browser download controls, right-click, and direct download links."
+    )
+    screen_capture_protection_enabled = models.BooleanField(
+        default=True,
+        help_text="Enable screen recording deterrence (FLAG_SECURE on Android, blur on iOS/web screen share)."
+    )
+    moving_watermark_enabled = models.BooleanField(
+        default=True,
+        help_text="Periodically change watermark coordinates to deter cropping/masking."
+    )
+    watermark_position_interval = models.PositiveIntegerField(
+        default=15,
+        validators=[MinValueValidator(5), MaxValueValidator(300)],
+        help_text="Interval in seconds between watermark position changes (5-300 seconds)."
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='video_protection_settings_updates',
+        help_text="Staff user who last modified the video protection settings."
+    )
+
+    class Meta:
+        verbose_name = "Video Protection Setting"
+        verbose_name_plural = "Video Protection Settings"
+
+    def __str__(self):
+        return f"Video Protection Settings (Watermark: {self.watermark_enabled}, Screen Capture Deterrence: {self.screen_capture_protection_enabled})"
+
+    def clean(self):
+        if self.watermark_position_interval is not None:
+            if self.watermark_position_interval < 5 or self.watermark_position_interval > 300:
+                raise ValidationError({
+                    'watermark_position_interval': "Interval must be between 5 and 300 seconds."
+                })
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        if not self.pk and VideoProtectionSetting.objects.exists():
+            self.pk = VideoProtectionSetting.objects.first().pk
+        elif not self.pk:
+            self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get_settings(cls):
+        """
+        Retrieve the singleton settings instance, creating it with defaults if absent.
+        """
+        settings_obj, _ = cls.objects.get_or_create(
+            pk=1,
+            defaults={
+                'watermark_enabled': True,
+                'download_enabled': False,
+                'screen_capture_protection_enabled': True,
+                'moving_watermark_enabled': True,
+                'watermark_position_interval': 15,
+            }
+        )
+        return settings_obj
+

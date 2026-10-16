@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ActivityIndicator, ScrollView, Linking, Image, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Linking, Image, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import client, { resolveMediaUrl } from '../api/client';
 import CustomVideoPlayer, { AudioTrackOption } from '../components/CustomVideoPlayer';
 import Icon from '../components/Icon';
 import ProgressBar from '../components/ProgressBar';
-import { colors, spacing, radius, typography } from '../theme';
-import { usePreventScreenCapture } from 'expo-screen-capture';
+import { colors, spacing, radius, typography, headerLayout } from '../theme';
 
 const FALLBACK_THUMB = 'https://images.unsplash.com/photo-1514320291840-2e0a9bf2a9ae?q=80&w=1470&auto=format&fit=crop';
 
@@ -42,7 +42,6 @@ const LANGUAGE_NAME_MAP: Record<string, string> = {
 };
 
 export default function LearnScreen({ route, navigation }: any) {
-  usePreventScreenCapture();
   const { courseId, isEnrolled } = route.params;
   const [course, setCourse] = useState<any>(null);
   const [activeLesson, setActiveLesson] = useState<any>(null);
@@ -50,6 +49,27 @@ export default function LearnScreen({ route, navigation }: any) {
   const [marking, setMarking] = useState(false);
   const [savedPosition, setSavedPosition] = useState<number>(0);
   const activeProgressLessonIdRef = useRef<number | null>(null);
+
+  // Playback authorization state for active lesson
+  const [playbackAuth, setPlaybackAuth] = useState<{
+    video_url: string;
+    video_duration?: number;
+    watermark?: {
+      enabled: boolean;
+      text: string;
+      student_id: string;
+      moving: boolean;
+      interval_seconds: number;
+    };
+    protection?: {
+      watermark_enabled: boolean;
+      download_enabled: boolean;
+      screen_capture_protection_enabled: boolean;
+    };
+    translated_audios?: any[];
+  } | null>(null);
+  const [playbackAuthError, setPlaybackAuthError] = useState<string | null>(null);
+  const [playbackLoading, setPlaybackLoading] = useState(false);
 
   // Phase 4.9: lesson completion + progress. Latest known playback position
   // for the CURRENTLY active lesson, kept in a ref (not state) so the
@@ -154,6 +174,49 @@ export default function LearnScreen({ route, navigation }: any) {
     };
   }, [activeLesson?.id]);
 
+  // Fetch playback authorization (short-lived signed URL, watermark, protection settings)
+  useEffect(() => {
+    if (!isEnrolled || !activeLesson?.id) {
+      setPlaybackAuth(null);
+      setPlaybackAuthError(null);
+      setPlaybackLoading(false);
+      return;
+    }
+
+    const lessonId = activeLesson.id;
+    let isCancelled = false;
+
+    const fetchPlaybackAuth = async () => {
+      setPlaybackLoading(true);
+      try {
+        const res = await client.get(`courses/lessons/${lessonId}/playback-auth/`);
+        if (isCancelled) return;
+        setPlaybackAuth(res.data);
+        setPlaybackAuthError(null);
+      } catch (err: any) {
+        if (!isCancelled) {
+          if (err.response?.status === 403) {
+            setPlaybackAuth(null);
+            setPlaybackAuthError(err.response?.data?.detail || 'You do not have active access to this lesson.');
+          } else {
+            setPlaybackAuth(null);
+            setPlaybackAuthError('Unable to authorize playback. Please try again.');
+          }
+        }
+      } finally {
+        if (!isCancelled) {
+          setPlaybackLoading(false);
+        }
+      }
+    };
+
+    fetchPlaybackAuth();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeLesson?.id, isEnrolled]);
+
   const handleMarkComplete = async () => {
     if (!activeLesson) return;
     setMarking(true);
@@ -176,20 +239,25 @@ export default function LearnScreen({ route, navigation }: any) {
     }
   };
 
-  const videoSource = activeLesson?.video_file
-    ? resolveMediaUrl(activeLesson.video_file)
+  const rawVideoUrl = playbackAuth?.video_url || null;
+  const videoSource = rawVideoUrl
+    ? resolveMediaUrl(rawVideoUrl)
     : null;
 
-  // Manually-uploaded translated audio tracks for the active lesson (backend-driven,
-  // see courses/serializers.py TranslatedAudioSerializer). Only completed tracks are
-  // shown to students -- matches the web player's language menu.
-  const audioTracks: AudioTrackOption[] = (activeLesson?.translated_audios || [])
-    .filter((a: any) => a.status === 'completed' && a.audio_file)
-    .map((a: any) => ({
-      code: a.language_code.split('-')[0],
-      name: a.language_name || LANGUAGE_NAME_MAP[a.language_code.split('-')[0].toLowerCase()] || a.language_code,
-      url: resolveMediaUrl(a.audio_file),
-    }));
+  // Manually-uploaded or signed translated audio tracks for the active lesson
+  const rawAudioList = playbackAuth?.translated_audios || [];
+  const audioTracks: AudioTrackOption[] = rawAudioList
+    .filter((a: any) => (!a.status || a.status === 'completed') && (a.audio_file || a.audio_url))
+    .map((a: any) => {
+      const url = resolveMediaUrl(a.audio_file || a.audio_url);
+      if (!url) return null;
+      return {
+        code: a.language_code.split('-')[0],
+        name: a.language_name || LANGUAGE_NAME_MAP[a.language_code.split('-')[0].toLowerCase()] || a.language_code,
+        url,
+      };
+    })
+    .filter((t): t is AudioTrackOption => t !== null);
 
   const handlePurchase = () => {
     // Redirect to web app for purchase to bypass app store 30% fee
@@ -200,7 +268,7 @@ export default function LearnScreen({ route, navigation }: any) {
   if (!course) return <View style={styles.centered}><Text style={{ color: colors.text }}>Course not found</Text></View>;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} accessibilityRole="button" accessibilityLabel="Go back">
           <Icon name="arrow-left" size={20} color={colors.text} />
@@ -220,6 +288,21 @@ export default function LearnScreen({ route, navigation }: any) {
               <Text style={styles.secureCheckoutText}>Secure checkout via web</Text>
             </View>
           </>
+        ) : playbackLoading ? (
+          <View style={styles.noVideo}>
+            <ActivityIndicator color={colors.accent} size="large" />
+            <Text style={styles.noVideoText}>Authorizing secure playback...</Text>
+          </View>
+        ) : playbackAuthError ? (
+          <View style={styles.noVideo}>
+            <Icon name="lock" size={24} color={colors.warning} />
+            <Text style={[styles.noVideoText, { color: colors.textSecondary, textAlign: 'center', paddingHorizontal: spacing.lg }]}>
+              {playbackAuthError}
+            </Text>
+            <TouchableOpacity style={[styles.purchaseButton, { marginTop: spacing.md }]} onPress={handlePurchase}>
+              <Text style={styles.purchaseButtonText}>Renew or Purchase Access</Text>
+            </TouchableOpacity>
+          </View>
         ) : videoSource ? (
           <CustomVideoPlayer
             source={videoSource}
@@ -227,6 +310,8 @@ export default function LearnScreen({ route, navigation }: any) {
             lessonKey={activeLesson?.id}
             initialPosition={savedPosition}
             onProgress={handleVideoProgress}
+            watermark={playbackAuth?.watermark}
+            screenCaptureProtectionEnabled={playbackAuth?.protection?.screen_capture_protection_enabled ?? true}
           />
         ) : (
           <View style={styles.noVideo}>
@@ -357,7 +442,7 @@ const styles = StyleSheet.create({
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.bg },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg, paddingTop: headerLayout.compactHeaderPaddingTop, paddingBottom: spacing.md,
     borderBottomWidth: 1, borderBottomColor: colors.border,
   },
   headerTitle: { ...typography.section, flex: 1, marginHorizontal: spacing.md, textAlign: 'center' },

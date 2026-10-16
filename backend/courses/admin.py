@@ -1,7 +1,7 @@
 from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 from django.forms import BaseInlineFormSet
-from .models import Course, Module, VideoLesson, TranslatedAudio, LiveClass, LiveBatch, LiveBatchStudent, CourseInstructor, RecurrenceRule, TeacherAvailability, Attendance, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswer
+from .models import Course, Module, VideoLesson, TranslatedAudio, LiveClass, LiveBatch, LiveBatchStudent, CourseInstructor, RecurrenceRule, TeacherAvailability, Attendance, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswer, VideoProtectionSetting
 
 class VideoLessonInline(admin.TabularInline):
     model = VideoLesson
@@ -387,3 +387,24 @@ class AssignmentSubmissionAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(VideoProtectionSetting)
+class VideoProtectionSettingAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'watermark_enabled', 'download_enabled',
+        'screen_capture_protection_enabled', 'moving_watermark_enabled',
+        'watermark_position_interval', 'updated_at', 'updated_by',
+    )
+    readonly_fields = ('updated_at', 'updated_by')
+
+    def has_add_permission(self, request):
+        return not VideoProtectionSetting.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def save_model(self, request, obj, form, change):
+        obj.updated_by = request.user
+        super().save_model(request, obj, form, change)
+

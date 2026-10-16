@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, StyleSheet, TouchableOpacity, Text, Modal, ActivityIndicator } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEventListener } from 'expo';
+import * as ScreenCapture from 'expo-screen-capture';
 import Slider from '@react-native-community/slider';
 import Icon, { MaterialIcon } from './Icon';
 import { colors, spacing, radius } from '../theme';
@@ -26,6 +27,14 @@ export interface AudioTrackOption {
   url: string;
 }
 
+export interface WatermarkConfig {
+  enabled?: boolean;
+  text?: string;
+  student_id?: string;
+  moving?: boolean;
+  interval_seconds?: number;
+}
+
 interface CustomVideoPlayerProps {
   source: string;
   // Available alternate-language audio tracks for the current lesson
@@ -41,6 +50,10 @@ interface CustomVideoPlayerProps {
   // save lesson-completion progress without this component needing to
   // know anything about lessons/courses/the API itself.
   onProgress?: (currentTime: number, duration: number) => void;
+  // Student watermark configuration
+  watermark?: WatermarkConfig;
+  // Screen-capture protection enabled from backend
+  screenCaptureProtectionEnabled?: boolean;
 }
 
 // How far the alternate audio track is allowed to drift from the video
@@ -51,7 +64,15 @@ const SYNC_DRIFT_TOLERANCE = 0.3;
 const SEEK_STEP = 10;
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
-export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey, initialPosition = 0, onProgress }: CustomVideoPlayerProps) {
+export default function CustomVideoPlayer({
+  source,
+  audioTracks = [],
+  lessonKey,
+  initialPosition = 0,
+  onProgress,
+  watermark,
+  screenCaptureProtectionEnabled = true,
+}: CustomVideoPlayerProps) {
   const [showControls, setShowControls] = useState(true);
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
@@ -109,6 +130,48 @@ export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey,
       }
     }
   };
+
+  // Screen-capture protection lifecycle (conditional on backend setting)
+  useEffect(() => {
+    if (screenCaptureProtectionEnabled) {
+      ScreenCapture.preventScreenCaptureAsync('playback-protection').catch(err => {
+        console.warn('Could not activate screen capture protection:', err);
+      });
+    }
+
+    return () => {
+      if (screenCaptureProtectionEnabled) {
+        ScreenCapture.allowScreenCaptureAsync('playback-protection').catch(err => {
+          console.warn('Could not release screen capture protection:', err);
+        });
+      }
+    };
+  }, [screenCaptureProtectionEnabled]);
+
+  // Watermark configuration & dynamic positioning
+  const watermarkEnabled = watermark?.enabled !== false && !!(watermark?.text || watermark?.student_id);
+  const watermarkText = watermark?.text || watermark?.student_id || '';
+  const isMovingWatermark = watermark?.moving !== false;
+  const watermarkInterval =
+    watermark?.interval_seconds && watermark.interval_seconds >= 3
+      ? watermark.interval_seconds * 1000
+      : 15000;
+
+  const [watermarkPos, setWatermarkPos] = useState({ top: 16, left: 14 });
+
+  useEffect(() => {
+    if (!watermarkEnabled || !isMovingWatermark) return;
+
+    const moveWatermark = () => {
+      // Safe visible boundaries: top: 8%..75%, left: 6%..62%
+      const nextTop = Math.floor(8 + Math.random() * 67);
+      const nextLeft = Math.floor(6 + Math.random() * 56);
+      setWatermarkPos({ top: nextTop, left: nextLeft });
+    };
+
+    const intervalId = setInterval(moveWatermark, watermarkInterval);
+    return () => clearInterval(intervalId);
+  }, [watermarkEnabled, isMovingWatermark, watermarkInterval]);
 
   // Keep the original video's own audio muted while a translated track is active.
   useEffect(() => {
@@ -260,6 +323,25 @@ export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey,
           fullscreenOptions={{ enable: true, orientation: 'landscape', autoExitOnRotate: true }}
         />
       </TouchableOpacity>
+
+      {/* Student Watermark Overlay (visible over playback) */}
+      {watermarkEnabled && !!watermarkText && (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.watermarkContainer,
+            {
+              top: `${watermarkPos.top}%`,
+              left: `${watermarkPos.left}%`,
+            },
+          ]}
+        >
+          <View style={styles.watermarkBadge}>
+            <Text style={styles.watermarkText}>{watermarkText}</Text>
+            <Text style={styles.watermarkSubtext}>Natya LMS</Text>
+          </View>
+        </View>
+      )}
 
       {status === 'loading' && (
         <View style={styles.loadingOverlay} pointerEvents="none">
@@ -548,5 +630,29 @@ const styles = StyleSheet.create({
   optionTextActive: {
     color: colors.accent,
     fontWeight: '700',
+  },
+  watermarkContainer: {
+    position: 'absolute',
+    zIndex: 15,
+  },
+  watermarkBadge: {
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  watermarkText: {
+    color: 'rgba(255, 255, 255, 0.78)',
+    fontSize: 11,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+    letterSpacing: 1,
+  },
+  watermarkSubtext: {
+    color: 'rgba(255, 255, 255, 0.48)',
+    fontSize: 8,
+    fontWeight: '500',
   },
 });

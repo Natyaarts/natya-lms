@@ -1,9 +1,11 @@
+from django.conf import settings
 from rest_framework import viewsets, permissions, status as drf_status
+from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied as DRFPermissionDenied
-from .models import Course, Module, VideoLesson, Enrollment, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, TranslatedAudio, CourseInstructor, RecurrenceRule, TeacherAvailability, Attendance
-from .serializers import CourseSerializer, ModuleSerializer, VideoLessonSerializer, LessonProgressSerializer, LiveClassSerializer, LiveBatchSerializer, LiveBatchStudentSerializer, TranslatedAudioSerializer, TranslatedAudioUploadSerializer, CourseInstructorSerializer, RecurrenceRuleSerializer, TeacherAvailabilitySerializer, AttendanceSerializer
+from .models import Course, Module, VideoLesson, Enrollment, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, TranslatedAudio, CourseInstructor, RecurrenceRule, TeacherAvailability, Attendance, VideoProtectionSetting
+from .serializers import CourseSerializer, ModuleSerializer, VideoLessonSerializer, LessonProgressSerializer, LiveClassSerializer, LiveBatchSerializer, LiveBatchStudentSerializer, TranslatedAudioSerializer, TranslatedAudioUploadSerializer, CourseInstructorSerializer, RecurrenceRuleSerializer, TeacherAvailabilitySerializer, AttendanceSerializer, VideoProtectionSettingSerializer
 from users.permissions import IsSuperAdminOrTeacherOrReadOnly  # noqa: F401 -- retained for any other reuse; Course/Module/Lesson now use IsSuperAdminOrCourseInstructorOrReadOnly below
 
 
@@ -349,7 +351,7 @@ class VideoLessonViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if user.is_authenticated and (user.is_superuser or user.is_staff):
             return VideoLesson.objects.all()
-        if self.action == 'progress':
+        if self.action in ('progress', 'playback_auth'):
             return VideoLesson.objects.all()
         if not user.is_authenticated:
             return VideoLesson.objects.none()
@@ -712,6 +714,128 @@ class VideoLessonViewSet(viewsets.ModelViewSet):
 
             serializer = LessonProgressSerializer(progress_obj)
             return Response(serializer.data)
+
+    @action(detail=True, methods=['get'], url_path='playback-auth', permission_classes=[permissions.IsAuthenticated])
+    def playback_auth(self, request, pk=None):
+        """
+        Unified playback authorization endpoint for Web and Mobile players.
+        Validates lesson access via user_has_course_access(user, lesson.module.course)
+        (or instructor/staff privileges). Returns short-lived signed URLs for video
+        and translated-audio tracks, watermark parameters (using user's stable student_id),
+        and active protection settings.
+        """
+        lesson = self.get_object()
+        user = request.user
+        course = lesson.module.course
+
+        from .services.access import user_has_course_access, instructor_course_ids_for_user
+        is_staff_or_super = user.is_staff or user.is_superuser
+        is_instructor = course.id in instructor_course_ids_for_user(user)
+        has_access = is_staff_or_super or is_instructor or user_has_course_access(user, course)
+
+        if not has_access:
+            return Response(
+                {"detail": "You do not have access to this course's video playback."},
+                status=drf_status.HTTP_403_FORBIDDEN
+            )
+
+        if not lesson.video_file:
+            return Response(
+                {"detail": "No video file uploaded for this lesson."},
+                status=drf_status.HTTP_404_NOT_FOUND
+            )
+
+        # Retrieve video protection settings
+        settings_obj = VideoProtectionSetting.get_settings()
+
+        # Retrieve or generate stable student_id for watermark
+        student_id = getattr(user, 'student_id', None) or user.get_or_create_student_id()
+
+        # Playback signed URL validity (30 minutes = 1800s)
+        expires_in = 1800
+
+        def _get_signed_url(file_field):
+            if not file_field:
+                return None
+            bucket_name = getattr(settings, 'AWS_STORAGE_BUCKET_NAME', '')
+            access_key = getattr(settings, 'AWS_ACCESS_KEY_ID', '')
+            secret_key = getattr(settings, 'AWS_SECRET_ACCESS_KEY', '')
+            if bucket_name and access_key and secret_key:
+                try:
+                    import boto3
+                    from botocore.config import Config
+                    s3_client = boto3.client(
+                        's3',
+                        aws_access_key_id=access_key,
+                        aws_secret_access_key=secret_key,
+                        region_name=getattr(settings, 'AWS_S3_REGION_NAME', None) or 'ap-south-1',
+                        config=Config(signature_version='s3v4')
+                    )
+                    s3_key = str(file_field.name if hasattr(file_field, 'name') else file_field).lstrip('/')
+                    return s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={
+                            'Bucket': bucket_name,
+                            'Key': s3_key,
+                            'ResponseContentDisposition': 'inline',
+                        },
+                        ExpiresIn=expires_in
+                    )
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning("Failed to generate presigned S3 URL: %s", e)
+            if hasattr(file_field, 'url'):
+                try:
+                    return request.build_absolute_uri(file_field.url)
+                except Exception:
+                    return file_field.url
+            url_str = str(file_field)
+            if url_str.startswith(('http://', 'https://')):
+                return url_str
+            return request.build_absolute_uri(f"/media/{url_str.lstrip('/')}")
+
+        signed_video_url = _get_signed_url(lesson.video_file)
+
+        # Generate signed URLs for completed translated audio tracks
+        audio_tracks = []
+        for track in lesson.translated_audios.all():
+            if track.status == 'completed' and track.audio_file:
+                signed_audio = _get_signed_url(track.audio_file)
+                audio_tracks.append({
+                    "id": track.id,
+                    "language_code": track.language_code,
+                    "language_name": track.language_name,
+                    "audio_file": signed_audio,
+                    "audio_url": signed_audio,
+                    "status": track.status,
+                })
+
+        # Fetch saved progress video duration if known
+        progress = LessonProgress.objects.filter(user=user, lesson=lesson).first()
+        video_duration = progress.video_duration if progress and progress.video_duration else None
+
+        return Response({
+            "lesson_id": lesson.id,
+            "title": lesson.title,
+            "video_url": signed_video_url,
+            "video_duration": video_duration,
+            "expires_in": expires_in,
+            "student_id": student_id,
+            "watermark": {
+                "enabled": settings_obj.watermark_enabled,
+                "text": student_id,
+                "student_id": student_id,
+                "moving": settings_obj.moving_watermark_enabled,
+                "interval_seconds": settings_obj.watermark_position_interval,
+            },
+            "protection": {
+                "watermark_enabled": settings_obj.watermark_enabled,
+                "download_enabled": settings_obj.download_enabled,
+                "screen_capture_protection_enabled": settings_obj.screen_capture_protection_enabled,
+            },
+            "translated_audios": audio_tracks,
+        }, status=drf_status.HTTP_200_OK)
+
 
 
 # =============================================================================
@@ -2678,4 +2802,33 @@ class ZoomWebhookView(APIView):
             return Response({"status": "received", "handled": success}, status=drf_status.HTTP_200_OK)
 
         return Response({"status": "ignored"}, status=drf_status.HTTP_200_OK)
+
+
+class VideoProtectionSettingView(APIView):
+    """
+    API for global video protection configuration:
+    - GET: Any authenticated user can read the active protection settings (needed by web/mobile player to configure watermark, screen capture deterrence, etc.).
+    - PATCH / PUT: Staff only (is_staff or is_superuser) can update settings.
+    """
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [permissions.IsAuthenticated()]
+        from users.permissions import IsSuperAdminOrAdmin
+        return [IsSuperAdminOrAdmin()]
+
+    def get(self, request):
+        settings_obj = VideoProtectionSetting.get_settings()
+        serializer = VideoProtectionSettingSerializer(settings_obj)
+        return Response(serializer.data, status=drf_status.HTTP_200_OK)
+
+    def patch(self, request):
+        settings_obj = VideoProtectionSetting.get_settings()
+        serializer = VideoProtectionSettingSerializer(settings_obj, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(updated_by=request.user)
+        return Response(serializer.data, status=drf_status.HTTP_200_OK)
+
+    def put(self, request):
+        return self.patch(request)
+
 
