@@ -1,0 +1,260 @@
+name: Deploy Backend to Staging (Isolated Environment)
+
+on:
+  push:
+    branches:
+      - 'staging/video-protection'
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-deploy-staging.yml'
+  workflow_dispatch:
+    inputs:
+      confirm_staging:
+        description: 'Type "DEPLOY-STAGING" to confirm staging deployment'
+        required: true
+        default: ''
+
+permissions:
+  id-token: write   # Strictly required for AWS OIDC authentication (least-privilege)
+  contents: read    # Read repository contents
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging Elastic Beanstalk
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging   # Requires manual approval in GitHub UI (Settings > Environments > staging)
+
+    steps:
+      # -------------------------------------------------------------
+      # STEP 1: PRE-FLIGHT SAFETY GUARDS (Runs before any AWS contact)
+      # -------------------------------------------------------------
+      - name: Safety Guard - Verify Manual Dispatch Confirmation
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "${{ github.event.inputs.confirm_staging }}" != "DEPLOY-STAGING" ]; then
+            echo "::error::Manual staging deployment rejected. Input must exactly match 'DEPLOY-STAGING'."
+            exit 1
+          fi
+
+      - name: Safety Guard - Refuse Production Branches
+        run: |
+          REF="${{ github.ref_name }}"
+          if [ "$REF" = "main" ] || [ "$REF" = "master" ] || [ "$REF" = "production" ]; then
+            echo "::error::CRITICAL SECURITY ERROR: backend-deploy-staging.yml must NEVER run against production branches ($REF)!"
+            exit 1
+          fi
+
+      - name: Safety Guard - Validate Staging Secrets & Fail-Closed Isolation
+        env:
+          EB_ENV: ${{ secrets.STAGING_EB_ENV_NAME }}
+          EB_APP: ${{ secrets.STAGING_EB_APP_NAME || 'natya-lms-backend' }}
+          S3_BUCKET: ${{ secrets.STAGING_AWS_STORAGE_BUCKET_NAME }}
+          ROLE_ARN: ${{ secrets.STAGING_AWS_ROLE_ARN }}
+          EXPECTED_ACCOUNT: ${{ secrets.STAGING_AWS_ACCOUNT_ID }}
+        run: |
+          echo "=== VALIDATING STAGING TARGET ISOLATION ==="
+          
+          # Fail-closed check: Ensure OIDC Role ARN and Account ID are set
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::STAGING_AWS_ROLE_ARN secret is missing. Staging requires AWS GitHub OIDC authentication."
+            exit 1
+          fi
+          if [ -z "$EXPECTED_ACCOUNT" ]; then
+            echo "::error::STAGING_AWS_ACCOUNT_ID secret is missing. Account verification is mandatory."
+            exit 1
+          fi
+
+          # Fail-closed check: Ensure staging target secrets are non-empty
+          if [ -z "$EB_ENV" ]; then
+            echo "::error::STAGING_EB_ENV_NAME secret is missing. Cannot proceed."
+            exit 1
+          fi
+          if [ -z "$S3_BUCKET" ]; then
+            echo "::error::STAGING_AWS_STORAGE_BUCKET_NAME secret is missing. Cannot proceed."
+            exit 1
+          fi
+
+          # Fail-closed check: Absolute prohibition against production Elastic Beanstalk environment
+          if [ "$EB_ENV" = "Natya-lms-backend-env" ]; then
+            echo "::error::CRITICAL SECURITY BREACH: STAGING_EB_ENV_NAME matches production environment 'Natya-lms-backend-env'!"
+            exit 1
+          fi
+
+          # Fail-closed check: Environment name must contain 'staging' or 'stage'
+          case "$EB_ENV" in
+            *staging*|*stage*|*STAGING*|*STAGE*)
+              echo "EB environment name contains staging designation: $EB_ENV"
+              ;;
+            *)
+              echo "::error::CRITICAL ERROR: STAGING_EB_ENV_NAME ($EB_ENV) does not contain 'staging' or 'stage'. Refusing deployment."
+              exit 1
+              ;;
+          esac
+
+          # Fail-closed check: Absolute prohibition against production S3 bucket
+          if [ "$S3_BUCKET" = "natyalms-media-2026" ]; then
+            echo "::error::CRITICAL SECURITY BREACH: STAGING_AWS_STORAGE_BUCKET_NAME matches production bucket 'natyalms-media-2026'!"
+            exit 1
+          fi
+
+          # Fail-closed check: S3 bucket name must contain 'staging' or 'stage'
+          case "$S3_BUCKET" in
+            *staging*|*stage*|*STAGING*|*STAGE*)
+              echo "S3 bucket name contains staging designation: $S3_BUCKET"
+              ;;
+            *)
+              echo "::error::CRITICAL ERROR: STAGING_AWS_STORAGE_BUCKET_NAME ($S3_BUCKET) does not contain 'staging' or 'stage'. Refusing deployment."
+              exit 1
+              ;;
+          esac
+
+          echo "Target isolation checks PASSED."
+
+      # -------------------------------------------------------------
+      # STEP 2: AUTHENTICATE TO AWS VIA GITHUB OIDC (No Static Keys)
+      # -------------------------------------------------------------
+      - name: Authenticate to AWS via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.STAGING_AWS_ROLE_ARN }}
+          role-session-name: GitHubActions-NatyaLMS-StagingDeploy
+          aws-region: ${{ secrets.STAGING_AWS_REGION || 'ap-south-1' }}
+
+      # -------------------------------------------------------------
+      # STEP 3: FAIL-CLOSED IDENTITY & REGION VERIFICATION
+      # -------------------------------------------------------------
+      - name: Verify Caller AWS Account ID & Region
+        env:
+          EXPECTED_ACCOUNT: ${{ secrets.STAGING_AWS_ACCOUNT_ID }}
+          EXPECTED_REGION: ${{ secrets.STAGING_AWS_REGION || 'ap-south-1' }}
+        run: |
+          echo "=== VERIFYING AWS CALLER IDENTITY ==="
+          CALLER_IDENTITY=$(aws sts get-caller-identity --output json)
+          ACTUAL_ACCOUNT=$(echo "$CALLER_IDENTITY" | jq -r '.Account')
+          ACTUAL_ARN=$(echo "$CALLER_IDENTITY" | jq -r '.Arn')
+          
+          echo "Authenticated ARN: $ACTUAL_ARN"
+          
+          if [ "$ACTUAL_ACCOUNT" != "$EXPECTED_ACCOUNT" ]; then
+            echo "::error::CRITICAL SECURITY MISMATCH: Authenticated Account ($ACTUAL_ACCOUNT) does not match EXPECTED_ACCOUNT ($EXPECTED_ACCOUNT)!"
+            exit 1
+          fi
+          echo "Account ID verified: $ACTUAL_ACCOUNT"
+
+          ACTUAL_REGION=$(aws configure get region || echo "$EXPECTED_REGION")
+          if [ "$ACTUAL_REGION" != "$EXPECTED_REGION" ]; then
+            echo "::error::CRITICAL REGION MISMATCH: Configured region ($ACTUAL_REGION) does not match expected staging region ($EXPECTED_REGION)!"
+            exit 1
+          fi
+          echo "AWS Region verified: $ACTUAL_REGION"
+
+      # -------------------------------------------------------------
+      # STEP 4: VERIFY TARGET ELASTIC BEANSTALK ENVIRONMENT EXISTS
+      # -------------------------------------------------------------
+      - name: Verify Staging Elastic Beanstalk Environment Exists
+        env:
+          EB_ENV: ${{ secrets.STAGING_EB_ENV_NAME }}
+          REGION: ${{ secrets.STAGING_AWS_REGION || 'ap-south-1' }}
+        run: |
+          echo "=== VERIFYING STAGING EB ENVIRONMENT ==="
+          ENV_STATUS=$(aws elasticbeanstalk describe-environments \
+            --environment-names "$EB_ENV" \
+            --region "$REGION" \
+            --query 'Environments[0].Status' \
+            --output text 2>/dev/null || echo "None")
+          
+          if [ "$ENV_STATUS" = "None" ] || [ -z "$ENV_STATUS" ]; then
+            echo "::error::Target staging Elastic Beanstalk environment '$EB_ENV' was not found in region '$REGION'!"
+            echo "Please create the staging environment before deploying."
+            exit 1
+          fi
+          echo "Target staging environment '$EB_ENV' exists with status: $ENV_STATUS"
+
+      # -------------------------------------------------------------
+      # STEP 5: CHECKOUT CODE & PACKAGE ARTIFACT
+      # -------------------------------------------------------------
+      - name: Checkout Staging Source Code
+        uses: actions/checkout@v4
+
+      - name: Package Staging Backend
+        run: |
+          cd backend
+          zip -r ../deploy-staging.zip . \
+            -x ".env" \
+            -x "*/.env" \
+            -x "venv/*" \
+            -x "*/__pycache__/*" \
+            -x "*.pyc" \
+            -x "static/*" \
+            -x "*.sqlite3"
+
+      # -------------------------------------------------------------
+      # STEP 6: CONFIGURE STAGING S3 CORS & DEPLOY TO ELASTIC BEANSTALK
+      # -------------------------------------------------------------
+      - name: Configure Staging S3 Bucket CORS
+        env:
+          S3_BUCKET: ${{ secrets.STAGING_AWS_STORAGE_BUCKET_NAME }}
+          REGION: ${{ secrets.STAGING_AWS_REGION || 'ap-south-1' }}
+          FRONTEND_ORIGIN: ${{ secrets.STAGING_FRONTEND_URL || 'https://staging.natyaarts.com' }}
+        run: |
+          cat << EOF > /tmp/s3_staging_cors.json
+          {
+            "CORSRules": [
+              {
+                "AllowedHeaders": ["*"],
+                "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
+                "AllowedOrigins": [
+                  "$FRONTEND_ORIGIN",
+                  "https://staging.natyaarts.com",
+                  "https://staging-academy.natyaarts.com",
+                  "https://natya-lms-staging.vercel.app",
+                  "http://localhost:3000"
+                ],
+                "ExposeHeaders": ["ETag"],
+                "MaxAgeSeconds": 3000
+              }
+            ]
+          }
+          EOF
+          aws s3api put-bucket-cors \
+            --bucket "$S3_BUCKET" \
+            --cors-configuration file:///tmp/s3_staging_cors.json \
+            --region "$REGION" 2>&1 || echo "Warning: Staging S3 put-bucket-cors requires s3:PutBucketCORS permission."
+
+      - name: Deploy to Staging Elastic Beanstalk
+        env:
+          EB_ENV: ${{ secrets.STAGING_EB_ENV_NAME }}
+          EB_APP: ${{ secrets.STAGING_EB_APP_NAME || 'natya-lms-backend' }}
+          REGION: ${{ secrets.STAGING_AWS_REGION || 'ap-south-1' }}
+        run: |
+          echo "=== WAITING FOR STAGING ENVIRONMENT READY STATUS ==="
+          for i in $(seq 1 30); do
+            STATUS=$(aws elasticbeanstalk describe-environments --environment-names "$EB_ENV" --region "$REGION" --query 'Environments[0].Status' --output text 2>/dev/null || echo "")
+            echo "[$i/30] Status: $STATUS"
+            if [ "$STATUS" = "Ready" ]; then
+              echo "Staging environment is Ready!"
+              break
+            fi
+            sleep 10
+          done
+
+          BUCKET=$(aws elasticbeanstalk create-storage-location --region "$REGION" --query 'S3Bucket' --output text)
+          S3_KEY="backend-staging-${{ github.sha }}.zip"
+          echo "Uploading deploy-staging.zip to s3://${BUCKET}/${S3_KEY}..."
+          aws s3 cp deploy-staging.zip "s3://${BUCKET}/${S3_KEY}" --region "$REGION"
+
+          echo "Creating staging application version backend-staging-${{ github.sha }}..."
+          aws elasticbeanstalk create-application-version \
+            --application-name "$EB_APP" \
+            --version-label "backend-staging-${{ github.sha }}" \
+            --source-bundle S3Bucket="${BUCKET}",S3Key="${S3_KEY}" \
+            --region "$REGION" || true
+
+          echo "Updating staging environment $EB_ENV to version backend-staging-${{ github.sha }}..."
+          aws elasticbeanstalk update-environment \
+            --environment-name "$EB_ENV" \
+            --version-label "backend-staging-${{ github.sha }}" \
+            --region "$REGION"
+
+          echo "Staging deployment initiated successfully to $EB_ENV!"

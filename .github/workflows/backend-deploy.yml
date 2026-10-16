@@ -14,10 +14,20 @@ permissions:
 
 jobs:
   deploy:
+    name: Deploy to Production Elastic Beanstalk
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    environment: production
+    if: github.ref == 'refs/heads/main'
 
     steps:
+      - name: Assert Production Branch
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "::error::CRITICAL: Deployment to production is strictly restricted to refs/heads/main. Current ref: ${{ github.ref }}"
+            exit 1
+          fi
+
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
