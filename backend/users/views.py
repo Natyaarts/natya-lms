@@ -147,8 +147,8 @@ def _dispatch_otp(identifier: str, otp: str):
     if '@' in identifier:
         from .email_utils import OTPEmailDeliveryError, send_otp_email
         try:
-            if settings.DEBUG and not (settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY):
-                logger.info("DEBUG mode, no AWS credentials configured -- OTP for %s: %s", identifier, otp)
+            if (settings.DEBUG or getattr(settings, 'IS_STAGING', False)) and not (settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY):
+                logger.info("DEBUG/STAGING mode, no AWS credentials configured -- OTP for %s: %s", identifier, otp)
             else:
                 send_otp_email(identifier, otp)
         except OTPEmailDeliveryError as e:
@@ -159,6 +159,10 @@ def _dispatch_otp(identifier: str, otp: str):
             )
     else:
         # --- INTERAKT WHATSAPP INTEGRATION ---
+        if getattr(settings, 'IS_STAGING', False) and not (os.environ.get('ENABLE_STAGING_WHATSAPP', 'False').lower() in ('true', '1', 'yes')):
+            logger.info("STAGING MODE: Suppressing actual Interakt WhatsApp send -- OTP for %s: %s", identifier, otp)
+            return True, None
+
         INTERAKT_SECRET_KEY = settings.INTERAKT_SECRET_KEY
         TEMPLATE_NAME = settings.INTERAKT_TEMPLATE_NAME
 
