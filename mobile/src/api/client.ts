@@ -1,12 +1,31 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Base API URL for production
-export const API_URL = 'https://academy-api.natyaarts.com/api/';
-// Same host the app already builds absolute media URLs against (thumbnails,
-// video_file, translated audio) -- exported once here so every screen stops
-// re-hardcoding this string (see resolveMediaUrl below).
-export const MEDIA_BASE_URL = 'https://academy-api.natyaarts.com';
+// Environment resolution: preview/staging builds MUST define EXPO_PUBLIC_API_URL.
+// If missing, fail closed immediately so an internal preview APK never accidentally
+// hits the production backend.
+const APP_ENV = process.env.EXPO_PUBLIC_ENV || 'production';
+
+export const API_URL = (() => {
+  if (APP_ENV === 'preview' || APP_ENV === 'staging') {
+    const stagingUrl = process.env.EXPO_PUBLIC_API_URL;
+    if (!stagingUrl || stagingUrl.trim() === '') {
+      throw new Error(
+        '[FATAL] EAS preview/staging build misconfiguration: EXPO_PUBLIC_API_URL is required in preview environment but was not provided. Failing closed to prevent accidental connection to production.'
+      );
+    }
+    return stagingUrl;
+  }
+  // Production builds strictly use the production API URL and cannot inherit staging settings
+  return 'https://academy-api.natyaarts.com/api/';
+})();
+
+export const MEDIA_BASE_URL = (() => {
+  if (APP_ENV === 'preview' || APP_ENV === 'staging') {
+    return process.env.EXPO_PUBLIC_MEDIA_BASE_URL || API_URL.replace(/\/api\/?$/, '');
+  }
+  return 'https://academy-api.natyaarts.com';
+})();
 
 export const resolveMediaUrl = (url?: string | null): string | undefined => {
   if (!url) return undefined;
