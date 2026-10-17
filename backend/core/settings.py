@@ -502,15 +502,22 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 # AWS S3 Configuration
-AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID', '')
-AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
-AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME', '')
-AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', '')
+# In staging (IS_STAGING=True), boto3 can use the EC2 instance profile IAM role
+# when explicit keys are absent, while production strictly requires explicit keys.
+_aws_key = os.environ.get('AWS_ACCESS_KEY_ID', '').strip()
+_aws_secret = os.environ.get('AWS_SECRET_ACCESS_KEY', '').strip()
+AWS_ACCESS_KEY_ID = _aws_key if _aws_key else None
+AWS_SECRET_ACCESS_KEY = _aws_secret if _aws_secret else None
+AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME', '').strip()
+AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'ap-south-1') or 'ap-south-1'
 AWS_S3_SIGNATURE_VERSION = 's3v4'
 AWS_S3_FILE_OVERWRITE = False
 AWS_DEFAULT_ACL = None
 
-if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_STORAGE_BUCKET_NAME:
+HAS_AWS_KEYS = bool(AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)
+ALLOW_IAM_ROLE = IS_STAGING
+
+if AWS_STORAGE_BUCKET_NAME and (HAS_AWS_KEYS or ALLOW_IAM_ROLE):
     STORAGES = {
         "default": {
             "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
@@ -520,10 +527,19 @@ if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_STORAGE_BUCKET_NAME:
         },
     }
 elif not DEBUG:
-    raise ImproperlyConfigured(
-        "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_STORAGE_BUCKET_NAME must all be set in "
-        "production -- refusing to silently fall back to local/ephemeral disk storage for media uploads."
-    )
+    if not AWS_STORAGE_BUCKET_NAME:
+        raise ImproperlyConfigured(
+            "AWS_STORAGE_BUCKET_NAME must be set in production/staging -- refusing to silently "
+            "fall back to local/ephemeral disk storage for media uploads."
+        )
+    if not (HAS_AWS_KEYS or ALLOW_IAM_ROLE):
+        raise ImproperlyConfigured(
+            "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set in production -- refusing to silently "
+            "fall back to local/ephemeral disk storage."
+        )
+
+# Helper indicator for view-layer presigned URL generation and direct S3 operations
+AWS_S3_ENABLED = bool(AWS_STORAGE_BUCKET_NAME and (HAS_AWS_KEYS or ALLOW_IAM_ROLE))
 # Video and large file upload limits (allow up to 2 GB with buffer)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 2621440000  # 2.5 GB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 2621440000  # 2.5 GB

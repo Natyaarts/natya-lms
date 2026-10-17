@@ -25,13 +25,14 @@ class ZoomRecordingService:
 
     @classmethod
     def get_s3_client(cls):
-        return boto3.client(
-            's3',
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=settings.AWS_S3_REGION_NAME or 'ap-south-1',
-            config=Config(signature_version='s3v4')
-        )
+        client_kwargs = {
+            'region_name': getattr(settings, 'AWS_S3_REGION_NAME', 'ap-south-1') or 'ap-south-1',
+            'config': Config(signature_version='s3v4')
+        }
+        if getattr(settings, 'AWS_ACCESS_KEY_ID', None) and getattr(settings, 'AWS_SECRET_ACCESS_KEY', None):
+            client_kwargs['aws_access_key_id'] = settings.AWS_ACCESS_KEY_ID
+            client_kwargs['aws_secret_access_key'] = settings.AWS_SECRET_ACCESS_KEY
+        return boto3.client('s3', **client_kwargs)
 
     @classmethod
     def upload_file_to_s3(cls, file_stream, s3_key, content_type='video/mp4'):
@@ -41,8 +42,9 @@ class ZoomRecordingService:
         """
         bucket_name = getattr(settings, 'AWS_STORAGE_BUCKET_NAME', '') or os.environ.get('AWS_STORAGE_BUCKET_NAME', '')
         region = getattr(settings, 'AWS_S3_REGION_NAME', '') or os.environ.get('AWS_S3_REGION_NAME', 'ap-south-1') or 'ap-south-1'
+        use_s3 = bool(bucket_name and (bool(getattr(settings, 'AWS_ACCESS_KEY_ID', None) and getattr(settings, 'AWS_SECRET_ACCESS_KEY', None)) or getattr(settings, 'IS_STAGING', False) or getattr(settings, 'AWS_S3_ENABLED', False)))
 
-        if bucket_name and getattr(settings, 'AWS_ACCESS_KEY_ID', ''):
+        if use_s3:
             s3_client = cls.get_s3_client()
             s3_client.upload_fileobj(
                 file_stream,
@@ -75,7 +77,8 @@ class ZoomRecordingService:
         """
         import re
         bucket_name = getattr(settings, 'AWS_STORAGE_BUCKET_NAME', '') or os.environ.get('AWS_STORAGE_BUCKET_NAME', '')
-        if not bucket_name or not getattr(settings, 'AWS_ACCESS_KEY_ID', ''):
+        use_s3 = bool(bucket_name and (bool(getattr(settings, 'AWS_ACCESS_KEY_ID', None) and getattr(settings, 'AWS_SECRET_ACCESS_KEY', None)) or getattr(settings, 'IS_STAGING', False) or getattr(settings, 'AWS_S3_ENABLED', False)))
+        if not use_s3:
             return s3_url
         match = re.search(r'amazonaws\.com/(.+)$', s3_url)
         if not match:

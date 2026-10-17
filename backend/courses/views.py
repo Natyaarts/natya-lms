@@ -399,13 +399,15 @@ class VideoLessonViewSet(viewsets.ModelViewSet):
         if not bucket_name:
             return Response({'error': 'AWS S3 storage is not configured on this server.'}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=settings.AWS_S3_REGION_NAME or 'ap-south-1',
-            config=Config(signature_version='s3v4')
-        )
+        client_kwargs = {
+            'region_name': getattr(settings, 'AWS_S3_REGION_NAME', 'ap-south-1') or 'ap-south-1',
+            'config': Config(signature_version='s3v4')
+        }
+        if getattr(settings, 'AWS_ACCESS_KEY_ID', None) and getattr(settings, 'AWS_SECRET_ACCESS_KEY', None):
+            client_kwargs['aws_access_key_id'] = settings.AWS_ACCESS_KEY_ID
+            client_kwargs['aws_secret_access_key'] = settings.AWS_SECRET_ACCESS_KEY
+
+        s3_client = boto3.client('s3', **client_kwargs)
 
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
@@ -758,19 +760,21 @@ class VideoLessonViewSet(viewsets.ModelViewSet):
             if not file_field:
                 return None
             bucket_name = getattr(settings, 'AWS_STORAGE_BUCKET_NAME', '')
-            access_key = getattr(settings, 'AWS_ACCESS_KEY_ID', '')
-            secret_key = getattr(settings, 'AWS_SECRET_ACCESS_KEY', '')
-            if bucket_name and access_key and secret_key:
+            access_key = getattr(settings, 'AWS_ACCESS_KEY_ID', None)
+            secret_key = getattr(settings, 'AWS_SECRET_ACCESS_KEY', None)
+            use_s3 = bool(bucket_name and (bool(access_key and secret_key) or getattr(settings, 'IS_STAGING', False) or getattr(settings, 'AWS_S3_ENABLED', False)))
+            if use_s3:
                 try:
                     import boto3
                     from botocore.config import Config
-                    s3_client = boto3.client(
-                        's3',
-                        aws_access_key_id=access_key,
-                        aws_secret_access_key=secret_key,
-                        region_name=getattr(settings, 'AWS_S3_REGION_NAME', None) or 'ap-south-1',
-                        config=Config(signature_version='s3v4')
-                    )
+                    client_kwargs = {
+                        'region_name': getattr(settings, 'AWS_S3_REGION_NAME', None) or 'ap-south-1',
+                        'config': Config(signature_version='s3v4')
+                    }
+                    if access_key and secret_key:
+                        client_kwargs['aws_access_key_id'] = access_key
+                        client_kwargs['aws_secret_access_key'] = secret_key
+                    s3_client = boto3.client('s3', **client_kwargs)
                     s3_key = str(file_field.name if hasattr(file_field, 'name') else file_field).lstrip('/')
                     return s3_client.generate_presigned_url(
                         'get_object',

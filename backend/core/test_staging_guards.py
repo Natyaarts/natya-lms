@@ -229,3 +229,246 @@ class StagingSecurityGuardsTestCase(TestCase):
         is_ok, msg = evaluate_staging_target(**params_valid_prod)
         self.assertTrue(is_ok)
         self.assertIn("Production pre-migration target checks PASSED", msg)
+
+
+from unittest.mock import patch, MagicMock
+from django.conf import settings
+from courses.services.recording import ZoomRecordingService
+from chat.views import get_attachment_presigned_url
+from courses.views import VideoLessonViewSet
+
+
+class StagingS3IAMRoleStorageTests(TestCase):
+    """
+    Validates S3 storage settings and fail-closed behavior for IAM role usage
+    in staging vs explicit credential requirement in production.
+    """
+
+    def tearDown(self):
+        # Restore default test settings state
+        import importlib
+        from core import settings as reloaded_settings
+        importlib.reload(reloaded_settings)
+
+    def test_staging_s3_storage_configured_with_iam_role_when_static_keys_absent(self):
+        """
+        Verify that in staging (IS_STAGING=True), S3 storage is enabled when
+        AWS_STORAGE_BUCKET_NAME is set even if static keys are absent (None),
+        allowing boto3 to use the EC2 instance profile IAM role.
+        """
+        import importlib
+        with patch('dotenv.load_dotenv'):
+            test_env = {
+                'DEBUG': 'False',
+                'ENVIRONMENT': 'staging',
+                'SECRET_KEY': 'test-secret-staging',
+                'ALLOWED_HOSTS': 'example.com',
+                'RDS_DB_NAME': 'natyalms_staging_db',
+                'RDS_USERNAME': 'user',
+                'RDS_PASSWORD': 'pwd',
+                'RDS_HOSTNAME': 'staging-db.rds.amazonaws.com',
+                'RDS_PORT': '5432',
+                'RAZORPAY_KEY_ID': 'rzp_test_mock123',
+                'RAZORPAY_KEY_SECRET': 'test_secret',
+                'RAZORPAY_WEBHOOK_SECRET': 'test_webhook_sec',
+                'AWS_STORAGE_BUCKET_NAME': 'natyalms-staging-media-2026',
+                'CELERY_BROKER_URL': 'redis://staging-redis:6379/0',
+                'CELERY_RESULT_BACKEND': 'redis://staging-redis:6379/0',
+            }
+            with patch.dict(os.environ, test_env, clear=True):
+                from core import settings as reloaded_settings
+                importlib.reload(reloaded_settings)
+                self.assertTrue(reloaded_settings.IS_STAGING)
+                self.assertIsNone(reloaded_settings.AWS_ACCESS_KEY_ID)
+                self.assertIsNone(reloaded_settings.AWS_SECRET_ACCESS_KEY)
+                self.assertEqual(reloaded_settings.AWS_STORAGE_BUCKET_NAME, 'natyalms-staging-media-2026')
+                self.assertTrue(reloaded_settings.ALLOW_IAM_ROLE)
+                self.assertTrue(reloaded_settings.AWS_S3_ENABLED)
+                self.assertEqual(
+                    reloaded_settings.STORAGES['default']['BACKEND'],
+                    'storages.backends.s3boto3.S3Boto3Storage'
+                )
+
+    def test_production_s3_storage_fails_closed_when_static_keys_absent(self):
+        """
+        Verify that in production (ENVIRONMENT=production, DEBUG=False),
+        missing AWS static credentials raises ImproperlyConfigured unless
+        AWS_USE_IAM_ROLE is explicitly enabled.
+        """
+        import importlib
+        with patch('dotenv.load_dotenv'):
+            prod_env = {
+                'DEBUG': 'False',
+                'ENVIRONMENT': 'production',
+                'SECRET_KEY': 'test-secret-prod',
+                'ALLOWED_HOSTS': 'example.com',
+                'RDS_DB_NAME': 'natyalms_prod_db',
+                'RDS_USERNAME': 'user',
+                'RDS_PASSWORD': 'pwd',
+                'RDS_HOSTNAME': 'prod-db.rds.amazonaws.com',
+                'RDS_PORT': '5432',
+                'INTERAKT_SECRET_KEY': 'test_interakt',
+                'RAZORPAY_KEY_ID': 'rzp_live_real123',
+                'RAZORPAY_KEY_SECRET': 'test_secret',
+                'AWS_STORAGE_BUCKET_NAME': 'natyalms-media-2026',
+            }
+            with patch.dict(os.environ, prod_env, clear=True):
+                from core import settings as reloaded_settings
+                with self.assertRaises(ImproperlyConfigured) as ctx:
+                    importlib.reload(reloaded_settings)
+                self.assertIn("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set in production", str(ctx.exception))
+
+    def test_missing_bucket_fails_closed_in_staging_and_production(self):
+        """
+        Verify that missing AWS_STORAGE_BUCKET_NAME raises ImproperlyConfigured
+        when DEBUG=False.
+        """
+        import importlib
+        with patch('dotenv.load_dotenv'):
+            staging_env = {
+                'DEBUG': 'False',
+                'ENVIRONMENT': 'staging',
+                'SECRET_KEY': 'test-secret-staging',
+                'ALLOWED_HOSTS': 'example.com',
+                'RDS_DB_NAME': 'natyalms_staging_db',
+                'RDS_USERNAME': 'user',
+                'RDS_PASSWORD': 'pwd',
+                'RDS_HOSTNAME': 'staging-db.rds.amazonaws.com',
+                'RDS_PORT': '5432',
+                'RAZORPAY_KEY_ID': 'rzp_test_mock123',
+                'RAZORPAY_KEY_SECRET': 'test_secret',
+                'RAZORPAY_WEBHOOK_SECRET': 'test_webhook_sec',
+            }
+            with patch.dict(os.environ, staging_env, clear=True):
+                from core import settings as reloaded_settings
+                with self.assertRaises(ImproperlyConfigured) as ctx:
+                    importlib.reload(reloaded_settings)
+                self.assertIn("AWS_STORAGE_BUCKET_NAME must be set in production/staging", str(ctx.exception))
+
+    def test_staging_s3_storage_preserves_static_credentials_when_provided(self):
+        """
+        Verify that if static AWS keys are explicitly provided in staging,
+        they are preserved on AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.
+        """
+        import importlib
+        with patch('dotenv.load_dotenv'):
+            staging_env = {
+                'DEBUG': 'False',
+                'ENVIRONMENT': 'staging',
+                'SECRET_KEY': 'test-secret-staging',
+                'ALLOWED_HOSTS': 'example.com',
+                'RDS_DB_NAME': 'natyalms_staging_db',
+                'RDS_USERNAME': 'user',
+                'RDS_PASSWORD': 'pwd',
+                'RDS_HOSTNAME': 'staging-db.rds.amazonaws.com',
+                'RDS_PORT': '5432',
+                'RAZORPAY_KEY_ID': 'rzp_test_mock123',
+                'RAZORPAY_KEY_SECRET': 'test_secret',
+                'RAZORPAY_WEBHOOK_SECRET': 'test_webhook_sec',
+                'AWS_STORAGE_BUCKET_NAME': 'natyalms-staging-media-2026',
+                'AWS_ACCESS_KEY_ID': 'explicit_staging_key',
+                'AWS_SECRET_ACCESS_KEY': 'explicit_staging_secret',
+                'CELERY_BROKER_URL': 'redis://staging-redis:6379/0',
+                'CELERY_RESULT_BACKEND': 'redis://staging-redis:6379/0',
+            }
+            with patch.dict(os.environ, staging_env, clear=True):
+                from core import settings as reloaded_settings
+                importlib.reload(reloaded_settings)
+                self.assertEqual(reloaded_settings.AWS_ACCESS_KEY_ID, 'explicit_staging_key')
+                self.assertEqual(reloaded_settings.AWS_SECRET_ACCESS_KEY, 'explicit_staging_secret')
+                self.assertTrue(reloaded_settings.HAS_AWS_KEYS)
+
+
+class DirectS3ClientCredentialOmissionTests(TestCase):
+    """
+    Validates that direct S3 client instantiation passes credentials when explicit keys
+    are present, and strictly omits aws_access_key_id / aws_secret_access_key when absent,
+    allowing boto3's default credential provider chain (IAM role) to activate.
+    """
+
+    def test_recording_service_omits_credentials_when_absent(self):
+        with patch('courses.services.recording.boto3.client') as mock_boto:
+            with patch.object(settings, 'AWS_ACCESS_KEY_ID', None), patch.object(settings, 'AWS_SECRET_ACCESS_KEY', None):
+                ZoomRecordingService.get_s3_client()
+                mock_boto.assert_called_once()
+                kwargs = mock_boto.call_args.kwargs
+                self.assertNotIn('aws_access_key_id', kwargs)
+                self.assertNotIn('aws_secret_access_key', kwargs)
+                self.assertEqual(kwargs['region_name'], 'ap-south-1')
+
+    def test_recording_service_passes_credentials_when_present(self):
+        with patch('courses.services.recording.boto3.client') as mock_boto:
+            with patch.object(settings, 'AWS_ACCESS_KEY_ID', 'test-key'), patch.object(settings, 'AWS_SECRET_ACCESS_KEY', 'test-secret'):
+                ZoomRecordingService.get_s3_client()
+                mock_boto.assert_called_once()
+                kwargs = mock_boto.call_args.kwargs
+                self.assertEqual(kwargs.get('aws_access_key_id'), 'test-key')
+                self.assertEqual(kwargs.get('aws_secret_access_key'), 'test-secret')
+
+    def test_chat_presigned_url_omits_credentials_when_absent(self):
+        msg = MagicMock()
+        msg.attachment.name = 'chat/file.pdf'
+        msg.attachment_name = 'file.pdf'
+
+        with patch('chat.views.boto3.client') as mock_boto:
+            with patch.object(settings, 'AWS_STORAGE_BUCKET_NAME', 'natyalms-staging-media-2026'), \
+                 patch.object(settings, 'AWS_ACCESS_KEY_ID', None), \
+                 patch.object(settings, 'AWS_SECRET_ACCESS_KEY', None), \
+                 patch.object(settings, 'IS_STAGING', True):
+                get_attachment_presigned_url(msg)
+                mock_boto.assert_called_once()
+                kwargs = mock_boto.call_args.kwargs
+                self.assertNotIn('aws_access_key_id', kwargs)
+                self.assertNotIn('aws_secret_access_key', kwargs)
+
+    def test_chat_presigned_url_passes_credentials_when_present(self):
+        msg = MagicMock()
+        msg.attachment.name = 'chat/file.pdf'
+        msg.attachment_name = 'file.pdf'
+
+        with patch('chat.views.boto3.client') as mock_boto:
+            with patch.object(settings, 'AWS_STORAGE_BUCKET_NAME', 'natyalms-staging-media-2026'), \
+                 patch.object(settings, 'AWS_ACCESS_KEY_ID', 'test-key'), \
+                 patch.object(settings, 'AWS_SECRET_ACCESS_KEY', 'test-secret'), \
+                 patch.object(settings, 'IS_STAGING', True):
+                get_attachment_presigned_url(msg)
+                mock_boto.assert_called_once()
+                kwargs = mock_boto.call_args.kwargs
+                self.assertEqual(kwargs.get('aws_access_key_id'), 'test-key')
+                self.assertEqual(kwargs.get('aws_secret_access_key'), 'test-secret')
+
+    def test_lesson_upload_url_omits_credentials_when_absent(self):
+        request = MagicMock()
+        request.user = MagicMock(is_authenticated=True, is_superuser=True)
+        request.data = {'filename': 'lesson1.mp4'}
+
+        view = VideoLessonViewSet()
+        view.request = request
+
+        with patch('boto3.client') as mock_boto:
+            with patch.object(settings, 'AWS_STORAGE_BUCKET_NAME', 'natyalms-staging-media-2026'), \
+                 patch.object(settings, 'AWS_ACCESS_KEY_ID', None), \
+                 patch.object(settings, 'AWS_SECRET_ACCESS_KEY', None):
+                view.get_upload_url(request)
+                mock_boto.assert_called_once()
+                kwargs = mock_boto.call_args.kwargs
+                self.assertNotIn('aws_access_key_id', kwargs)
+                self.assertNotIn('aws_secret_access_key', kwargs)
+
+    def test_lesson_upload_url_passes_credentials_when_present(self):
+        request = MagicMock()
+        request.user = MagicMock(is_authenticated=True, is_superuser=True)
+        request.data = {'filename': 'lesson1.mp4'}
+
+        view = VideoLessonViewSet()
+        view.request = request
+
+        with patch('boto3.client') as mock_boto:
+            with patch.object(settings, 'AWS_STORAGE_BUCKET_NAME', 'natyalms-staging-media-2026'), \
+                 patch.object(settings, 'AWS_ACCESS_KEY_ID', 'prod-key'), \
+                 patch.object(settings, 'AWS_SECRET_ACCESS_KEY', 'prod-secret'):
+                view.get_upload_url(request)
+                mock_boto.assert_called_once()
+                kwargs = mock_boto.call_args.kwargs
+                self.assertEqual(kwargs.get('aws_access_key_id'), 'prod-key')
+                self.assertEqual(kwargs.get('aws_secret_access_key'), 'prod-secret')
