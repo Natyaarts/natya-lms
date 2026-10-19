@@ -4,15 +4,12 @@ on:
   push:
     branches:
       - 'staging/video-protection'
-    paths:
-      - 'backend/**'
-      - '.github/workflows/backend-deploy-staging.yml'
   workflow_dispatch:
     inputs:
       confirm_staging:
         description: 'Type DEPLOY-STAGING to confirm staging deployment'
         required: true
-        default: ''
+        default: 'DEPLOY-STAGING'
 
 permissions:
   id-token: write
