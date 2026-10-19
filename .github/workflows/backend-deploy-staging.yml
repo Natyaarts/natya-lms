@@ -1,4 +1,4 @@
-
+```yaml
 name: Deploy Backend to Staging (Isolated Environment)
 
 on:
@@ -103,7 +103,8 @@ jobs:
             core.info(`GitHub environment: ${payload.environment || 'not present'}`);
 
             const expectedIssuer = 'https://token.actions.githubusercontent.com';
-            const expectedSubject = 'repo:Natyaarts/natya-lms:environment:staging';
+            const expectedSubject = 'repo:Natyaarts@214949047/natya-lms@1310863272:environment:staging';
+
             const audienceMatches = Array.isArray(payload.aud)
               ? payload.aud.includes('sts.amazonaws.com')
               : payload.aud === 'sts.amazonaws.com';
@@ -285,3 +286,4 @@ jobs:
             --region "$REGION"
 
           echo "Staging deployment initiated."
+```
