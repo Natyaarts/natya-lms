@@ -261,7 +261,7 @@ jobs:
             exit 1
           fi
 
-          VERSION_LABEL="backend-staging-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          VERSION_LABEL="backend-staging-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           BUCKET=$(aws elasticbeanstalk create-storage-location \
             --region "$REGION" \
             --query 'S3Bucket' \
