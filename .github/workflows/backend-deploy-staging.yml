@@ -1,4 +1,3 @@
-```yaml
 name: Deploy Backend to Staging (Isolated Environment)
 
 on:
@@ -286,4 +285,4 @@ jobs:
             --region "$REGION"
 
           echo "Staging deployment initiated."
-```
+
