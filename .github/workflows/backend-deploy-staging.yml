@@ -19,7 +19,7 @@ jobs:
   deploy-staging:
     name: Deploy to Staging Elastic Beanstalk
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     environment: staging
 
     steps:
@@ -258,6 +258,15 @@ jobs:
             exit 1
           fi
 
+          ENV_ID=$(aws elasticbeanstalk describe-environments \
+            --environment-names "$EB_ENV" \
+            --region "$REGION" \
+            --query 'Environments[0].EnvironmentId' \
+            --output text)
+          STACK_NAME="awseb-${ENV_ID}-stack"
+          echo "Staging Environment ID: $ENV_ID"
+          echo "CloudFormation Stack Name: $STACK_NAME"
+
           VERSION_LABEL="backend-staging-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           BUCKET=$(aws elasticbeanstalk create-storage-location \
             --region "$REGION" \
@@ -265,21 +274,114 @@ jobs:
             --output text)
           S3_KEY="${VERSION_LABEL}.zip"
 
-          echo "Uploading staging package..."
+          echo "Uploading staging package to s3://${BUCKET}/${S3_KEY}..."
           aws s3 cp deploy-staging.zip "s3://${BUCKET}/${S3_KEY}" --region "$REGION"
 
-          echo "Creating staging application version..."
+          echo "Creating staging application version $VERSION_LABEL..."
           aws elasticbeanstalk create-application-version \
             --application-name "$EB_APP" \
             --version-label "$VERSION_LABEL" \
             --source-bundle "S3Bucket=${BUCKET},S3Key=${S3_KEY}" \
             --region "$REGION"
 
-          echo "Updating staging environment..."
+          echo "Updating staging environment to $VERSION_LABEL..."
           aws elasticbeanstalk update-environment \
             --environment-name "$EB_ENV" \
             --version-label "$VERSION_LABEL" \
             --region "$REGION"
 
-          echo "Staging deployment initiated."
+          echo "Waiting 20s for Elastic Beanstalk update to engage..."
+          sleep 20
+
+          echo "Monitoring Elastic Beanstalk environment update..."
+          DEPLOY_COMPLETE=false
+          for i in $(seq 1 45); do
+            ENV_INFO=$(aws elasticbeanstalk describe-environments \
+              --environment-names "$EB_ENV" \
+              --region "$REGION" \
+              --query 'Environments[0].[Status,Health,HealthStatus,VersionLabel]' \
+              --output json)
+
+            CURR_STATUS=$(echo "$ENV_INFO" | jq -r '.[0]')
+            CURR_HEALTH=$(echo "$ENV_INFO" | jq -r '.[1]')
+            CURR_HEALTH_STATUS=$(echo "$ENV_INFO" | jq -r '.[2]')
+            CURR_VERSION=$(echo "$ENV_INFO" | jq -r '.[3]')
+
+            echo "[$i/45] Status: $CURR_STATUS | Health: $CURR_HEALTH ($CURR_HEALTH_STATUS) | Running Version: $CURR_VERSION"
+
+            if [ "$CURR_STATUS" = "Ready" ]; then
+              DEPLOY_COMPLETE=true
+              break
+            fi
+
+            sleep 20
+          done
+
+          echo ""
+          echo "================================================================"
+          echo "LATEST ELASTIC BEANSTALK EVENTS (Last 25)"
+          echo "================================================================"
+          aws elasticbeanstalk describe-events \
+            --environment-name "$EB_ENV" \
+            --region "$REGION" \
+            --max-records 25 \
+            --query 'Events[*].[EventDate,Severity,Message]' \
+            --output table || true
+
+          echo ""
+          echo "================================================================"
+          echo "CLOUDFORMATION STACK DIAGNOSTICS"
+          echo "================================================================"
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --query 'Stacks[0].[StackName,StackStatus,StackStatusReason]' \
+            --output table || echo "Could not query describe-stacks for $STACK_NAME"
+
+          echo "Recent CloudFormation Events (Last 15):"
+          aws cloudformation describe-stack-events \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --query 'StackEvents[:15].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]' \
+            --output table || echo "Could not query describe-stack-events for $STACK_NAME"
+
+          echo ""
+          echo "================================================================"
+          echo "ELASTIC BEANSTALK S3 STORAGE BUCKET DIAGNOSTICS"
+          echo "================================================================"
+          echo "Storage Bucket: $BUCKET"
+          aws s3api get-bucket-location --bucket "$BUCKET" || true
+          aws s3api get-bucket-policy --bucket "$BUCKET" --output json || echo "No public bucket policy or get-bucket-policy denied."
+          aws s3api get-bucket-encryption --bucket "$BUCKET" || echo "No custom encryption or get-bucket-encryption denied."
+
+          echo ""
+          echo "================================================================"
+          echo "DEPLOYMENT VERIFICATION SUMMARY"
+          echo "================================================================"
+          FINAL_INFO=$(aws elasticbeanstalk describe-environments \
+            --environment-names "$EB_ENV" \
+            --region "$REGION" \
+            --query 'Environments[0].[Status,Health,HealthStatus,VersionLabel]' \
+            --output json)
+          FINAL_STATUS=$(echo "$FINAL_INFO" | jq -r '.[0]')
+          FINAL_HEALTH=$(echo "$FINAL_INFO" | jq -r '.[1]')
+          FINAL_HEALTH_STATUS=$(echo "$FINAL_INFO" | jq -r '.[2]')
+          FINAL_VERSION=$(echo "$FINAL_INFO" | jq -r '.[3]')
+
+          echo "Target Version:     $VERSION_LABEL"
+          echo "Running Version:    $FINAL_VERSION"
+          echo "Environment Status: $FINAL_STATUS"
+          echo "Environment Health: $FINAL_HEALTH ($FINAL_HEALTH_STATUS)"
+
+          if [ "$FINAL_STATUS" != "Ready" ]; then
+            echo "::error::Deployment failed: Environment did not return to Ready state (Current status: $FINAL_STATUS)."
+            exit 1
+          fi
+
+          if [ "$FINAL_VERSION" != "$VERSION_LABEL" ]; then
+            echo "::error::Deployment failed: Running version ($FINAL_VERSION) does not match deployed version ($VERSION_LABEL)."
+            exit 1
+          fi
+
+          echo "SUCCESS: Staging backend version $VERSION_LABEL is now actively running in $EB_ENV!"
 
