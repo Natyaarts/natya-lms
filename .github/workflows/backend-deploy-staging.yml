@@ -425,8 +425,8 @@ jobs:
               "  Resources count:  " + (($body.Resources | keys | length // 0) | tostring)
             ' 2>/dev/null || echo "  Could not parse TemplateBody as JSON."
 
-            echo "  Active template S3 / URL references (sanitized):"
-            echo "$CF_TMPL_OUT" | grep -oE '(s3://[^ "]+|https://[^ "]+s3[^ "]+)' | sed -E 's/(AWSAccessKeyId|Signature|token)=[^&[:space:]]*/\1=[REDACTED]/g' | sort -u | head -n 20 | sed 's/^/    /' || echo "    None found."
+            echo "  Active template S3 / URL references (query strings removed):"
+            echo "$CF_TMPL_OUT" | grep -oE '(s3://[^ "]+|https://[^ "]+)' | sed -E 's/[?].*$//' | sort -u | head -n 20 | sed 's/^/    /' || echo "    None found."
 
             echo "  Active template extension/runtime parameter keys:"
             echo "$CF_TMPL_OUT" | jq -r '
@@ -471,9 +471,8 @@ jobs:
                 "  ErrorCode:    \($detail.errorCode // "SUCCESS")\n" +
                 "  ErrorMessage: \($detail.errorMessage // "None")\n" +
                 "  RequestID:    \($detail.requestID // "None")\n" +
-                "  RequestParams:\($detail.requestParameters | tojson // "null")\n" +
                 "  StackName:    \($detail.requestParameters.stackName // $detail.requestParameters.StackName // "None")\n" +
-                "  TemplateURL:  \($detail.requestParameters.templateURL // $detail.requestParameters.TemplateURL // "None")\n" +
+                "  TemplateURL:  \((($detail.requestParameters.templateURL // $detail.requestParameters.TemplateURL // "None") | split("?")[0]))\n" +
                 "  RoleARN:      \($detail.requestParameters.roleARN // $detail.requestParameters.RoleARN // "None")\n" +
                 "----------------------------------------------------------------"
               '
@@ -684,10 +683,10 @@ jobs:
             if [ $MANIFEST_CP_EXIT -eq 0 ]; then
               echo "SUCCESS: Read manifest contents (caller session test):"
               echo "Note: A successful or failed read by the GitHub Actions caller only tests the deployment role; it does not prove whether CloudFormation or Elastic Beanstalk internal principals have access."
-              sed -E 's/(password|secret|token|key|credential)=[^&[:space:]]*/\1=[REDACTED]/gi' /tmp/manifest_inspect/manifest.txt | head -n 40
+              sed -E 's/[?][^ "]*//g' /tmp/manifest_inspect/manifest.txt | sed -E 's/(password|secret|token|key|credential)=[^&[:space:]]*/\1=[REDACTED]/gi' | head -n 40
               echo ""
-              echo "S3 / URL references in manifest (sanitized):"
-              grep -oE '(s3://[^ "]+|https://[^ "]+)' /tmp/manifest_inspect/manifest.txt | sed -E 's/(AWSAccessKeyId|Signature|token)=[^&[:space:]]*/\1=[REDACTED]/g' | sort -u || echo "  None found."
+              echo "S3 / URL references in manifest (query strings removed):"
+              grep -oE '(s3://[^ "]+|https://[^ "]+)' /tmp/manifest_inspect/manifest.txt | sed -E 's/[?].*$//' | sort -u || echo "  None found."
             else
               if echo "$MANIFEST_CP_OUT" | grep -qi "AccessDenied"; then
                 echo "AccessDenied: Caller role cannot read manifest 's3://${BUCKET}/${LATEST_MANIFEST_KEY}' (exit status: $MANIFEST_CP_EXIT)"
