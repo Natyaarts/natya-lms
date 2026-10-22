@@ -408,21 +408,25 @@ jobs:
           fi
 
           echo ""
+          echo ""
           echo "================================================================"
           echo "CLOUDTRAIL ERROR METADATA DIAGNOSTICS"
           echo "================================================================"
           LOOKUP_START=$(date -u -d '20 minutes ago' +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v-20M +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "$DEPLOY_START_TIME")
 
           echo "1. CloudTrail UpdateStack Events (Since $LOOKUP_START):"
-          if CT_UPDATE_JSON=$(aws cloudtrail lookup-events \
+          CT_UPDATE_OUT=$(aws cloudtrail lookup-events \
             --lookup-attributes AttributeKey=EventName,AttributeValue=UpdateStack \
             --start-time "$LOOKUP_START" \
             --region "$REGION" \
             --max-results 10 \
-            --output json 2>ct_update_err.log); then
-            CT_COUNT=$(echo "$CT_UPDATE_JSON" | jq '.Events | length' 2>/dev/null || echo "0")
+            --output json 2>&1)
+          CT_UPDATE_EXIT=$?
+
+          if [ $CT_UPDATE_EXIT -eq 0 ]; then
+            CT_COUNT=$(echo "$CT_UPDATE_OUT" | jq '.Events | length' 2>/dev/null || echo "0")
             if [ "$CT_COUNT" -gt 0 ]; then
-              echo "$CT_UPDATE_JSON" | jq -r '
+              echo "$CT_UPDATE_OUT" | jq -r '
                 .Events[] |
                 (.CloudTrailEvent | try fromjson catch {}) as $detail |
                 "Time: \(.EventTime // "unknown")\n" +
@@ -441,19 +445,22 @@ jobs:
               echo "No UpdateStack events recorded in CloudTrail since $LOOKUP_START."
             fi
           else
-            echo "CloudTrail UpdateStack lookup failed or unauthorized:"
-            cat ct_update_err.log
+            echo "CloudTrail UpdateStack lookup failed (exit status: $CT_UPDATE_EXIT):"
+            echo "$CT_UPDATE_OUT"
           fi
 
           echo "2. CloudTrail AccessDenied / Error Events (Since $LOOKUP_START):"
-          if CT_ERR_JSON=$(aws cloudtrail lookup-events \
+          CT_ERR_OUT=$(aws cloudtrail lookup-events \
             --start-time "$LOOKUP_START" \
             --region "$REGION" \
             --max-results 25 \
-            --output json 2>ct_err_log.txt); then
-            ERROR_COUNT=$(echo "$CT_ERR_JSON" | jq '[.Events[] | (.CloudTrailEvent | try fromjson catch {}) | select(.errorCode != null)] | length' 2>/dev/null || echo "0")
+            --output json 2>&1)
+          CT_ERR_EXIT=$?
+
+          if [ $CT_ERR_EXIT -eq 0 ]; then
+            ERROR_COUNT=$(echo "$CT_ERR_OUT" | jq '[.Events[] | (.CloudTrailEvent | try fromjson catch {}) | select(.errorCode != null)] | length' 2>/dev/null || echo "0")
             if [ "$ERROR_COUNT" -gt 0 ]; then
-              echo "$CT_ERR_JSON" | jq -r '
+              echo "$CT_ERR_OUT" | jq -r '
                 .Events[] |
                 (.CloudTrailEvent | try fromjson catch {}) as $detail |
                 select($detail.errorCode != null) |
@@ -471,24 +478,27 @@ jobs:
               echo "No AccessDenied or error events found in CloudTrail since $LOOKUP_START."
             fi
           else
-            echo "CloudTrail general error lookup failed or unauthorized:"
-            cat ct_err_log.txt
+            echo "CloudTrail general error lookup failed (exit status: $CT_ERR_EXIT):"
+            echo "$CT_ERR_OUT"
           fi
 
           echo ""
           echo "================================================================"
           echo "ELASTIC BEANSTALK ENVIRONMENT CONFIGURATION SETTINGS"
           echo "================================================================"
-          if EB_CFG_OUT=$(aws elasticbeanstalk describe-configuration-settings \
+          EB_CFG_OUT=$(aws elasticbeanstalk describe-configuration-settings \
             --application-name "$EB_APP" \
             --environment-name "$EB_ENV" \
             --region "$REGION" \
             --query 'ConfigurationSettings[0].OptionSettings[?Namespace==`aws:elasticbeanstalk:environment` || Namespace==`aws:autoscaling:launchconfiguration` || Namespace==`aws:elasticbeanstalk:container:python`].[Namespace,OptionName,Value]' \
-            --output table 2>eb_cfg_err.log); then
+            --output table 2>&1)
+          EB_CFG_EXIT=$?
+
+          if [ $EB_CFG_EXIT -eq 0 ]; then
             echo "$EB_CFG_OUT"
           else
-            echo "elasticbeanstalk:DescribeConfigurationSettings query failed or unauthorized:"
-            cat eb_cfg_err.log
+            echo "elasticbeanstalk:DescribeConfigurationSettings query failed (exit status: $EB_CFG_EXIT):"
+            echo "$EB_CFG_OUT"
           fi
 
           echo ""
@@ -500,60 +510,70 @@ jobs:
           aws s3api get-bucket-location --bucket "$BUCKET" 2>&1 || true
 
           echo "2. Bucket Policy:"
-          if BUCKET_POL=$(aws s3api get-bucket-policy --bucket "$BUCKET" --output json 2>bpol_err.log); then
-            echo "$BUCKET_POL"
+          BPOL_OUT=$(aws s3api get-bucket-policy --bucket "$BUCKET" --output json 2>&1)
+          BPOL_EXIT=$?
+          if [ $BPOL_EXIT -eq 0 ]; then
+            echo "$BPOL_OUT"
           else
-            echo "Could not retrieve bucket policy:"
-            cat bpol_err.log
+            echo "Could not retrieve bucket policy (exit status: $BPOL_EXIT):"
+            echo "$BPOL_OUT"
           fi
 
           echo "3. Bucket Encryption:"
-          if BUCKET_ENC=$(aws s3api get-bucket-encryption --bucket "$BUCKET" 2>benc_err.log); then
-            echo "$BUCKET_ENC"
+          BENC_OUT=$(aws s3api get-bucket-encryption --bucket "$BUCKET" 2>&1)
+          BENC_EXIT=$?
+          if [ $BENC_EXIT -eq 0 ]; then
+            echo "$BENC_OUT"
           else
-            echo "Could not retrieve bucket encryption:"
-            cat benc_err.log
+            echo "Could not retrieve bucket encryption (exit status: $BENC_EXIT):"
+            echo "$BENC_OUT"
           fi
 
           echo "4. S3 Template Inspection:"
-          echo "--- Checking environment template prefix: s3://${BUCKET}/resources/environments/templates/${ENV_ID}/ ---"
-          if S3_ENV_TEMPLATES=$(aws s3 ls "s3://${BUCKET}/resources/environments/templates/${ENV_ID}/" --region "$REGION" 2>s3_env_tmpl_err.log); then
-            if [ -n "$S3_ENV_TEMPLATES" ]; then
-              echo "FOUND TEMPLATE OBJECT(S) for ${ENV_ID}:"
-              echo "$S3_ENV_TEMPLATES"
-            else
-              echo "PREFIX EXISTS AND ACCESSIBLE, BUT IS CURRENTLY EMPTY (0 objects under resources/environments/templates/${ENV_ID}/)."
-            fi
-          else
-            echo "FAILED TO LIST prefix resources/environments/templates/${ENV_ID}/:"
-            cat s3_env_tmpl_err.log
-          fi
+          inspect_s3_prefix() {
+            local prefix="$1"
+            local label="$2"
+            echo "--- $label: s3://${BUCKET}/${prefix} ---"
 
-          echo "--- Checking parent template prefix: s3://${BUCKET}/resources/environments/templates/ ---"
-          if S3_PARENT_TEMPLATES=$(aws s3 ls "s3://${BUCKET}/resources/environments/templates/" --region "$REGION" 2>s3_parent_tmpl_err.log); then
-            if [ -n "$S3_PARENT_TEMPLATES" ]; then
-              echo "FOUND OBJECTS under resources/environments/templates/:"
-              echo "$S3_PARENT_TEMPLATES"
-            else
-              echo "PREFIX EXISTS AND ACCESSIBLE, BUT IS CURRENTLY EMPTY (0 objects under resources/environments/templates/)."
-            fi
-          else
-            echo "FAILED TO LIST prefix resources/environments/templates/:"
-            cat s3_parent_tmpl_err.log
-          fi
+            local api_out
+            local api_exit
+            api_out=$(aws s3api list-objects-v2 \
+              --bucket "$BUCKET" \
+              --prefix "$prefix" \
+              --max-items 20 \
+              --region "$REGION" \
+              --output json 2>&1)
+            api_exit=$?
 
-          echo "--- Checking root environments prefix: s3://${BUCKET}/resources/environments/ ---"
-          if S3_ENV_ROOT=$(aws s3 ls "s3://${BUCKET}/resources/environments/" --region "$REGION" 2>s3_env_root_err.log); then
-            if [ -n "$S3_ENV_ROOT" ]; then
-              echo "FOUND OBJECTS under resources/environments/:"
-              echo "$S3_ENV_ROOT"
+            if [ $api_exit -eq 0 ]; then
+              local key_count
+              key_count=$(echo "$api_out" | jq -r '.KeyCount // (.Contents | length) // 0' 2>/dev/null || echo "0")
+              if [ "$key_count" -gt 0 ]; then
+                echo "SUCCESS: Found $key_count object(s) under $prefix:"
+                echo "$api_out" | jq -r '.Contents[]? | "  \(.LastModified) | \(.Size) bytes | \(.Key)"'
+              else
+                echo "SUCCESS: Prefix is accessible and exists, but currently contains 0 objects (KeyCount: 0)."
+                echo "Note: An empty prefix indicates no template objects have been uploaded here yet."
+              fi
             else
-              echo "PREFIX EXISTS AND ACCESSIBLE, BUT IS CURRENTLY EMPTY (0 objects under resources/environments/)."
+              echo "FAILED (exit status: $api_exit): Unable to list objects via s3api:"
+              echo "$api_out"
             fi
-          else
-            echo "FAILED TO LIST prefix resources/environments/:"
-            cat s3_env_root_err.log
-          fi
+
+            local ls_out
+            local ls_exit
+            ls_out=$(aws s3 ls "s3://${BUCKET}/${prefix}" --region "$REGION" 2>&1)
+            ls_exit=$?
+            if [ $ls_exit -ne 0 ]; then
+              echo "aws s3 ls exited with status $ls_exit:"
+              echo "$ls_out"
+            fi
+            echo ""
+          }
+
+          inspect_s3_prefix "resources/environments/templates/${ENV_ID}/" "Checking environment-specific template prefix"
+          inspect_s3_prefix "resources/environments/templates/" "Checking parent template prefix"
+          inspect_s3_prefix "resources/environments/" "Checking root environments prefix"
 
           echo ""
           echo "================================================================"
