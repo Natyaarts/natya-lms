@@ -407,6 +407,41 @@ jobs:
             cat cf_res_err.log
           fi
 
+          echo "Active CloudFormation Stack Template Summary (Non-sensitive):"
+          CF_TMPL_OUT=""
+          CF_TMPL_EXIT=0
+          CF_TMPL_OUT=$(aws cloudformation get-template \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --output json 2>&1) || CF_TMPL_EXIT=$?
+
+          if [ $CF_TMPL_EXIT -eq 0 ]; then
+            echo "SUCCESS: Retrieved active stack template for $STACK_NAME."
+            echo "Note: This is the currently ACTIVE stack template (from previous successful deploy), not the rejected update template."
+            echo "$CF_TMPL_OUT" | jq -r '
+              (.TemplateBody | try fromjson catch {}) as $body |
+              "  Description:      " + ($body.Description // "None") + "\n" +
+              "  Parameters count: " + (($body.Parameters | keys | length // 0) | tostring) + "\n" +
+              "  Resources count:  " + (($body.Resources | keys | length // 0) | tostring)
+            ' 2>/dev/null || echo "  Could not parse TemplateBody as JSON."
+
+            echo "  Active template S3 / URL references (sanitized):"
+            echo "$CF_TMPL_OUT" | grep -oE '(s3://[^ "]+|https://[^ "]+s3[^ "]+)' | sed -E 's/(AWSAccessKeyId|Signature|token)=[^&[:space:]]*/\1=[REDACTED]/g' | sort -u | head -n 20 | sed 's/^/    /' || echo "    None found."
+
+            echo "  Active template extension/runtime parameter keys:"
+            echo "$CF_TMPL_OUT" | jq -r '
+              (.TemplateBody | try fromjson catch {}) as $body |
+              $body.Parameters | keys[] | select(test("Extension|Runtime|Version|Bundle|Source|Template"; "i"))
+            ' 2>/dev/null | sed 's/^/    /' || true
+          else
+            if echo "$CF_TMPL_OUT" | grep -qi "AccessDenied"; then
+              echo "AccessDenied: Caller is not authorized to call cloudformation:GetTemplate on $STACK_NAME (exit status: $CF_TMPL_EXIT)"
+            else
+              echo "Could not query get-template for $STACK_NAME (exit status: $CF_TMPL_EXIT):"
+              echo "$CF_TMPL_OUT"
+            fi
+          fi
+
           echo ""
           echo ""
           echo "================================================================"
@@ -610,19 +645,61 @@ jobs:
           fi
           echo ""
 
-          # B. Resources Root (with reasonable limit)
+          # B. Uninspected Application-Named Root Prefix
+          inspect_s3_prefix "${EB_APP}/" "Application-named root prefix (${EB_APP}/)" 20
+
+          # C. Resources Root (with reasonable limit)
           inspect_s3_prefix "resources/" "Root resources prefix (up to 30 items)" 30
 
-          # C. Resources Templates Root
+          # D. Resources Templates Root
           inspect_s3_prefix "resources/templates/" "Application & shared templates prefix" 20
 
-          # D. Resources Environments Root
+          # E. Resources Environments Root
           inspect_s3_prefix "resources/environments/" "Environment assets & logs root prefix" 20
 
-          # E. Specific Template & Environment Sub-Prefixes
+          # F. Specific Template & Environment Sub-Prefixes
           inspect_s3_prefix "resources/templates/${EB_APP}/" "Application-specific template prefix" 20
           inspect_s3_prefix "resources/environments/templates/" "Environment templates parent prefix" 20
           inspect_s3_prefix "resources/environments/templates/${ENV_ID}/" "Environment-specific template prefix (${ENV_ID})" 20
+
+          # G. Environment Runtime Versions & Latest Manifest Inspection
+          inspect_s3_prefix "resources/environments/${ENV_ID}/_runtime/versions/" "Environment runtime versions prefix" 20
+
+          echo "--- Inspecting Latest Runtime Version Manifest ---"
+          LATEST_MANIFEST_KEY=""
+          LATEST_MANIFEST_EXIT=0
+          LATEST_MANIFEST_KEY=$(aws s3api list-objects-v2 \
+            --bucket "$BUCKET" \
+            --prefix "resources/environments/${ENV_ID}/_runtime/versions/" \
+            --query 'reverse(sort_by(Contents, &LastModified))[0].Key' \
+            --region "$REGION" \
+            --output text 2>&1) || LATEST_MANIFEST_EXIT=$?
+
+          if [ $LATEST_MANIFEST_EXIT -eq 0 ] && [ -n "$LATEST_MANIFEST_KEY" ] && [ "$LATEST_MANIFEST_KEY" != "None" ]; then
+            echo "Latest manifest object: s3://${BUCKET}/${LATEST_MANIFEST_KEY}"
+            mkdir -p /tmp/manifest_inspect
+            MANIFEST_CP_OUT=""
+            MANIFEST_CP_EXIT=0
+            MANIFEST_CP_OUT=$(aws s3 cp "s3://${BUCKET}/${LATEST_MANIFEST_KEY}" /tmp/manifest_inspect/manifest.txt --region "$REGION" 2>&1) || MANIFEST_CP_EXIT=$?
+            if [ $MANIFEST_CP_EXIT -eq 0 ]; then
+              echo "SUCCESS: Read manifest contents (caller session test):"
+              echo "Note: A successful or failed read by the GitHub Actions caller only tests the deployment role; it does not prove whether CloudFormation or Elastic Beanstalk internal principals have access."
+              sed -E 's/(password|secret|token|key|credential)=[^&[:space:]]*/\1=[REDACTED]/gi' /tmp/manifest_inspect/manifest.txt | head -n 40
+              echo ""
+              echo "S3 / URL references in manifest (sanitized):"
+              grep -oE '(s3://[^ "]+|https://[^ "]+)' /tmp/manifest_inspect/manifest.txt | sed -E 's/(AWSAccessKeyId|Signature|token)=[^&[:space:]]*/\1=[REDACTED]/g' | sort -u || echo "  None found."
+            else
+              if echo "$MANIFEST_CP_OUT" | grep -qi "AccessDenied"; then
+                echo "AccessDenied: Caller role cannot read manifest 's3://${BUCKET}/${LATEST_MANIFEST_KEY}' (exit status: $MANIFEST_CP_EXIT)"
+              else
+                echo "FAILED to copy manifest (exit status: $MANIFEST_CP_EXIT): $MANIFEST_CP_OUT"
+              fi
+            fi
+            rm -rf /tmp/manifest_inspect
+          else
+            echo "No manifest objects found or query failed (exit status: $LATEST_MANIFEST_EXIT): $LATEST_MANIFEST_KEY"
+          fi
+          echo ""
 
           echo ""
           echo "================================================================"
