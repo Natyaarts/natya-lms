@@ -187,7 +187,9 @@ jobs:
             -x "*/__pycache__/*" \
             -x "*.pyc" \
             -x "static/*" \
-            -x "*.sqlite3"
+            -x "*.sqlite3" \
+            -x "*.zip" \
+            -x "*.mp4"
 
       # STEP 7: CONFIGURE STAGING S3 CORS
 
@@ -284,7 +286,8 @@ jobs:
             --source-bundle "S3Bucket=${BUCKET},S3Key=${S3_KEY}" \
             --region "$REGION"
 
-          echo "Updating staging environment to $VERSION_LABEL..."
+          DEPLOY_START_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "Updating staging environment to $VERSION_LABEL at $DEPLOY_START_TIME..."
           aws elasticbeanstalk update-environment \
             --environment-name "$EB_ENV" \
             --version-label "$VERSION_LABEL" \
@@ -319,40 +322,99 @@ jobs:
 
           echo ""
           echo "================================================================"
-          echo "LATEST ELASTIC BEANSTALK EVENTS (Last 25)"
+          echo "LATEST ELASTIC BEANSTALK EVENTS & VERSION DIAGNOSTICS"
           echo "================================================================"
+          echo "--- Environment Events (Since Deployment Start: $DEPLOY_START_TIME) ---"
+          aws elasticbeanstalk describe-events \
+            --environment-name "$EB_ENV" \
+            --start-time "$DEPLOY_START_TIME" \
+            --region "$REGION" \
+            --max-records 30 \
+            --output json 2>&1 | jq -r '.Events[]? | "\(.EventDate) [\(.Severity)] \(.Message)"' || true
+
+          echo "--- Recent Environment Events (All, Last 20) ---"
           aws elasticbeanstalk describe-events \
             --environment-name "$EB_ENV" \
             --region "$REGION" \
-            --max-records 25 \
-            --query 'Events[*].[EventDate,Severity,Message]' \
-            --output table || true
+            --max-records 20 \
+            --output json 2>&1 | jq -r '.Events[]? | "\(.EventDate) [\(.Severity)] \(.Message)"' || true
+
+          echo "--- Application Version Status ($VERSION_LABEL) ---"
+          aws elasticbeanstalk describe-application-versions \
+            --application-name "$EB_APP" \
+            --version-labels "$VERSION_LABEL" \
+            --region "$REGION" \
+            --output json 2>&1 | jq -r '.ApplicationVersions[]? | "Version: \(.VersionLabel) | Status: \(.Status) | Created: \(.DateCreated) | S3: \(.SourceBundle.S3Bucket)/\(.SourceBundle.S3Key)"' || true
 
           echo ""
           echo "================================================================"
           echo "CLOUDFORMATION STACK DIAGNOSTICS"
           echo "================================================================"
+          echo "Stack Status:"
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$REGION" \
             --query 'Stacks[0].[StackName,StackStatus,StackStatusReason]' \
-            --output table || echo "Could not query describe-stacks for $STACK_NAME"
+            --output table 2>&1 || echo "Could not query describe-stacks for $STACK_NAME"
 
-          echo "Recent CloudFormation Events (Last 15):"
+          echo "Recent CloudFormation Stack Events (Last 20):"
           aws cloudformation describe-stack-events \
             --stack-name "$STACK_NAME" \
             --region "$REGION" \
-            --query 'StackEvents[:15].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]' \
-            --output table || echo "Could not query describe-stack-events for $STACK_NAME"
+            --query 'StackEvents[:20].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]' \
+            --output table 2>&1 || echo "Could not query describe-stack-events for $STACK_NAME"
+
+          echo "CloudFormation Stack Resources:"
+          aws cloudformation describe-stack-resources \
+            --stack-name "$STACK_NAME" \
+            --region "$REGION" \
+            --query 'StackResources[:20].[LogicalResourceId,ResourceType,ResourceStatus]' \
+            --output table 2>&1 || echo "Could not query describe-stack-resources for $STACK_NAME"
+
+          echo ""
+          echo "================================================================"
+          echo "CLOUDTRAIL ERROR METADATA DIAGNOSTICS"
+          echo "================================================================"
+          LOOKUP_START=$(date -u -d '15 minutes ago' +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v-15M +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "$DEPLOY_START_TIME")
+
+          echo "1. CloudTrail UpdateStack Events (Since $LOOKUP_START):"
+          aws cloudtrail lookup-events \
+            --lookup-attributes AttributeKey=EventName,AttributeValue=UpdateStack \
+            --start-time "$LOOKUP_START" \
+            --region "$REGION" \
+            --max-results 5 \
+            --output json 2>&1 | jq -r '.Events[]? | "\(.EventTime) | \(.EventName) | User: \(.Username) | ErrorCode: \(.CloudTrailEvent | fromjson | .errorCode // "none") | Message: \(.CloudTrailEvent | fromjson | .errorMessage // "none")"' || echo "Could not lookup UpdateStack events in CloudTrail (missing permission or no events)."
+
+          echo "2. CloudTrail AccessDenied / Error Events (Since $LOOKUP_START):"
+          aws cloudtrail lookup-events \
+            --start-time "$LOOKUP_START" \
+            --region "$REGION" \
+            --max-results 20 \
+            --output json 2>&1 | jq -r '.Events[]? | select(.CloudTrailEvent | fromjson | .errorCode? != null) | "\(.EventTime) | \(.EventName) | User: \(.Username) | ErrorCode: \(.CloudTrailEvent | fromjson | .errorCode) | Message: \(.CloudTrailEvent | fromjson | .errorMessage)"' || echo "Could not lookup general error events in CloudTrail."
+
+          echo ""
+          echo "================================================================"
+          echo "ELASTIC BEANSTALK ENVIRONMENT CONFIGURATION SETTINGS"
+          echo "================================================================"
+          aws elasticbeanstalk describe-configuration-settings \
+            --application-name "$EB_APP" \
+            --environment-name "$EB_ENV" \
+            --region "$REGION" \
+            --query 'ConfigurationSettings[0].OptionSettings[?Namespace==`aws:elasticbeanstalk:environment` || Namespace==`aws:autoscaling:launchconfiguration` || Namespace==`aws:elasticbeanstalk:container:python`].[Namespace,OptionName,Value]' \
+            --output table 2>&1 || echo "Could not query describe-configuration-settings."
 
           echo ""
           echo "================================================================"
           echo "ELASTIC BEANSTALK S3 STORAGE BUCKET DIAGNOSTICS"
           echo "================================================================"
           echo "Storage Bucket: $BUCKET"
-          aws s3api get-bucket-location --bucket "$BUCKET" || true
-          aws s3api get-bucket-policy --bucket "$BUCKET" --output json || echo "No public bucket policy or get-bucket-policy denied."
-          aws s3api get-bucket-encryption --bucket "$BUCKET" || echo "No custom encryption or get-bucket-encryption denied."
+          aws s3api get-bucket-location --bucket "$BUCKET" 2>&1 || true
+          aws s3api get-bucket-policy --bucket "$BUCKET" --output json 2>&1 || echo "No public bucket policy or get-bucket-policy denied."
+          aws s3api get-bucket-encryption --bucket "$BUCKET" 2>&1 || echo "No custom encryption or get-bucket-encryption denied."
+
+          echo "Checking S3 templates prefix for environment $ENV_ID:"
+          aws s3 ls "s3://${BUCKET}/resources/environments/templates/${ENV_ID}/" --region "$REGION" 2>&1 || echo "Could not list templates for ${ENV_ID} (path may not exist or access denied)."
+          aws s3 ls "s3://${BUCKET}/resources/environments/" --region "$REGION" 2>&1 || echo "Could not list resources/environments/ prefix."
 
           echo ""
           echo "================================================================"
