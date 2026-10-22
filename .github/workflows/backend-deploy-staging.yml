@@ -321,100 +321,239 @@ jobs:
           done
 
           echo ""
+          echo ""
           echo "================================================================"
           echo "LATEST ELASTIC BEANSTALK EVENTS & VERSION DIAGNOSTICS"
           echo "================================================================"
           echo "--- Environment Events (Since Deployment Start: $DEPLOY_START_TIME) ---"
-          aws elasticbeanstalk describe-events \
+          if EB_START_EVENTS=$(aws elasticbeanstalk describe-events \
             --environment-name "$EB_ENV" \
             --start-time "$DEPLOY_START_TIME" \
             --region "$REGION" \
             --max-records 30 \
-            --output json 2>&1 | jq -r '.Events[]? | "\(.EventDate) [\(.Severity)] \(.Message)"' || true
+            --output json 2>eb_start_err.log); then
+            EVENT_COUNT=$(echo "$EB_START_EVENTS" | jq '.Events | length' 2>/dev/null || echo "0")
+            if [ "$EVENT_COUNT" -gt 0 ]; then
+              echo "$EB_START_EVENTS" | jq -r '.Events[]? | "\(.EventDate) [\(.Severity)] \(.Message)"'
+            else
+              echo "No events recorded since deployment start ($DEPLOY_START_TIME)."
+            fi
+          else
+            echo "Failed to query environment events since start:"
+            cat eb_start_err.log
+          fi
 
           echo "--- Recent Environment Events (All, Last 20) ---"
-          aws elasticbeanstalk describe-events \
+          if EB_RECENT_EVENTS=$(aws elasticbeanstalk describe-events \
             --environment-name "$EB_ENV" \
             --region "$REGION" \
             --max-records 20 \
-            --output json 2>&1 | jq -r '.Events[]? | "\(.EventDate) [\(.Severity)] \(.Message)"' || true
+            --output json 2>eb_recent_err.log); then
+            echo "$EB_RECENT_EVENTS" | jq -r '.Events[]? | "\(.EventDate) [\(.Severity)] \(.Message)"'
+          else
+            echo "Failed to query recent environment events:"
+            cat eb_recent_err.log
+          fi
 
           echo "--- Application Version Status ($VERSION_LABEL) ---"
-          aws elasticbeanstalk describe-application-versions \
+          if EB_VER_OUT=$(aws elasticbeanstalk describe-application-versions \
             --application-name "$EB_APP" \
             --version-labels "$VERSION_LABEL" \
             --region "$REGION" \
-            --output json 2>&1 | jq -r '.ApplicationVersions[]? | "Version: \(.VersionLabel) | Status: \(.Status) | Created: \(.DateCreated) | S3: \(.SourceBundle.S3Bucket)/\(.SourceBundle.S3Key)"' || true
+            --output json 2>eb_ver_err.log); then
+            echo "$EB_VER_OUT" | jq -r '.ApplicationVersions[]? | "Version: \(.VersionLabel) | Status: \(.Status) | Created: \(.DateCreated) | S3: \(.SourceBundle.S3Bucket)/\(.SourceBundle.S3Key)"'
+          else
+            echo "Failed to query application version status:"
+            cat eb_ver_err.log
+          fi
 
           echo ""
           echo "================================================================"
           echo "CLOUDFORMATION STACK DIAGNOSTICS"
           echo "================================================================"
           echo "Stack Status:"
-          aws cloudformation describe-stacks \
+          if CF_STATUS=$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$REGION" \
             --query 'Stacks[0].[StackName,StackStatus,StackStatusReason]' \
-            --output table 2>&1 || echo "Could not query describe-stacks for $STACK_NAME"
+            --output table 2>cf_status_err.log); then
+            echo "$CF_STATUS"
+          else
+            echo "Could not query describe-stacks for $STACK_NAME:"
+            cat cf_status_err.log
+          fi
 
           echo "Recent CloudFormation Stack Events (Last 20):"
-          aws cloudformation describe-stack-events \
+          if CF_EVENTS=$(aws cloudformation describe-stack-events \
             --stack-name "$STACK_NAME" \
             --region "$REGION" \
             --query 'StackEvents[:20].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]' \
-            --output table 2>&1 || echo "Could not query describe-stack-events for $STACK_NAME"
+            --output table 2>cf_events_err.log); then
+            echo "$CF_EVENTS"
+          else
+            echo "Could not query describe-stack-events for $STACK_NAME:"
+            cat cf_events_err.log
+          fi
 
           echo "CloudFormation Stack Resources:"
-          aws cloudformation describe-stack-resources \
+          if CF_RES=$(aws cloudformation describe-stack-resources \
             --stack-name "$STACK_NAME" \
             --region "$REGION" \
             --query 'StackResources[:20].[LogicalResourceId,ResourceType,ResourceStatus]' \
-            --output table 2>&1 || echo "Could not query describe-stack-resources for $STACK_NAME"
+            --output table 2>cf_res_err.log); then
+            echo "$CF_RES"
+          else
+            echo "Could not query describe-stack-resources for $STACK_NAME:"
+            cat cf_res_err.log
+          fi
 
           echo ""
           echo "================================================================"
           echo "CLOUDTRAIL ERROR METADATA DIAGNOSTICS"
           echo "================================================================"
-          LOOKUP_START=$(date -u -d '15 minutes ago' +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v-15M +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "$DEPLOY_START_TIME")
+          LOOKUP_START=$(date -u -d '20 minutes ago' +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -v-20M +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "$DEPLOY_START_TIME")
 
           echo "1. CloudTrail UpdateStack Events (Since $LOOKUP_START):"
-          aws cloudtrail lookup-events \
+          if CT_UPDATE_JSON=$(aws cloudtrail lookup-events \
             --lookup-attributes AttributeKey=EventName,AttributeValue=UpdateStack \
             --start-time "$LOOKUP_START" \
             --region "$REGION" \
-            --max-results 5 \
-            --output json 2>&1 | jq -r '.Events[]? | "\(.EventTime) | \(.EventName) | User: \(.Username) | ErrorCode: \(.CloudTrailEvent | fromjson | .errorCode // "none") | Message: \(.CloudTrailEvent | fromjson | .errorMessage // "none")"' || echo "Could not lookup UpdateStack events in CloudTrail (missing permission or no events)."
+            --max-results 10 \
+            --output json 2>ct_update_err.log); then
+            CT_COUNT=$(echo "$CT_UPDATE_JSON" | jq '.Events | length' 2>/dev/null || echo "0")
+            if [ "$CT_COUNT" -gt 0 ]; then
+              echo "$CT_UPDATE_JSON" | jq -r '
+                .Events[] |
+                (.CloudTrailEvent | try fromjson catch {}) as $detail |
+                "Time: \(.EventTime // "unknown")\n" +
+                "  Event:        \(.EventName // "UpdateStack")\n" +
+                "  User/Role:    \($detail.userIdentity.arn // .Username // "unknown")\n" +
+                "  InvokedBy:    \($detail.invokedBy // "direct")\n" +
+                "  ErrorCode:    \($detail.errorCode // "SUCCESS")\n" +
+                "  ErrorMessage: \($detail.errorMessage // "None")\n" +
+                "  RequestID:    \($detail.requestID // "None")\n" +
+                "  StackName:    \($detail.requestParameters.stackName // "None")\n" +
+                "  TemplateURL:  \($detail.requestParameters.templateURL // "None")\n" +
+                "  RoleARN:      \($detail.requestParameters.roleARN // "None")\n" +
+                "----------------------------------------------------------------"
+              '
+            else
+              echo "No UpdateStack events recorded in CloudTrail since $LOOKUP_START."
+            fi
+          else
+            echo "CloudTrail UpdateStack lookup failed or unauthorized:"
+            cat ct_update_err.log
+          fi
 
           echo "2. CloudTrail AccessDenied / Error Events (Since $LOOKUP_START):"
-          aws cloudtrail lookup-events \
+          if CT_ERR_JSON=$(aws cloudtrail lookup-events \
             --start-time "$LOOKUP_START" \
             --region "$REGION" \
-            --max-results 20 \
-            --output json 2>&1 | jq -r '.Events[]? | select(.CloudTrailEvent | fromjson | .errorCode? != null) | "\(.EventTime) | \(.EventName) | User: \(.Username) | ErrorCode: \(.CloudTrailEvent | fromjson | .errorCode) | Message: \(.CloudTrailEvent | fromjson | .errorMessage)"' || echo "Could not lookup general error events in CloudTrail."
+            --max-results 25 \
+            --output json 2>ct_err_log.txt); then
+            ERROR_COUNT=$(echo "$CT_ERR_JSON" | jq '[.Events[] | (.CloudTrailEvent | try fromjson catch {}) | select(.errorCode != null)] | length' 2>/dev/null || echo "0")
+            if [ "$ERROR_COUNT" -gt 0 ]; then
+              echo "$CT_ERR_JSON" | jq -r '
+                .Events[] |
+                (.CloudTrailEvent | try fromjson catch {}) as $detail |
+                select($detail.errorCode != null) |
+                "Time: \(.EventTime // "unknown")\n" +
+                "  Event:        \(.EventName // "unknown")\n" +
+                "  Source:       \($detail.eventSource // "unknown")\n" +
+                "  User/Role:    \($detail.userIdentity.arn // .Username // "unknown")\n" +
+                "  InvokedBy:    \($detail.invokedBy // "direct")\n" +
+                "  ErrorCode:    \($detail.errorCode)\n" +
+                "  ErrorMessage: \($detail.errorMessage // "None")\n" +
+                "  RequestID:    \($detail.requestID // "None")\n" +
+                "----------------------------------------------------------------"
+              '
+            else
+              echo "No AccessDenied or error events found in CloudTrail since $LOOKUP_START."
+            fi
+          else
+            echo "CloudTrail general error lookup failed or unauthorized:"
+            cat ct_err_log.txt
+          fi
 
           echo ""
           echo "================================================================"
           echo "ELASTIC BEANSTALK ENVIRONMENT CONFIGURATION SETTINGS"
           echo "================================================================"
-          aws elasticbeanstalk describe-configuration-settings \
+          if EB_CFG_OUT=$(aws elasticbeanstalk describe-configuration-settings \
             --application-name "$EB_APP" \
             --environment-name "$EB_ENV" \
             --region "$REGION" \
             --query 'ConfigurationSettings[0].OptionSettings[?Namespace==`aws:elasticbeanstalk:environment` || Namespace==`aws:autoscaling:launchconfiguration` || Namespace==`aws:elasticbeanstalk:container:python`].[Namespace,OptionName,Value]' \
-            --output table 2>&1 || echo "Could not query describe-configuration-settings."
+            --output table 2>eb_cfg_err.log); then
+            echo "$EB_CFG_OUT"
+          else
+            echo "elasticbeanstalk:DescribeConfigurationSettings query failed or unauthorized:"
+            cat eb_cfg_err.log
+          fi
 
           echo ""
           echo "================================================================"
           echo "ELASTIC BEANSTALK S3 STORAGE BUCKET DIAGNOSTICS"
           echo "================================================================"
           echo "Storage Bucket: $BUCKET"
+          echo "1. Bucket Location:"
           aws s3api get-bucket-location --bucket "$BUCKET" 2>&1 || true
-          aws s3api get-bucket-policy --bucket "$BUCKET" --output json 2>&1 || echo "No public bucket policy or get-bucket-policy denied."
-          aws s3api get-bucket-encryption --bucket "$BUCKET" 2>&1 || echo "No custom encryption or get-bucket-encryption denied."
 
-          echo "Checking S3 templates prefix for environment $ENV_ID:"
-          aws s3 ls "s3://${BUCKET}/resources/environments/templates/${ENV_ID}/" --region "$REGION" 2>&1 || echo "Could not list templates for ${ENV_ID} (path may not exist or access denied)."
-          aws s3 ls "s3://${BUCKET}/resources/environments/" --region "$REGION" 2>&1 || echo "Could not list resources/environments/ prefix."
+          echo "2. Bucket Policy:"
+          if BUCKET_POL=$(aws s3api get-bucket-policy --bucket "$BUCKET" --output json 2>bpol_err.log); then
+            echo "$BUCKET_POL"
+          else
+            echo "Could not retrieve bucket policy:"
+            cat bpol_err.log
+          fi
+
+          echo "3. Bucket Encryption:"
+          if BUCKET_ENC=$(aws s3api get-bucket-encryption --bucket "$BUCKET" 2>benc_err.log); then
+            echo "$BUCKET_ENC"
+          else
+            echo "Could not retrieve bucket encryption:"
+            cat benc_err.log
+          fi
+
+          echo "4. S3 Template Inspection:"
+          echo "--- Checking environment template prefix: s3://${BUCKET}/resources/environments/templates/${ENV_ID}/ ---"
+          if S3_ENV_TEMPLATES=$(aws s3 ls "s3://${BUCKET}/resources/environments/templates/${ENV_ID}/" --region "$REGION" 2>s3_env_tmpl_err.log); then
+            if [ -n "$S3_ENV_TEMPLATES" ]; then
+              echo "FOUND TEMPLATE OBJECT(S) for ${ENV_ID}:"
+              echo "$S3_ENV_TEMPLATES"
+            else
+              echo "PREFIX EXISTS AND ACCESSIBLE, BUT IS CURRENTLY EMPTY (0 objects under resources/environments/templates/${ENV_ID}/)."
+            fi
+          else
+            echo "FAILED TO LIST prefix resources/environments/templates/${ENV_ID}/:"
+            cat s3_env_tmpl_err.log
+          fi
+
+          echo "--- Checking parent template prefix: s3://${BUCKET}/resources/environments/templates/ ---"
+          if S3_PARENT_TEMPLATES=$(aws s3 ls "s3://${BUCKET}/resources/environments/templates/" --region "$REGION" 2>s3_parent_tmpl_err.log); then
+            if [ -n "$S3_PARENT_TEMPLATES" ]; then
+              echo "FOUND OBJECTS under resources/environments/templates/:"
+              echo "$S3_PARENT_TEMPLATES"
+            else
+              echo "PREFIX EXISTS AND ACCESSIBLE, BUT IS CURRENTLY EMPTY (0 objects under resources/environments/templates/)."
+            fi
+          else
+            echo "FAILED TO LIST prefix resources/environments/templates/:"
+            cat s3_parent_tmpl_err.log
+          fi
+
+          echo "--- Checking root environments prefix: s3://${BUCKET}/resources/environments/ ---"
+          if S3_ENV_ROOT=$(aws s3 ls "s3://${BUCKET}/resources/environments/" --region "$REGION" 2>s3_env_root_err.log); then
+            if [ -n "$S3_ENV_ROOT" ]; then
+              echo "FOUND OBJECTS under resources/environments/:"
+              echo "$S3_ENV_ROOT"
+            else
+              echo "PREFIX EXISTS AND ACCESSIBLE, BUT IS CURRENTLY EMPTY (0 objects under resources/environments/)."
+            fi
+          else
+            echo "FAILED TO LIST prefix resources/environments/:"
+            cat s3_env_root_err.log
+          fi
 
           echo ""
           echo "================================================================"
