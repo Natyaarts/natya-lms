@@ -99,6 +99,8 @@ jobs:
           fi
 
           echo "AWS Account verification passed: $CALLER_ACCOUNT matches expected staging account (703671910601)."
+          echo "CALLER_ARN=$CALLER_ARN" >> "$GITHUB_ENV"
+          echo "CALLER_ACCOUNT=$CALLER_ACCOUNT" >> "$GITHUB_ENV"
 
           # Strict fail-closed target region enforcement (mandatory ap-south-1)
           # Note: Verifying environment configuration ensures the client runtime is explicitly targeting ap-south-1.
@@ -268,6 +270,12 @@ jobs:
             echo ""
             echo "Cannot inspect trail-specific event selectors because trail inventory discovery failed."
             echo "INVENTORY STATUS: FAILED / UNKNOWN. The account's trail inventory could not be retrieved."
+            if echo "$DESC_OUT $PAGE_OUT" | grep -qi "AccessDenied"; then
+              echo "  Authorization Notice: CloudTrail trail discovery was denied for principal '${CALLER_ARN:-unknown}'."
+              echo "  Missing Read-Only Permissions: 'cloudtrail:DescribeTrails' and 'cloudtrail:ListTrails' in region $REGION."
+              echo "  The staging IAM role lacks read permissions on AWS CloudTrail. Event selectors cannot be evaluated offline."
+            fi
+            echo "Continuing with remaining safe read-only diagnostics..."
           elif [ "$TRAIL_TOTAL" -eq 0 ]; then
             echo ""
             if [ "$DISCOVERY_STATUS" = "COMPLETE" ]; then
@@ -827,7 +835,7 @@ jobs:
                   print("   ASSESSMENT: COVERAGE UNCERTAIN (UNKNOWN)")
                   print("   Reason: Event selector evaluation could not complete due to an unexpected format.")
 
-              PY_EOF
+          PY_EOF
               echo "================================================================"
               echo ""
             done
@@ -861,11 +869,23 @@ jobs:
           echo "================================================================"
           echo "INSPECTION SUMMARY"
           echo "This workflow is purely diagnostic and made zero modifications."
+          echo "Authenticated Identity: ${CALLER_ARN:-unknown}"
+          echo "Target Account:         ${CALLER_ACCOUNT:-703671910601} (Region: $REGION)"
+          echo "Target Bucket:          $TARGET_BUCKET"
+          echo "Target Prefix:          $TARGET_PREFIX*"
           if [ "$DISCOVERY_STATUS" = "COMPLETE" ]; then
             echo "Trail Inventory Status: COMPLETE ($TRAIL_TOTAL trail(s) inspected)"
-          else
-            echo "Trail Inventory Status: INCOMPLETE / UNKNOWN ($DISCOVERY_STATUS - $TRAIL_TOTAL trail(s) inspected)"
+          elif [ "$DISCOVERY_STATUS" = "PARTIAL" ]; then
+            echo "Trail Inventory Status: INCOMPLETE / PARTIAL ($TRAIL_TOTAL trail(s) inspected)"
             echo "Notice: Trail inventory is not confirmed exhaustive. Additional trails may exist in the account."
+          else
+            echo "Trail Inventory Status: UNAVAILABLE / INCOMPLETE (Discovery failed)"
+            if echo "$DESC_OUT $PAGE_OUT" | grep -qi "AccessDenied"; then
+              echo "Notice: Assumed role '${CALLER_ARN:-unknown}' was denied access to 'cloudtrail:DescribeTrails' and 'cloudtrail:ListTrails'."
+              echo "CloudTrail event selectors could not be evaluated offline because trail discovery was denied."
+            else
+              echo "Notice: Trail inventory query failed ($DISCOVERY_STATUS). Event selectors could not be evaluated."
+            fi
           fi
           echo "Assessment note: This diagnostic reports only what retrieved configurations appear to cover"
           echo "and whether trails report IsLogging: true. It makes no definitive claim that denied requests"
