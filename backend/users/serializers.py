@@ -47,10 +47,11 @@ class CustomUserDetailsSerializer(UserDetailsSerializer):
             'pk', 'username', 'email', 'phone_number', 'student_id', 'first_name', 'last_name',
             'is_superuser', 'is_staff', 'is_teacher', 'is_student', 'is_mentor',
             'parent_name', 'parent_phone',
+            'student_type', 'state', 'district', 'pincode', 'onboarding_data', 'is_onboarded',
         )
         read_only_fields = (
             'pk', 'email', 'phone_number', 'student_id', 'is_superuser', 'is_staff',
-            'is_teacher', 'is_student', 'is_mentor',
+            'is_teacher', 'is_student', 'is_mentor', 'is_onboarded',
         )
 
 class AdminUserSerializer(serializers.ModelSerializer):
@@ -59,7 +60,12 @@ class AdminUserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'email', 'phone_number', 'student_id', 'first_name', 'last_name', 'is_superuser', 'is_staff', 'is_teacher', 'is_student', 'is_mentor', 'is_active', 'date_joined', 'parent_name', 'parent_phone', 'courses_count', 'password')
+        fields = (
+            'id', 'username', 'email', 'phone_number', 'student_id', 'first_name', 'last_name',
+            'is_superuser', 'is_staff', 'is_teacher', 'is_student', 'is_mentor', 'is_active',
+            'date_joined', 'parent_name', 'parent_phone', 'courses_count', 'password',
+            'student_type', 'state', 'district', 'pincode', 'onboarding_data', 'is_onboarded',
+        )
         read_only_fields = ('id', 'student_id', 'date_joined', 'courses_count')
 
     def validate_phone_number(self, value):

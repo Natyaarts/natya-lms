@@ -16,6 +16,11 @@ export interface User {
   is_staff?: boolean;
   is_admin?: boolean;
   is_onboarded?: boolean;
+  student_type?: string;
+  state?: string;
+  district?: string;
+  pincode?: string;
+  onboarding_data?: Record<string, any>;
 }
 
 interface AuthContextType {

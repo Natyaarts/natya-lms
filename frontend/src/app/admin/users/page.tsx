@@ -18,6 +18,7 @@ export default function AdminUsers() {
   const [activeTab, setActiveTab] = useState<'students' | 'teachers' | 'mentors'>('students');
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [trackFilter, setTrackFilter] = useState<'all' | 'CAREER_ACADEMY' | 'REGULAR'>('all');
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
@@ -37,7 +38,11 @@ export default function AdminUsers() {
     last_name: "",
     password: "",
     parent_name: "",
-    parent_phone: ""
+    parent_phone: "",
+    student_type: "CAREER_ACADEMY",
+    state: "",
+    district: "",
+    pincode: ""
   });
   const [countryCode, setCountryCode] = useState("+91");
   const [parentCountryCode, setParentCountryCode] = useState("+91");
@@ -143,6 +148,10 @@ export default function AdminUsers() {
     if (modalType === 'student') {
       payload.parent_name = formFields.parent_name || undefined;
       payload.parent_phone = formattedParentPhone || undefined;
+      payload.student_type = formFields.student_type || undefined;
+      payload.state = formFields.state || undefined;
+      payload.district = formFields.district || undefined;
+      payload.pincode = formFields.pincode || undefined;
     }
 
     try {
@@ -167,7 +176,11 @@ export default function AdminUsers() {
           last_name: "",
           password: "",
           parent_name: "",
-          parent_phone: ""
+          parent_phone: "",
+          student_type: "CAREER_ACADEMY",
+          state: "",
+          district: "",
+          pincode: ""
         });
         fetchUsers();
       } else {
@@ -197,6 +210,11 @@ export default function AdminUsers() {
     if (statusFilter === 'active' && !user.is_active) return false;
     if (statusFilter === 'inactive' && user.is_active) return false;
 
+    // Track filter for students
+    if (activeTab === 'students' && trackFilter !== 'all' && user.student_type !== trackFilter) {
+      return false;
+    }
+
     // Search filter
     if (searchQuery) {
       const term = searchQuery.toLowerCase();
@@ -204,7 +222,8 @@ export default function AdminUsers() {
       const matchUsername = (user.username || "").toLowerCase().includes(term);
       const matchEmail = (user.email || "").toLowerCase().includes(term);
       const matchPhone = (user.phone_number || "").toLowerCase().includes(term);
-      return matchName || matchUsername || matchEmail || matchPhone;
+      const matchLocation = `${user.state || ""} ${user.district || ""}`.toLowerCase().includes(term);
+      return matchName || matchUsername || matchEmail || matchPhone || matchLocation;
     }
 
     return true;
@@ -221,7 +240,7 @@ export default function AdminUsers() {
   // Reset page when switching filters/tabs or page size
   useEffect(() => {
     setCurrentPage(1);
-  }, [activeTab, searchQuery, statusFilter, pageSize]);
+  }, [activeTab, searchQuery, statusFilter, trackFilter, pageSize]);
 
   return (
     <div className="max-w-6xl mx-auto pb-20 font-sans text-white">
@@ -297,6 +316,19 @@ export default function AdminUsers() {
             />
           </div>
 
+          {/* Track Filter for Students */}
+          {activeTab === 'students' && (
+            <select
+              value={trackFilter}
+              onChange={(e: any) => setTrackFilter(e.target.value)}
+              className="bg-zinc-900 border border-white/15 rounded-xl px-4 py-2.5 text-sm text-zinc-300 focus:outline-none focus:border-[#facc15] cursor-pointer"
+            >
+              <option value="all">All Tracks</option>
+              <option value="CAREER_ACADEMY">Career Academy</option>
+              <option value="REGULAR">Regular Track</option>
+            </select>
+          )}
+
           {/* Status Dropdown */}
           <select
             value={statusFilter}
@@ -318,8 +350,8 @@ export default function AdminUsers() {
               <tr className="bg-white/5 border-b border-white/10 text-xs text-zinc-400 uppercase tracking-wider">
                 <th className="p-4 font-semibold">User details</th>
                 <th className="p-4 font-semibold">Contact Info</th>
-                <th className="p-4 font-semibold">{activeTab === 'students' ? 'Parent details' : 'Metadata'}</th>
-                <th className="p-4 font-semibold text-center">{activeTab === 'students' ? 'Courses' : 'Role'}</th>
+                <th className="p-4 font-semibold">{activeTab === 'students' ? 'Track & Location' : 'Parent details'}</th>
+                <th className="p-4 font-semibold text-center">{activeTab === 'students' ? 'Courses & Status' : 'Role'}</th>
                 <th className="p-4 font-semibold">Joined Date</th>
                 <th className="p-4 font-semibold text-center">Status</th>
                 <th className="p-4 font-semibold text-center">Actions</th>
@@ -365,9 +397,33 @@ export default function AdminUsers() {
                       </div>
                     </td>
 
-                    {/* Parent Name / Phone OR Teacher/Mentor Info */}
+                    {/* Student: Track & Location | Others: Parent Info */}
                     <td className="p-4 text-xs">
                       {activeTab === 'students' ? (
+                        <div className="space-y-1">
+                          <div>
+                            {user.student_type === 'CAREER_ACADEMY' ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-[#facc15]/15 text-[#facc15] border border-[#facc15]/30">
+                                🎓 Career Academy
+                              </span>
+                            ) : user.student_type === 'REGULAR' ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/15 text-[#A78BFA] border border-purple-500/30">
+                                🧘 Regular Track
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-zinc-800 text-zinc-400 border border-zinc-700">
+                                Pending Selection
+                              </span>
+                            )}
+                          </div>
+                          {(user.state || user.district) && (
+                            <div className="text-zinc-400 text-[11px] truncate max-w-[180px]">
+                              {[user.district, user.state].filter(Boolean).join(", ")}
+                              {user.pincode ? ` (${user.pincode})` : ''}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
                         user.parent_name ? (
                           <div>
                             <div className="text-zinc-300 font-medium">{user.parent_name}</div>
@@ -376,19 +432,22 @@ export default function AdminUsers() {
                         ) : (
                           <span className="text-zinc-600 italic">Not set</span>
                         )
-                      ) : (
-                        <span className="px-2 py-0.5 bg-zinc-800 text-zinc-400 rounded text-[10px] font-semibold border border-white/5 uppercase">
-                          {activeTab === 'mentors' ? 'Mentor' : 'Instructor'}
-                        </span>
                       )}
                     </td>
 
-                    {/* Enrolled Count OR Teacher/Mentor Role Badge */}
+                    {/* Enrolled Count & Onboarded Status OR Teacher/Mentor Badge */}
                     <td className="p-4 text-center">
                       {activeTab === 'students' ? (
-                        <span className="px-2 py-1 bg-zinc-800 text-zinc-300 rounded text-xs font-semibold">
-                          {user.courses_count || 0} Enrolled
-                        </span>
+                        <div className="flex flex-col items-center gap-0.5">
+                          <span className="px-2 py-0.5 bg-zinc-800 text-zinc-200 rounded text-xs font-semibold">
+                            {user.courses_count || 0} Enrolled
+                          </span>
+                          {user.is_onboarded ? (
+                            <span className="text-[10px] text-green-400 font-medium">✓ Complete</span>
+                          ) : (
+                            <span className="text-[10px] text-amber-400/90 font-medium">⏳ Pending</span>
+                          )}
+                        </div>
                       ) : (
                         <span className="px-2 py-1 bg-zinc-800 text-[#facc15] rounded text-xs font-semibold">
                           {activeTab === 'mentors' ? 'Active Mentor' : 'Active Teacher'}
@@ -622,7 +681,52 @@ export default function AdminUsers() {
 
                 {modalType === 'student' && (
                   <div className="pt-4 border-t border-white/5 space-y-4">
-                    <h3 className="text-sm font-bold text-zinc-300">Parent / Guardian Information</h3>
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Learning Track *</label>
+                      <select
+                        value={formFields.student_type}
+                        onChange={e => setFormFields({ ...formFields, student_type: e.target.value })}
+                        className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15] cursor-pointer"
+                      >
+                        <option value="CAREER_ACADEMY">🎓 Career Academy (Certified & Diploma)</option>
+                        <option value="REGULAR">🧘 Regular Track (Flexible & Hobby)</option>
+                      </select>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">State</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Karnataka"
+                          value={formFields.state}
+                          onChange={e => setFormFields({ ...formFields, state: e.target.value })}
+                          className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">District</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Bengaluru"
+                          value={formFields.district}
+                          onChange={e => setFormFields({ ...formFields, district: e.target.value })}
+                          className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Pincode</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 560001"
+                          value={formFields.pincode}
+                          onChange={e => setFormFields({ ...formFields, pincode: e.target.value })}
+                          className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                        />
+                      </div>
+                    </div>
+
+                    <h3 className="text-sm font-bold text-zinc-300 pt-2">Parent / Guardian Information</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
                         <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Parent Name</label>

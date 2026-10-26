@@ -41,6 +41,24 @@ export default function UserDetailPage() {
   // Dummy communication logs
   const [logs, setLogs] = useState<any[]>([]);
 
+  // Student Profile Editing State
+  const [editingStudent, setEditingStudent] = useState(false);
+  const [studentForm, setStudentForm] = useState({
+    student_type: "",
+    first_name: "",
+    last_name: "",
+    email: "",
+    phone_number: "",
+    state: "",
+    district: "",
+    pincode: "",
+    parent_name: "",
+    parent_phone: "",
+  });
+  const [studentSaving, setStudentSaving] = useState(false);
+  const [studentSaved, setStudentSaved] = useState(false);
+  const [studentError, setStudentError] = useState("");
+
   // Assign Course Modal State
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [allCourses, setAllCourses] = useState<any[]>([]);
@@ -70,6 +88,19 @@ export default function UserDetailPage() {
       if (res.ok) {
         const userData = await res.json();
         setUser(userData);
+
+        setStudentForm({
+          student_type: userData.student_type || "CAREER_ACADEMY",
+          first_name: userData.first_name || "",
+          last_name: userData.last_name || "",
+          email: userData.email || "",
+          phone_number: userData.phone_number || "",
+          state: userData.state || "",
+          district: userData.district || "",
+          pincode: userData.pincode || "",
+          parent_name: userData.parent_name || "",
+          parent_phone: userData.parent_phone || "",
+        });
         
         // Dynamic tab selection for teachers
         if (userData.is_teacher && !userData.is_student) {
@@ -259,6 +290,39 @@ export default function UserDetailPage() {
     }
   };
 
+  const handleSaveStudentProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setStudentSaving(true);
+    setStudentError("");
+    setStudentSaved(false);
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCsrfToken(),
+        },
+        body: JSON.stringify(studentForm),
+        credentials: "include",
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setUser(updated);
+        setEditingStudent(false);
+        setStudentSaved(true);
+        setTimeout(() => setStudentSaved(false), 3000);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setStudentError(typeof data === "object" ? Object.values(data).flat().join(" ") : "Failed to update student profile.");
+      }
+    } catch (err) {
+      console.error(err);
+      setStudentError("Network error updating profile.");
+    } finally {
+      setStudentSaving(false);
+    }
+  };
+
   // Fetch all courses list for the select box
   useEffect(() => {
     const fetchAllCourses = async () => {
@@ -439,10 +503,31 @@ export default function UserDetailPage() {
           <ChevronLeft className="w-5 h-5" />
         </button>
         <div>
-          <h1 className="text-3xl font-bold">{user.first_name || user.username} {user.last_name || ""}</h1>
-          <div className="text-xs text-zinc-400 mt-1 flex flex-wrap gap-x-2 gap-y-1 items-center">
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-3xl font-bold">{user.first_name || user.username} {user.last_name || ""}</h1>
+            {user.student_type === 'CAREER_ACADEMY' && (
+              <span className="px-3 py-1 rounded-full text-xs font-bold bg-[#facc15]/15 text-[#facc15] border border-[#facc15]/30">
+                🎓 Career Academy
+              </span>
+            )}
+            {user.student_type === 'REGULAR' && (
+              <span className="px-3 py-1 rounded-full text-xs font-bold bg-purple-500/15 text-[#A78BFA] border border-purple-500/30">
+                🧘 Regular Track
+              </span>
+            )}
+            {user.is_student && !user.student_type && (
+              <span className="px-3 py-1 rounded-full text-xs font-medium bg-zinc-800 text-zinc-400 border border-zinc-700">
+                Pending Onboarding
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-zinc-400 mt-1.5 flex flex-wrap gap-x-2 gap-y-1 items-center">
+            {user.student_id && <span className="font-mono text-[#facc15]">{user.student_id} • </span>}
             {user.email && <span>{user.email} • </span>}
             {user.phone_number && <span>{user.phone_number} • </span>}
+            {(user.state || user.district) && (
+              <span>📍 {[user.district, user.state].filter(Boolean).join(", ")}{user.pincode ? ` (${user.pincode})` : ''} • </span>
+            )}
             <span>Joined {new Date(user.date_joined).toLocaleDateString()}</span>
             {user.parent_name && (
               <span className="ml-2 px-2 py-0.5 bg-zinc-800 text-zinc-400 rounded text-[10px]">
@@ -514,6 +599,14 @@ export default function UserDetailPage() {
           </>
         ) : (
           <>
+            <button
+              onClick={() => setActiveTab('student-profile')}
+              className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
+                activeTab === 'student-profile' ? 'bg-[#facc15] text-black shadow-sm' : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <UserCircle className="w-4 h-4" /> Profile & Details
+            </button>
             <button
               onClick={() => setActiveTab('sessions')}
               className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
@@ -920,6 +1013,265 @@ export default function UserDetailPage() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'student-profile' && !isTeacherRole && !isMentorRole && (
+          <div>
+            <div className="flex items-center justify-between mb-6 pb-4 border-b border-white/5">
+              <div>
+                <h2 className="text-xl font-bold">Student Profile & Onboarding</h2>
+                <p className="text-zinc-400 text-xs mt-1">Manage learning track, contact information, and onboarding responses.</p>
+              </div>
+              <button
+                onClick={() => {
+                  setEditingStudent(!editingStudent);
+                  setStudentError("");
+                }}
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition-colors ${
+                  editingStudent
+                    ? "bg-zinc-800 text-zinc-300 hover:text-white"
+                    : "bg-[#facc15] text-black hover:bg-yellow-400"
+                }`}
+              >
+                {editingStudent ? "Cancel Editing" : "Edit Profile Details"}
+              </button>
+            </div>
+
+            {studentSaved && (
+              <div className="mb-6 p-4 rounded-xl bg-green-950/40 border border-green-800/60 text-green-300 text-xs">
+                ✓ Student profile updated successfully!
+              </div>
+            )}
+
+            {studentError && (
+              <div className="mb-6 p-4 rounded-xl bg-red-950/40 border border-red-800/60 text-red-300 text-xs">
+                {studentError}
+              </div>
+            )}
+
+            {editingStudent ? (
+              <form onSubmit={handleSaveStudentProfile} className="space-y-6">
+                <div className="bg-zinc-950 p-6 rounded-2xl border border-white/5 space-y-4">
+                  <h3 className="text-sm font-bold text-[#facc15] uppercase tracking-wider">Learning Track & Identity</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase">Learning Track</label>
+                      <select
+                        value={studentForm.student_type}
+                        onChange={e => setStudentForm({ ...studentForm, student_type: e.target.value })}
+                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                      >
+                        <option value="CAREER_ACADEMY">🎓 Career Academy (Certified & Diploma)</option>
+                        <option value="REGULAR">🧘 Regular Track (Flexible & Hobby)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase">First Name</label>
+                      <input
+                        type="text"
+                        value={studentForm.first_name}
+                        onChange={e => setStudentForm({ ...studentForm, first_name: e.target.value })}
+                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase">Last Name</label>
+                      <input
+                        type="text"
+                        value={studentForm.last_name}
+                        onChange={e => setStudentForm({ ...studentForm, last_name: e.target.value })}
+                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-zinc-950 p-6 rounded-2xl border border-white/5 space-y-4">
+                  <h3 className="text-sm font-bold text-[#facc15] uppercase tracking-wider">Contact & Address</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase">Email Address</label>
+                      <input
+                        type="email"
+                        value={studentForm.email}
+                        onChange={e => setStudentForm({ ...studentForm, email: e.target.value })}
+                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase">Phone Number</label>
+                      <input
+                        type="tel"
+                        value={studentForm.phone_number}
+                        onChange={e => setStudentForm({ ...studentForm, phone_number: e.target.value })}
+                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase">State</label>
+                      <input
+                        type="text"
+                        value={studentForm.state}
+                        onChange={e => setStudentForm({ ...studentForm, state: e.target.value })}
+                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase">District</label>
+                      <input
+                        type="text"
+                        value={studentForm.district}
+                        onChange={e => setStudentForm({ ...studentForm, district: e.target.value })}
+                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase">Pincode</label>
+                      <input
+                        type="text"
+                        value={studentForm.pincode}
+                        onChange={e => setStudentForm({ ...studentForm, pincode: e.target.value })}
+                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-zinc-950 p-6 rounded-2xl border border-white/5 space-y-4">
+                  <h3 className="text-sm font-bold text-[#facc15] uppercase tracking-wider">Parent / Guardian</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase">Parent Name</label>
+                      <input
+                        type="text"
+                        value={studentForm.parent_name}
+                        onChange={e => setStudentForm({ ...studentForm, parent_name: e.target.value })}
+                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase">Parent Phone</label>
+                      <input
+                        type="tel"
+                        value={studentForm.parent_phone}
+                        onChange={e => setStudentForm({ ...studentForm, parent_phone: e.target.value })}
+                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingStudent(false)}
+                    className="px-5 py-2.5 rounded-xl text-sm font-semibold text-zinc-400 hover:text-white bg-zinc-800"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={studentSaving}
+                    className="px-6 py-2.5 rounded-xl text-sm font-bold bg-[#facc15] text-black hover:bg-yellow-400 disabled:opacity-50"
+                  >
+                    {studentSaving ? "Saving..." : "Save Profile Details"}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Left Column: Track & Contact */}
+                  <div className="bg-zinc-950 p-6 rounded-2xl border border-white/5 space-y-4">
+                    <h3 className="text-sm font-bold text-[#facc15] uppercase tracking-wider">Track & Contact</h3>
+                    <div className="space-y-3 text-sm">
+                      <div className="flex justify-between py-2 border-b border-white/5">
+                        <span className="text-zinc-400">Learning Track</span>
+                        <div>
+                          {user.student_type === 'CAREER_ACADEMY' ? (
+                            <span className="px-2.5 py-0.5 rounded text-xs font-bold bg-[#facc15]/15 text-[#facc15] border border-[#facc15]/30">
+                              🎓 Career Academy
+                            </span>
+                          ) : user.student_type === 'REGULAR' ? (
+                            <span className="px-2.5 py-0.5 rounded text-xs font-bold bg-purple-500/15 text-[#A78BFA] border border-purple-500/30">
+                              🧘 Regular Track
+                            </span>
+                          ) : (
+                            <span className="text-zinc-500 italic">Not Selected</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex justify-between py-2 border-b border-white/5">
+                        <span className="text-zinc-400">Full Name</span>
+                        <span className="text-white font-medium">{user.first_name} {user.last_name || ""}</span>
+                      </div>
+                      <div className="flex justify-between py-2 border-b border-white/5">
+                        <span className="text-zinc-400">Email</span>
+                        <span className="text-white font-medium">{user.email || <span className="text-zinc-600">None</span>}</span>
+                      </div>
+                      <div className="flex justify-between py-2 border-b border-white/5">
+                        <span className="text-zinc-400">Phone Number</span>
+                        <span className="text-white font-medium">{user.phone_number || <span className="text-zinc-600">None</span>}</span>
+                      </div>
+                      <div className="flex justify-between py-2">
+                        <span className="text-zinc-400">Onboarding Status</span>
+                        <span className={user.is_onboarded ? "text-green-400 font-bold" : "text-amber-400 font-bold"}>
+                          {user.is_onboarded ? "✓ Completed" : "⏳ Pending"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Location & Parent */}
+                  <div className="bg-zinc-950 p-6 rounded-2xl border border-white/5 space-y-4">
+                    <h3 className="text-sm font-bold text-[#facc15] uppercase tracking-wider">Location & Guardian</h3>
+                    <div className="space-y-3 text-sm">
+                      <div className="flex justify-between py-2 border-b border-white/5">
+                        <span className="text-zinc-400">State</span>
+                        <span className="text-white font-medium">{user.state || <span className="text-zinc-600">Not specified</span>}</span>
+                      </div>
+                      <div className="flex justify-between py-2 border-b border-white/5">
+                        <span className="text-zinc-400">District</span>
+                        <span className="text-white font-medium">{user.district || <span className="text-zinc-600">Not specified</span>}</span>
+                      </div>
+                      <div className="flex justify-between py-2 border-b border-white/5">
+                        <span className="text-zinc-400">Pincode</span>
+                        <span className="text-white font-medium">{user.pincode || <span className="text-zinc-600">Not specified</span>}</span>
+                      </div>
+                      <div className="flex justify-between py-2 border-b border-white/5">
+                        <span className="text-zinc-400">Parent Name</span>
+                        <span className="text-white font-medium">{user.parent_name || <span className="text-zinc-600">Not set</span>}</span>
+                      </div>
+                      <div className="flex justify-between py-2">
+                        <span className="text-zinc-400">Parent Phone</span>
+                        <span className="text-white font-medium">{user.parent_phone || <span className="text-zinc-600">Not set</span>}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Additional Dynamic Onboarding Data */}
+                {user.onboarding_data && Object.keys(user.onboarding_data).length > 0 && (
+                  <div className="bg-zinc-950 p-6 rounded-2xl border border-white/5 space-y-4">
+                    <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-wider">Dynamic Onboarding Form Responses</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                      {Object.entries(user.onboarding_data).map(([key, val]) => (
+                        <div key={key} className="p-3 bg-zinc-900/60 rounded-xl border border-white/5">
+                          <div className="text-xs text-zinc-500 uppercase tracking-wider font-semibold mb-1">{key.replace(/_/g, " ")}</div>
+                          <div className="text-sm text-zinc-200 font-medium">
+                            {typeof val === 'boolean' ? (val ? 'Yes' : 'No') : String(val || '-')}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

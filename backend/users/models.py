@@ -16,6 +16,22 @@ class User(AbstractUser):
                   "receive teacher-level course-editing or admin/financial permissions."
     )
     
+    # Student learning track & location details
+    class StudentType(models.TextChoices):
+        CAREER_ACADEMY = 'CAREER_ACADEMY', 'Career Academy'
+        REGULAR = 'REGULAR', 'Regular'
+
+    student_type = models.CharField(
+        max_length=50,
+        choices=StudentType.choices,
+        blank=True,
+        default='',
+        help_text="Primary learning track: Career Academy or Regular"
+    )
+    state = models.CharField(max_length=100, blank=True, default='')
+    district = models.CharField(max_length=100, blank=True, default='')
+    pincode = models.CharField(max_length=20, blank=True, default='')
+
     # Onboarding
     is_onboarded = models.BooleanField(default=False)
     onboarding_data = models.JSONField(default=dict, blank=True)
@@ -23,6 +39,17 @@ class User(AbstractUser):
     phone_number = models.CharField(max_length=15, blank=True, null=True)
     parent_name = models.CharField(max_length=255, blank=True, null=True)
     parent_phone = models.CharField(max_length=15, blank=True, null=True)
+
+    @property
+    def is_profile_complete(self):
+        """
+        Returns True if the user has completed mandatory profile onboarding.
+        For non-students, staff, and superusers, always returns True.
+        For students, requires is_onboarded to be True and student_type to be set.
+        """
+        if not self.is_student or self.is_staff or self.is_superuser:
+            return True
+        return bool(self.is_onboarded and self.student_type)
 
     # Unique student watermark identifier
     student_id = models.CharField(

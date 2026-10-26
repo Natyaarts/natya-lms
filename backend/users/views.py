@@ -316,7 +316,7 @@ class VerifyOTPView(APIView):
             "message": "Login successful",
             "user_id": user.id,
             "created": created,
-            "is_onboarded": user.is_onboarded,
+            "is_onboarded": user.is_profile_complete,
             "tokens": {
                 "access": str(refresh.access_token),
                 "refresh": str(refresh)
@@ -1087,6 +1087,13 @@ class CurrentUserView(APIView):
             "username": request.user.username,
             "email": request.user.email,
             "phone_number": request.user.phone_number,
+            "first_name": request.user.first_name,
+            "last_name": request.user.last_name,
+            "student_type": getattr(request.user, 'student_type', ''),
+            "state": getattr(request.user, 'state', ''),
+            "district": getattr(request.user, 'district', ''),
+            "pincode": getattr(request.user, 'pincode', ''),
+            "onboarding_data": getattr(request.user, 'onboarding_data', {}),
             "student_id": getattr(request.user, 'student_id', None) or request.user.get_or_create_student_id(),
             "is_student": getattr(request.user, 'is_student', False),
             "is_teacher": getattr(request.user, 'is_teacher', False),
@@ -1094,7 +1101,7 @@ class CurrentUserView(APIView):
             "is_superuser": request.user.is_superuser,
             "is_staff": request.user.is_staff,
             "is_admin": bool(request.user.is_staff and not request.user.is_superuser),
-            "is_onboarded": getattr(request.user, 'is_onboarded', False),
+            "is_onboarded": request.user.is_profile_complete,
             "mentor": mentor_data,
         })
 
@@ -1166,11 +1173,11 @@ class MyStudentsView(APIView):
         return Response(data)
 
 class OnboardingFieldsView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [AllowAny]
 
     def get(self, request):
         from .models import OnboardingField
-        fields = OnboardingField.objects.all()
+        fields = OnboardingField.objects.all().order_by('order')
         data = []
         for f in fields:
             data.append({
@@ -1178,7 +1185,8 @@ class OnboardingFieldsView(APIView):
                 "label": f.label,
                 "type": f.field_type,
                 "required": f.is_required,
-                "options": f.options
+                "options": f.options,
+                "order": f.order,
             })
         return Response(data)
 
@@ -1190,17 +1198,67 @@ class SaveProfileView(APIView):
         data = request.data
         user = request.user
         
-        # We could validate against OnboardingField here, but for flexibility we just save it
-        user.onboarding_data = data
+        # Merge or update onboarding_data
+        existing_data = user.onboarding_data or {}
+        if isinstance(data, dict):
+            existing_data.update(data)
+            user.onboarding_data = existing_data
+
+        # Student Type handling (Career Academy vs Regular)
+        st = data.get('student_type') or data.get('learning_track')
+        if st:
+            st_clean = str(st).strip()
+            if st_clean.lower() in ['career academy', 'career_academy', 'career']:
+                user.student_type = User.StudentType.CAREER_ACADEMY
+            elif st_clean.lower() in ['regular']:
+                user.student_type = User.StudentType.REGULAR
+            elif st_clean in [User.StudentType.CAREER_ACADEMY, User.StudentType.REGULAR]:
+                user.student_type = st_clean
+
+        # Handle full_name, first_name, last_name
+        full_name = data.get('full_name') or data.get('name')
+        if full_name and isinstance(full_name, str):
+            parts = full_name.strip().split(maxsplit=1)
+            user.first_name = parts[0]
+            user.last_name = parts[1] if len(parts) > 1 else ''
+        else:
+            if 'first_name' in data and data['first_name']:
+                user.first_name = str(data['first_name']).strip()
+            if 'last_name' in data and data['last_name']:
+                user.last_name = str(data['last_name']).strip()
+
+        # Handle contact details
+        phone = data.get('phone_number') or data.get('phone') or data.get('mobile_no')
+        if phone and not user.phone_number:
+            user.phone_number = str(phone).strip()
+
+        email = data.get('email')
+        if email and (not user.email or user.email.endswith('@example.com')):
+            user.email = str(email).strip()
+
+        # Handle location details
+        if 'state' in data and data['state']:
+            user.state = str(data['state']).strip()
+        if 'district' in data and data['district']:
+            user.district = str(data['district']).strip()
+        if 'pincode' in data and data['pincode']:
+            user.pincode = str(data['pincode']).strip()
+
         user.is_onboarded = True
-        
-        # Map common fields directly to User model if they exist
-        if 'first_name' in data: user.first_name = data['first_name']
-        if 'last_name' in data: user.last_name = data['last_name']
-        if 'phone_number' in data: user.phone_number = data['phone_number']
-        
         user.save()
-        return Response({"message": "Profile saved successfully"})
+
+        return Response({
+            "message": "Profile saved successfully",
+            "is_onboarded": user.is_profile_complete,
+            "student_type": user.student_type,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "email": user.email,
+            "phone_number": user.phone_number,
+            "state": user.state,
+            "district": user.district,
+            "pincode": user.pincode,
+        })
 
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -1283,7 +1341,7 @@ class MobileGoogleLoginView(APIView):
                 "message": "Login successful",
                 "user_id": user.id,
                 "created": created,
-                "is_onboarded": user.is_onboarded,
+                "is_onboarded": user.is_profile_complete,
                 "tokens": {
                     "access": str(refresh.access_token),
                     "refresh": str(refresh)
