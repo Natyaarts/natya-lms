@@ -163,6 +163,11 @@ def _dispatch_otp(identifier: str, otp: str):
             logger.info("STAGING MODE: Suppressing actual Interakt WhatsApp send -- OTP for %s: %s", identifier, otp)
             return True, None
 
+        if settings.DEBUG and not getattr(settings, 'INTERAKT_SECRET_KEY', ''):
+            logger.info("DEBUG MODE: Local dev OTP for %s: %s", identifier, otp)
+            print(f"\n=========================================\n[LOCAL DEV OTP] Phone: {identifier} | OTP: {otp}\n=========================================\n")
+            return True, None
+
         INTERAKT_SECRET_KEY = settings.INTERAKT_SECRET_KEY
         TEMPLATE_NAME = settings.INTERAKT_TEMPLATE_NAME
 
