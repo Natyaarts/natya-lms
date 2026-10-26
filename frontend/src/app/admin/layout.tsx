@@ -123,6 +123,7 @@ export default function AdminLayout({
           links: [
             { name: "Overview", href: "/admin", icon: icons.overview },
             { name: "Users", href: "/admin/users", icon: icons.users },
+            { name: "Onboarding Fields", href: "/admin/onboarding-fields", icon: icons.onboarding },
             { name: "Teachers/Mentors", href: "/admin/teachers-mentors", icon: icons.teachersMentors },
             { name: "Courses", href: "/admin/courses", icon: icons.courses },
             { name: "Live Classes", href: "/admin/live-classes", icon: icons.liveClasses },
