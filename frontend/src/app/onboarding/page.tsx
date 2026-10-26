@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Award, BookOpen, Check, CheckCircle2, ChevronRight, ArrowLeft } from "lucide-react";
+import { Award, BookOpen, Check, CheckCircle2, ChevronRight, ArrowLeft, LogIn } from "lucide-react";
 
 type Step = "TRACK" | "DETAILS";
 
@@ -23,6 +23,7 @@ export default function OnboardingPage() {
   const [fields, setFields] = useState<OnboardingField[]>([]);
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -55,7 +56,12 @@ export default function OnboardingPage() {
         let initialData: Record<string, any> = {};
 
         if (userRes.status === "fulfilled" && userRes.value.ok) {
+          setIsAuthenticated(true);
           const user = await userRes.value.json();
+          if (user.is_superuser || user.is_staff) {
+            router.push("/admin");
+            return;
+          }
           if (user.student_type === "CAREER_ACADEMY" || user.student_type === "REGULAR") {
             setSelectedTrack(user.student_type);
           }
@@ -69,6 +75,8 @@ export default function OnboardingPage() {
           if (user.onboarding_data && typeof user.onboarding_data === "object") {
             initialData = { ...initialData, ...user.onboarding_data };
           }
+        } else {
+          setIsAuthenticated(false);
         }
 
         if (fieldsRes.status === "fulfilled" && fieldsRes.value.ok) {
@@ -167,6 +175,13 @@ export default function OnboardingPage() {
         window.location.href = "/dashboard";
       } else {
         const errData = await res.json().catch(() => ({}));
+        if (res.status === 401 || errData.error === "Not authenticated") {
+          setErrorMsg("Your session expired or you are not logged in. Redirecting to login...");
+          setTimeout(() => {
+            window.location.href = "/login?next=/onboarding";
+          }, 1500);
+          return;
+        }
         setErrorMsg(errData.error || errData.detail || "Failed to save profile. Please check all fields.");
       }
     } catch (err) {
@@ -181,6 +196,30 @@ export default function OnboardingPage() {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center text-white">
         <div className="w-9 h-9 border-2 border-[#facc15] border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    );
+  }
+
+  if (!loading && isAuthenticated === false) {
+    return (
+      <div className="min-h-screen bg-[#050505] text-white flex flex-col items-center justify-center p-6 text-center">
+        <div className="max-w-md w-full bg-[#121214] border border-white/10 rounded-2xl p-8 shadow-2xl relative overflow-hidden">
+          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-yellow-500 via-amber-400 to-yellow-600" />
+          <div className="w-16 h-16 rounded-full bg-yellow-400/10 border border-yellow-400/30 flex items-center justify-center mx-auto mb-4 text-[#facc15]">
+            <LogIn className="w-8 h-8" />
+          </div>
+          <h2 className="text-2xl font-bold mb-2">Login Required</h2>
+          <p className="text-gray-400 text-sm mb-6 leading-relaxed">
+            Please log in to your account with your mobile number to set up your learning track and complete your student profile.
+          </p>
+          <a
+            href="/login?next=/onboarding"
+            className="inline-flex items-center justify-center gap-2 w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-[#facc15] to-[#eab308] text-black font-semibold hover:brightness-110 transition shadow-lg shadow-yellow-500/20"
+          >
+            <LogIn className="w-4 h-4" />
+            Log In to Continue
+          </a>
+        </div>
       </div>
     );
   }

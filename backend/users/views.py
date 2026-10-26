@@ -1191,6 +1191,9 @@ class OnboardingFieldsView(APIView):
         return Response(data)
 
 class SaveProfileView(APIView):
+    authentication_classes = [JWTCookieAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         if not request.user.is_authenticated:
             return Response({"error": "Not authenticated"}, status=status.HTTP_401_UNAUTHORIZED)

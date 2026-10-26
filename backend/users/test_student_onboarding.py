@@ -95,3 +95,8 @@ class StudentOnboardingTests(TestCase):
             is_student=False
         )
         self.assertTrue(staff.is_profile_complete)
+
+    def test_save_profile_unauthenticated_returns_401(self):
+        res = self.client.post('/api/users/save-profile/', {"student_type": "Regular"}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+

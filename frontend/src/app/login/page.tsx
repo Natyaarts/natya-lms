@@ -39,7 +39,15 @@ export default function Login() {
           res.json().then(data => {
             if (data.is_superuser || data.is_teacher) {
               window.location.href = "/admin";
+            } else if (data.is_onboarded === false) {
+              window.location.href = "/onboarding";
             } else {
+              const searchParams = new URLSearchParams(window.location.search);
+              const next = searchParams.get("next");
+              if (next && next.startsWith("/")) {
+                window.location.href = next;
+                return;
+              }
               window.location.href = "/dashboard";
             }
           });
@@ -116,6 +124,16 @@ export default function Login() {
             window.location.href = "/admin";
             return;
           }
+          if (userData.is_onboarded === false) {
+            window.location.href = "/onboarding";
+            return;
+          }
+        }
+        const searchParams = new URLSearchParams(window.location.search);
+        const next = searchParams.get("next");
+        if (next && next.startsWith("/")) {
+          window.location.href = next;
+          return;
         }
         window.location.href = "/dashboard";
       } else {
