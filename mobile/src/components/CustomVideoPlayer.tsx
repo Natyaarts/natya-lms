@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, StyleSheet, TouchableOpacity, Text, Modal, ActivityIndicator } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEventListener } from 'expo';
+import * as ScreenCapture from 'expo-screen-capture';
 import Slider from '@react-native-community/slider';
 import Icon, { MaterialIcon } from './Icon';
 import { colors, spacing, radius } from '../theme';
@@ -26,6 +27,20 @@ export interface AudioTrackOption {
   url: string;
 }
 
+export interface WatermarkConfig {
+  enabled?: boolean;
+  text?: string;
+  student_id?: string;
+  moving?: boolean;
+  interval_seconds?: number;
+}
+
+export interface PlaybackRefreshResult {
+  source: string;
+  audioTracks?: AudioTrackOption[];
+  expiresIn?: number;
+}
+
 interface CustomVideoPlayerProps {
   source: string;
   // Available alternate-language audio tracks for the current lesson
@@ -41,6 +56,12 @@ interface CustomVideoPlayerProps {
   // save lesson-completion progress without this component needing to
   // know anything about lessons/courses/the API itself.
   onProgress?: (currentTime: number, duration: number) => void;
+  // Student watermark configuration
+  watermark?: WatermarkConfig;
+  // Screen-capture protection enabled from backend
+  screenCaptureProtectionEnabled?: boolean;
+  onRefreshUrls?: () => Promise<PlaybackRefreshResult | null>;
+  expiresIn?: number;
 }
 
 // How far the alternate audio track is allowed to drift from the video
@@ -51,7 +72,20 @@ const SYNC_DRIFT_TOLERANCE = 0.3;
 const SEEK_STEP = 10;
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
-export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey, initialPosition = 0, onProgress }: CustomVideoPlayerProps) {
+export default function CustomVideoPlayer({
+  source,
+  audioTracks = [],
+  lessonKey,
+  initialPosition = 0,
+  onProgress,
+  watermark,
+  screenCaptureProtectionEnabled = true,
+  onRefreshUrls,
+  expiresIn = 900,
+}: CustomVideoPlayerProps) {
+  const isRefreshingRef = useRef(false);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const consecutiveErrorsRef = useRef(0);
   const [showControls, setShowControls] = useState(true);
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
@@ -60,10 +94,15 @@ export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey,
   const [duration, setDuration] = useState(0);
   const [status, setStatus] = useState<'idle' | 'loading' | 'readyToPlay' | 'error'>('idle');
   const [speed, setSpeed] = useState(1);
+  const speedRef = useRef(1);
   const [muted, setMuted] = useState(false);
 
   // 'en' = original video audio. Anything else must match an audioTracks[].code.
   const [activeAudioCode, setActiveAudioCode] = useState<string>('en');
+
+  // Screenshot deterrence warning banner state (iOS deterrence & watermark attribution)
+  const [showScreenshotWarning, setShowScreenshotWarning] = useState(false);
+  const screenshotWarningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const videoViewRef = useRef<VideoView>(null);
   const hasSoughtInitialRef = useRef(false);
@@ -110,6 +149,104 @@ export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey,
     }
   };
 
+  // Screen-capture protection lifecycle (conditional on backend setting)
+  useEffect(() => {
+    if (screenCaptureProtectionEnabled) {
+      ScreenCapture.preventScreenCaptureAsync('playback-protection').catch(err => {
+        console.warn('Could not activate screen capture protection:', err);
+      });
+    }
+
+    return () => {
+      if (screenCaptureProtectionEnabled) {
+        ScreenCapture.allowScreenCaptureAsync('playback-protection').catch(err => {
+          console.warn('Could not release screen capture protection:', err);
+        });
+      }
+    };
+  }, [screenCaptureProtectionEnabled]);
+
+  // iOS screenshot deterrence listener (Expo ScreenCapture API)
+  // When screen_capture_protection_enabled is true during recorded lesson playback,
+  // listen for screenshot events and display an in-player warning referencing the student watermark ID.
+  // Note: On iOS, screenshots cannot be blocked at the OS level without FairPlay DRM; detection acts as a deterrent.
+  // On Android, FLAG_SECURE (via preventScreenCaptureAsync above) blocks captures at the OS window manager.
+  useEffect(() => {
+    if (!screenCaptureProtectionEnabled || !source) {
+      return;
+    }
+
+    let subscription: { remove: () => void } | null = null;
+
+    try {
+      if (typeof ScreenCapture.addScreenshotListener === 'function') {
+        subscription = ScreenCapture.addScreenshotListener(() => {
+          setShowScreenshotWarning(true);
+          if (screenshotWarningTimerRef.current) {
+            clearTimeout(screenshotWarningTimerRef.current);
+          }
+          screenshotWarningTimerRef.current = setTimeout(() => {
+            setShowScreenshotWarning(false);
+          }, 5000);
+        });
+      }
+    } catch (err) {
+      // Gracefully handle environments (such as web or unsupported platforms)
+      console.warn('Screenshot listener registration failed:', err);
+    }
+
+    return () => {
+      if (screenshotWarningTimerRef.current) {
+        clearTimeout(screenshotWarningTimerRef.current);
+      }
+      try {
+        if (subscription?.remove) {
+          subscription.remove();
+        } else if (subscription && typeof ScreenCapture.removeScreenshotListener === 'function') {
+          ScreenCapture.removeScreenshotListener(subscription as any);
+        }
+      } catch (err) {
+        console.warn('Error removing screenshot listener:', err);
+      }
+    };
+  }, [screenCaptureProtectionEnabled, source]);
+
+  const dismissScreenshotWarning = () => {
+    if (screenshotWarningTimerRef.current) {
+      clearTimeout(screenshotWarningTimerRef.current);
+    }
+    setShowScreenshotWarning(false);
+  };
+
+  // Watermark configuration & dynamic positioning
+  const watermarkEnabled = watermark?.enabled !== false && !!(watermark?.text || watermark?.student_id);
+  const watermarkText = watermark?.text || watermark?.student_id || '';
+  // Stable student watermark identifier for attribution/deterrence (NAT-XXXXXX)
+  const studentWatermarkId =
+    watermark?.student_id ||
+    (watermark?.text && watermark.text.startsWith('NAT-') ? watermark.text : undefined);
+  const isMovingWatermark = watermark?.moving !== false;
+  const watermarkInterval =
+    watermark?.interval_seconds && watermark.interval_seconds >= 3
+      ? watermark.interval_seconds * 1000
+      : 15000;
+
+  const [watermarkPos, setWatermarkPos] = useState({ top: 16, left: 14 });
+
+  useEffect(() => {
+    if (!watermarkEnabled || !isMovingWatermark) return;
+
+    const moveWatermark = () => {
+      // Safe visible boundaries: top: 8%..75%, left: 6%..62%
+      const nextTop = Math.floor(8 + Math.random() * 67);
+      const nextLeft = Math.floor(6 + Math.random() * 56);
+      setWatermarkPos({ top: nextTop, left: nextLeft });
+    };
+
+    const intervalId = setInterval(moveWatermark, watermarkInterval);
+    return () => clearInterval(intervalId);
+  }, [watermarkEnabled, isMovingWatermark, watermarkInterval]);
+
   // Keep the original video's own audio muted while a translated track is active.
   useEffect(() => {
     player.muted = activeAudioCode !== 'en' ? true : muted;
@@ -122,6 +259,7 @@ export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey,
     setActiveAudioCode('en');
     setShowLanguageMenu(false);
     setShowSpeedMenu(false);
+    consecutiveErrorsRef.current = 0;
   }, [lessonKey]);
 
   // Track time updates
@@ -161,10 +299,103 @@ export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey,
   // never simulated locally.
   useEventListener(player, 'statusChange', (payload) => {
     setStatus(payload.status);
-    if (payload.status === 'readyToPlay' && initialPosition > 0) {
-      trySeekInitial(initialPosition, duration || player.duration);
+    if (payload.status === 'readyToPlay') {
+      consecutiveErrorsRef.current = 0;
+      if (initialPosition > 0) {
+        trySeekInitial(initialPosition, duration || player.duration);
+      }
+    } else if (payload.status === 'error') {
+      if (onRefreshUrls && consecutiveErrorsRef.current < 2 && !isRefreshingRef.current) {
+        consecutiveErrorsRef.current += 1;
+        performRefresh(true);
+      }
     }
   });
+
+  const scheduleProactiveRefresh = (expirySec: number) => {
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    }
+    if (!onRefreshUrls) return;
+
+    // Refresh around 12 minutes (or expirySec - 180s)
+    const delaySeconds = Math.max(5, expirySec - 180);
+    refreshTimerRef.current = setTimeout(() => {
+      performRefresh(false);
+    }, delaySeconds * 1000);
+  };
+
+  const performRefresh = async (isErrorRecovery = false): Promise<boolean> => {
+    if (!onRefreshUrls || isRefreshingRef.current) return false;
+    isRefreshingRef.current = true;
+    try {
+      const result = await onRefreshUrls();
+      if (!result || !result.source) {
+        if (refreshTimerRef.current) {
+          clearTimeout(refreshTimerRef.current);
+          refreshTimerRef.current = null;
+        }
+        return false;
+      }
+
+      const currentPos = player.currentTime;
+      const wasPlaying = player.playing;
+      const currentSpeed = speedRef.current;
+
+      // In expo-video, replaceAsync / replace swaps the underlying source in-place
+      if (typeof (player as any).replaceAsync === 'function') {
+        await (player as any).replaceAsync(result.source);
+      } else if (typeof player.replace === 'function') {
+        player.replace(result.source);
+      }
+      player.playbackRate = currentSpeed;
+      player.currentTime = currentPos;
+      if (wasPlaying) {
+        player.play();
+      }
+
+      // Update alternate audio if active
+      if (activeAudioCode !== 'en' && result.audioTracks) {
+        const matchingTrack = result.audioTracks.find(t => t.code === activeAudioCode);
+        if (matchingTrack) {
+          if (typeof (altPlayer as any).replaceAsync === 'function') {
+            await (altPlayer as any).replaceAsync(matchingTrack.url);
+          } else if (typeof altPlayer.replace === 'function') {
+            altPlayer.replace(matchingTrack.url);
+          }
+          altPlayer.playbackRate = currentSpeed;
+          altPlayer.currentTime = currentPos;
+          if (wasPlaying) {
+            altPlayer.play();
+          }
+        }
+      }
+
+      consecutiveErrorsRef.current = 0;
+      scheduleProactiveRefresh(result.expiresIn || expiresIn || 900);
+      return true;
+    } catch (err) {
+      console.warn('Failed to refresh media playback URLs.');
+      return false;
+    } finally {
+      isRefreshingRef.current = false;
+    }
+  };
+
+  // Timer lifecycle for proactive refresh
+  useEffect(() => {
+    if (onRefreshUrls) {
+      scheduleProactiveRefresh(expiresIn || 900);
+    }
+    return () => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      isRefreshingRef.current = false;
+    };
+  }, [lessonKey, onRefreshUrls, expiresIn]);
 
   // Double check seek if initialPosition arrives after duration is already known
   useEffect(() => {
@@ -177,6 +408,7 @@ export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey,
   // the user changes playback speed.
   useEventListener(player, 'playbackRateChange', (payload) => {
     setSpeed(payload.playbackRate);
+    speedRef.current = payload.playbackRate;
     if (activeAudioCode !== 'en') {
       altPlayer.playbackRate = payload.playbackRate;
     }
@@ -260,6 +492,60 @@ export default function CustomVideoPlayer({ source, audioTracks = [], lessonKey,
           fullscreenOptions={{ enable: true, orientation: 'landscape', autoExitOnRotate: true }}
         />
       </TouchableOpacity>
+
+      {/* Student Watermark Overlay (visible over playback) */}
+      {watermarkEnabled && !!watermarkText && (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.watermarkContainer,
+            {
+              top: `${watermarkPos.top}%`,
+              left: `${watermarkPos.left}%`,
+            },
+          ]}
+        >
+          <View style={styles.watermarkBadge}>
+            <Text style={styles.watermarkText}>{watermarkText}</Text>
+            <Text style={styles.watermarkSubtext}>Natya LMS</Text>
+          </View>
+        </View>
+      )}
+
+      {/* iOS Screenshot Deterrence Warning Banner (discreet, accessible) */}
+      {showScreenshotWarning && (
+        <View
+          style={styles.screenshotWarningBanner}
+          accessibilityRole="alert"
+          accessibilityLiveRegion="assertive"
+          accessibilityLabel={
+            studentWatermarkId
+              ? `Protected content — this capture contains your student watermark: ${studentWatermarkId}`
+              : 'Protected content — captures are watermarked and unauthorized sharing is prohibited.'
+          }
+        >
+          <View style={styles.screenshotWarningIconContainer}>
+            <Icon name="shield" size={14} color={colors.warning} />
+          </View>
+          <View style={styles.screenshotWarningTextContainer}>
+            <Text style={styles.screenshotWarningTitle}>Screenshot Detected</Text>
+            <Text style={styles.screenshotWarningBody} numberOfLines={2}>
+              {studentWatermarkId
+                ? `Protected content — this capture contains your student watermark: ${studentWatermarkId}`
+                : 'Protected content — captures are watermarked and unauthorized sharing is prohibited.'}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={styles.screenshotWarningDismiss}
+            onPress={dismissScreenshotWarning}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss screenshot warning"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Icon name="x" size={14} color={colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
+      )}
 
       {status === 'loading' && (
         <View style={styles.loadingOverlay} pointerEvents="none">
@@ -548,5 +834,74 @@ const styles = StyleSheet.create({
   optionTextActive: {
     color: colors.accent,
     fontWeight: '700',
+  },
+  watermarkContainer: {
+    position: 'absolute',
+    zIndex: 15,
+  },
+  watermarkBadge: {
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  watermarkText: {
+    color: 'rgba(255, 255, 255, 0.78)',
+    fontSize: 11,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+    letterSpacing: 1,
+  },
+  watermarkSubtext: {
+    color: 'rgba(255, 255, 255, 0.48)',
+    fontSize: 8,
+    fontWeight: '500',
+  },
+  screenshotWarningBanner: {
+    position: 'absolute',
+    top: spacing.sm,
+    left: spacing.sm,
+    right: spacing.sm,
+    zIndex: 30,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(15, 15, 15, 0.95)',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(251, 146, 60, 0.45)',
+    paddingVertical: 6,
+    paddingHorizontal: spacing.sm,
+    gap: spacing.sm,
+  },
+  screenshotWarningIconContainer: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(251, 146, 60, 0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  screenshotWarningTextContainer: {
+    flex: 1,
+  },
+  screenshotWarningTitle: {
+    color: colors.warning,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  screenshotWarningBody: {
+    color: colors.text,
+    fontSize: 11,
+    fontWeight: '500',
+    lineHeight: 14,
+  },
+  screenshotWarningDismiss: {
+    padding: spacing.xs,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

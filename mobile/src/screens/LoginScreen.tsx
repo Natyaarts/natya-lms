@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -34,6 +34,23 @@ export default function LoginScreen({ navigation }: any) {
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const scrollViewRef = useRef<ScrollView>(null);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => setIsKeyboardVisible(true)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setIsKeyboardVisible(false)
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   // India keeps its existing, already-working 10-digit expectation exactly
   // as before (never regress the primary user base); any other country
@@ -125,13 +142,17 @@ export default function LoginScreen({ navigation }: any) {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <KeyboardAvoidingView
         style={styles.keyboardAvoidingView}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          ref={scrollViewRef}
+          contentContainerStyle={[
+            styles.scrollContent,
+            isKeyboardVisible && styles.scrollContentWithKeyboard,
+          ]}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}
@@ -139,11 +160,16 @@ export default function LoginScreen({ navigation }: any) {
         >
           <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
             <View style={styles.content}>
-              <View style={styles.logoContainer}>
-                <Image source={require('../../assets/logo.png')} style={styles.logoImage} />
+              <View style={[styles.logoContainer, isKeyboardVisible && styles.logoContainerKeyboard]}>
+                <Image
+                  source={require('../../assets/logo.png')}
+                  style={[styles.logoImage, isKeyboardVisible && styles.logoImageKeyboard]}
+                />
               </View>
-              <Text style={styles.title}>Learning Hub</Text>
-              <Text style={styles.subtitle}>Welcome back! Sign in to continue your learning journey.</Text>
+              <Text style={[styles.title, isKeyboardVisible && styles.titleKeyboard]}>Learning Hub</Text>
+              {!isKeyboardVisible && (
+                <Text style={styles.subtitle}>Welcome back! Sign in to continue your learning journey.</Text>
+              )}
 
               {step === 'PHONE' ? (
                 <>
@@ -173,6 +199,11 @@ export default function LoginScreen({ navigation }: any) {
                       inputAccessoryViewID={Platform.OS === 'ios' ? INPUT_ACCESSORY_ID : undefined}
                       returnKeyType="done"
                       onSubmitEditing={Keyboard.dismiss}
+                      onFocus={() => {
+                        setTimeout(() => {
+                          scrollViewRef.current?.scrollTo({ y: 40, animated: true });
+                        }, 100);
+                      }}
                     />
                   </View>
 
@@ -344,6 +375,11 @@ export default function LoginScreen({ navigation }: any) {
                     inputAccessoryViewID={Platform.OS === 'ios' ? INPUT_ACCESSORY_ID : undefined}
                     returnKeyType="done"
                     onSubmitEditing={Keyboard.dismiss}
+                    onFocus={() => {
+                      setTimeout(() => {
+                        scrollViewRef.current?.scrollTo({ y: 40, animated: true });
+                      }, 100);
+                    }}
                   />
                   <TouchableOpacity style={styles.button} onPress={handleVerifyOtp} disabled={loading}>
                     {loading ? <ActivityIndicator color={colors.textInverse} /> : <Text style={styles.buttonText}>Verify & Login</Text>}
@@ -387,10 +423,14 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   keyboardAvoidingView: { flex: 1 },
   scrollContent: { flexGrow: 1, justifyContent: 'center' },
-  content: { padding: 24, flex: 1, justifyContent: 'center' },
+  scrollContentWithKeyboard: { justifyContent: 'flex-start', paddingBottom: 60 },
+  content: { padding: 24, justifyContent: 'center' },
   logoContainer: { alignItems: 'center', marginBottom: 12 },
+  logoContainerKeyboard: { marginBottom: 6, marginTop: 4 },
   logoImage: { width: 120, height: 120, resizeMode: 'contain' },
+  logoImageKeyboard: { width: 56, height: 56 },
   title: { fontSize: 28, fontWeight: '700', color: colors.text, marginBottom: 6, textAlign: 'center' },
+  titleKeyboard: { fontSize: 22, marginBottom: 12 },
   subtitle: { fontSize: 14, color: colors.textSecondary, marginBottom: 24, textAlign: 'center', lineHeight: 20 },
   accessoryBar: {
     backgroundColor: '#1C1C1E',

@@ -178,7 +178,14 @@ def send_billing_notification(
     aws_key = getattr(settings, 'AWS_ACCESS_KEY_ID', None)
     aws_secret = getattr(settings, 'AWS_SECRET_ACCESS_KEY', None)
 
-    if student_email and aws_key and aws_secret:
+    is_staging = getattr(settings, 'IS_STAGING', False)
+    allow_staging_ses = getattr(settings, 'ENABLE_STAGING_SES', False) or (os.environ.get('ENABLE_STAGING_SES', 'False').lower() in ('true', '1', 'yes'))
+    allow_staging_whatsapp = getattr(settings, 'ENABLE_STAGING_WHATSAPP', False) or (os.environ.get('ENABLE_STAGING_WHATSAPP', 'False').lower() in ('true', '1', 'yes'))
+
+    if is_staging and not allow_staging_ses:
+        channels_attempted.append("EMAIL (STAGING CONSOLE)")
+        logger.info("Staging environment: suppressing outbound AWS SES email to %s (console mock)", student_email)
+    elif student_email and aws_key and aws_secret:
         try:
             import boto3
             from botocore.exceptions import BotoCoreError, ClientError
@@ -208,7 +215,10 @@ def send_billing_notification(
     student_phone = getattr(plan.student, 'phone_number', None)
     interakt_key = getattr(settings, 'INTERAKT_SECRET_KEY', None)
 
-    if student_phone and interakt_key:
+    if is_staging and not allow_staging_whatsapp:
+        channels_attempted.append("WHATSAPP (STAGING MOCK)")
+        logger.info("Staging environment: suppressing outbound Interakt WhatsApp to phone ending in %s", str(student_phone)[-4:] if student_phone else 'none')
+    elif student_phone and interakt_key:
         try:
             import requests
             clean_phone = student_phone.replace('+', '').replace(' ', '').replace('-', '').strip()

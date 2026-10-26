@@ -26,6 +26,21 @@ export interface AudioTrackOption {
   status?: string;
 }
 
+export interface WatermarkConfig {
+  enabled?: boolean;
+  text?: string;
+  student_id?: string;
+  moving?: boolean;
+  interval_seconds?: number;
+  opacity?: number;
+}
+
+export interface PlaybackRefreshResult {
+  videoUrl: string;
+  translatedAudios?: AudioTrackOption[];
+  expiresIn?: number;
+}
+
 export interface WebVideoPlayerProps {
   videoUrl: string;
   poster?: string;
@@ -35,6 +50,11 @@ export interface WebVideoPlayerProps {
   savedProgressPosition?: number;
   onSaveProgress?: (position: number, duration: number, completed: boolean) => Promise<void> | void;
   onEnded?: () => void;
+  watermark?: WatermarkConfig;
+  downloadEnabled?: boolean;
+  expiresIn?: number;
+  onRefreshUrls?: () => Promise<PlaybackRefreshResult | null>;
+  onAuthRevoked?: (message?: string) => void;
 }
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -76,19 +96,64 @@ const formatTime = (timeInSeconds: number) => {
   return `${m}:${s < 10 ? "0" : ""}${s}`;
 };
 
+const DEFAULT_TRANSLATED_AUDIOS: AudioTrackOption[] = [];
+
 export default function WebVideoPlayer({
   videoUrl,
   poster,
   title,
   lessonId,
-  translatedAudios = [],
+  translatedAudios = DEFAULT_TRANSLATED_AUDIOS,
   savedProgressPosition = 0,
   onSaveProgress,
   onEnded,
+  watermark,
+  downloadEnabled = false,
+  expiresIn = 900,
+  onRefreshUrls,
+  onAuthRevoked,
 }: WebVideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+
+  const [currentVideoUrl, setCurrentVideoUrl] = useState<string>(videoUrl);
+  const [currentAudios, setCurrentAudios] = useState<AudioTrackOption[]>(translatedAudios);
+
+  // Expiry refresh & error recovery refs
+  const prevLessonIdRef = useRef<number | undefined>(lessonId);
+  const isRefreshingRef = useRef<boolean>(false);
+  const isAuthRevokedRef = useRef<boolean>(false);
+  const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const consecutiveErrorsRef = useRef<number>(0);
+  const pendingRestorePosRef = useRef<number | null>(null);
+  const wasPlayingRef = useRef<boolean>(true);
+
+  // Watermark configuration & dynamic positioning
+  const watermarkEnabled = watermark?.enabled !== false && !!(watermark?.text || watermark?.student_id);
+  const watermarkText = watermark?.text || watermark?.student_id || "";
+  const isMovingWatermark = watermark?.moving !== false;
+  const watermarkInterval =
+    watermark?.interval_seconds && watermark.interval_seconds >= 3
+      ? watermark.interval_seconds * 1000
+      : 15000;
+  const watermarkOpacity = typeof watermark?.opacity === "number" ? watermark.opacity : 0.35;
+
+  const [watermarkPos, setWatermarkPos] = useState({ top: 18, left: 18 });
+
+  useEffect(() => {
+    if (!watermarkEnabled || !isMovingWatermark) return;
+
+    const moveWatermark = () => {
+      // Keep watermark within safe visible bounds (top: 8%..75%, left: 6%..70%)
+      const nextTop = Math.floor(8 + Math.random() * 67);
+      const nextLeft = Math.floor(6 + Math.random() * 64);
+      setWatermarkPos({ top: nextTop, left: nextLeft });
+    };
+
+    const intervalId = setInterval(moveWatermark, watermarkInterval);
+    return () => clearInterval(intervalId);
+  }, [watermarkEnabled, isMovingWatermark, watermarkInterval]);
 
   // Playback state
   const [isPlaying, setIsPlaying] = useState(true);
@@ -118,31 +183,166 @@ export default function WebVideoPlayer({
   const hasAppliedInitialSeekRef = useRef(false);
 
   // Available completed alternate audio tracks
-  const availableAudios = translatedAudios.filter(
-    (a) => (!a.status || a.status === "completed") && a.audio_file
+  const availableAudios = currentAudios.filter(
+    (a) => (!a.status || a.status === "completed") && (a.audio_file || (a as any).audio_url)
   );
 
-  // Reset states when lesson or videoUrl changes
+  const activeLanguageRef = useRef(activeLanguage);
   useEffect(() => {
-    setActiveLanguage("en");
-    setShowLanguageMenu(false);
-    setShowSpeedMenu(false);
-    hasAppliedInitialSeekRef.current = false;
-    lastSavedTimeRef.current = 0;
-    setIsBuffering(true);
-    setHasError(false);
-    setErrorMessage(null);
-    setProgressPercent(0);
-    setBufferedPercent(0);
-    setCurrentTime(0);
-    setDuration(0);
+    activeLanguageRef.current = activeLanguage;
+  }, [activeLanguage]);
 
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.removeAttribute("src");
-      audioRef.current.load();
+  const performRefresh = useCallback(
+    async (isErrorRecovery = false): Promise<boolean> => {
+      if (!onRefreshUrls || isRefreshingRef.current) return false;
+
+      isRefreshingRef.current = true;
+      try {
+        const result = await onRefreshUrls();
+        if (!result || !result.videoUrl) {
+          if (refreshTimerRef.current) {
+            clearTimeout(refreshTimerRef.current);
+            refreshTimerRef.current = null;
+          }
+          if (isErrorRecovery) {
+            isAuthRevokedRef.current = true;
+            setHasError(true);
+            setErrorMessage(
+              "Your access to this video has expired or was revoked. Please renew or enroll to continue watching."
+            );
+            onAuthRevoked?.("Access revoked");
+          }
+          return false;
+        }
+
+        // Capture playback position & state before swap
+        const v = videoRef.current;
+        const pos = v && Number.isFinite(v.currentTime) ? v.currentTime : 0;
+        const wasPlaying = v ? !v.paused : true;
+
+        pendingRestorePosRef.current = pos;
+        wasPlayingRef.current = wasPlaying;
+
+        setCurrentVideoUrl(result.videoUrl);
+        if (result.translatedAudios) {
+          setCurrentAudios(result.translatedAudios);
+          // If alternate audio is active, update audio element source seamlessly
+          const curLang = activeLanguageRef.current;
+          if (curLang !== "en" && audioRef.current) {
+            const track = result.translatedAudios.find(
+              (a) => a.language_code.split("-")[0] === curLang
+            );
+            const newAudioSrc = track?.audio_file || (track as any)?.audio_url;
+            if (newAudioSrc) {
+              audioRef.current.src = newAudioSrc;
+              audioRef.current.currentTime = pos;
+              audioRef.current.playbackRate = v?.playbackRate || 1;
+              if (wasPlaying) {
+                audioRef.current.play().catch(() => {});
+              }
+            }
+          }
+        }
+
+        setHasError(false);
+        setErrorMessage(null);
+
+        // Re-schedule proactive refresh
+        const nextExpiry = result.expiresIn || expiresIn || 900;
+        const nextDelay = Math.max(0.01, nextExpiry - 180);
+        if (refreshTimerRef.current) {
+          clearTimeout(refreshTimerRef.current);
+        }
+        const timerId = setTimeout(() => {
+          performRefreshRef.current?.(false);
+        }, nextDelay * 1000);
+        if (typeof (timerId as any)?.unref === "function") {
+          (timerId as any).unref();
+        }
+        refreshTimerRef.current = timerId;
+
+        return true;
+      } catch (err) {
+        // Never log full signed URLs or credentials
+        console.warn("Failed to refresh playback media URLs.");
+        return false;
+      } finally {
+        isRefreshingRef.current = false;
+      }
+    },
+    [onRefreshUrls, expiresIn, onAuthRevoked]
+  );
+
+  const performRefreshRef = useRef(performRefresh);
+  useEffect(() => {
+    performRefreshRef.current = performRefresh;
+  }, [performRefresh]);
+
+  // Reset or update states when lesson or sources change
+  useEffect(() => {
+    if (prevLessonIdRef.current !== lessonId) {
+      prevLessonIdRef.current = lessonId;
+      isAuthRevokedRef.current = false;
+      setActiveLanguage("en");
+      setShowLanguageMenu(false);
+      setShowSpeedMenu(false);
+      hasAppliedInitialSeekRef.current = false;
+      lastSavedTimeRef.current = 0;
+      consecutiveErrorsRef.current = 0;
+      pendingRestorePosRef.current = null;
+      setIsBuffering(true);
+      setHasError(false);
+      setErrorMessage(null);
+      setProgressPercent(0);
+      setBufferedPercent(0);
+      setCurrentTime(0);
+      setDuration(0);
+      setCurrentVideoUrl(videoUrl);
+      setCurrentAudios(translatedAudios);
+
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.removeAttribute("src");
+        audioRef.current.load();
+      }
+    } else {
+      // Same lesson: non-disruptive update if props changed externally
+      if (videoUrl && videoUrl !== currentVideoUrl) {
+        const v = videoRef.current;
+        pendingRestorePosRef.current = v && Number.isFinite(v.currentTime) ? v.currentTime : 0;
+        wasPlayingRef.current = v ? !v.paused : true;
+        setCurrentVideoUrl(videoUrl);
+      }
+      if (translatedAudios && translatedAudios !== currentAudios) {
+        if (
+          translatedAudios.length !== currentAudios.length ||
+          translatedAudios.some((t, i) => t.id !== currentAudios[i]?.id)
+        ) {
+          setCurrentAudios(translatedAudios);
+        }
+      }
     }
-  }, [lessonId, videoUrl]);
+  }, [lessonId, videoUrl, translatedAudios]);
+
+  // Proactive refresh timer lifecycle
+  useEffect(() => {
+    if (onRefreshUrls) {
+      const delay = Math.max(0.01, (expiresIn || 900) - 180);
+      const timerId = setTimeout(() => {
+        performRefreshRef.current?.(false);
+      }, delay * 1000);
+      if (typeof (timerId as any)?.unref === "function") {
+        (timerId as any).unref();
+      }
+      refreshTimerRef.current = timerId;
+    }
+    return () => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [lessonId, onRefreshUrls, expiresIn]);
 
   // Fullscreen event listener
   useEffect(() => {
@@ -227,13 +427,29 @@ export default function WebVideoPlayer({
 
   // Video event handlers
   const handleLoadedMetadata = () => {
+    consecutiveErrorsRef.current = 0;
     if (videoRef.current) {
       const dur = videoRef.current.duration;
       if (Number.isFinite(dur) && dur > 0) {
         setDuration(dur);
-        if (savedProgressPosition > 0) {
-          tryInitialSeek(savedProgressPosition, dur);
+      }
+
+      if (pendingRestorePosRef.current !== null) {
+        const restoreTime = pendingRestorePosRef.current;
+        pendingRestorePosRef.current = null;
+        videoRef.current.currentTime = restoreTime;
+        if (activeLanguage !== "en" && audioRef.current) {
+          audioRef.current.currentTime = restoreTime;
         }
+        setCurrentTime(restoreTime);
+        if (wasPlayingRef.current) {
+          videoRef.current.play().catch(() => {});
+          if (activeLanguage !== "en" && audioRef.current) {
+            audioRef.current.play().catch(() => {});
+          }
+        }
+      } else if (savedProgressPosition > 0 && !hasAppliedInitialSeekRef.current && dur > 0) {
+        tryInitialSeek(savedProgressPosition, dur);
       }
       // Apply configured speed to video
       videoRef.current.playbackRate = playbackSpeed;
@@ -253,6 +469,7 @@ export default function WebVideoPlayer({
   const handlePlay = () => {
     setIsPlaying(true);
     setIsBuffering(false);
+    consecutiveErrorsRef.current = 0;
     if (activeLanguage !== "en" && audioRef.current && videoRef.current) {
       if (Math.abs(audioRef.current.currentTime - videoRef.current.currentTime) > 0.3) {
         audioRef.current.currentTime = videoRef.current.currentTime;
@@ -319,12 +536,39 @@ export default function WebVideoPlayer({
   };
 
   const handleVideoError = () => {
-    setIsBuffering(false);
-    setHasError(true);
-    setErrorMessage("Unable to play video. Please check your internet connection or try again.");
+    if (isAuthRevokedRef.current) {
+      return;
+    }
+    if (onRefreshUrls && consecutiveErrorsRef.current < 2 && !isRefreshingRef.current) {
+      consecutiveErrorsRef.current += 1;
+      setIsBuffering(true);
+      performRefresh(true).then((success) => {
+        if (!success && !isAuthRevokedRef.current) {
+          setIsBuffering(false);
+          setHasError(true);
+          setErrorMessage((prev) => prev || "Unable to play video. Please check your internet connection or try again.");
+        }
+      });
+      return;
+    }
+    if (!isAuthRevokedRef.current) {
+      setIsBuffering(false);
+      setHasError(true);
+      setErrorMessage((prev) => prev || "Unable to play video. Please check your internet connection or try again.");
+    }
   };
 
   const handleAudioError = () => {
+    if (onRefreshUrls && consecutiveErrorsRef.current < 2 && !isRefreshingRef.current) {
+      consecutiveErrorsRef.current += 1;
+      performRefresh(true).then((success) => {
+        if (!success) {
+          console.warn("Alternate audio failed to load. Falling back to original audio.");
+          changeLanguage("en");
+        }
+      });
+      return;
+    }
     console.warn("Alternate audio failed to load. Falling back to original audio.");
     // Fallback cleanly to English original
     changeLanguage("en");
@@ -405,11 +649,12 @@ export default function WebVideoPlayer({
       const audioTrack = availableAudios.find(
         (a) => a.language_code.split("-")[0] === langCode
       );
+      const audioSrc = audioTrack?.audio_file || (audioTrack as any)?.audio_url;
       if (videoRef.current) {
         videoRef.current.muted = true; // Video audio muted when alternate audio plays
       }
-      if (audioRef.current && audioTrack?.audio_file) {
-        audioRef.current.src = audioTrack.audio_file;
+      if (audioRef.current && audioSrc) {
+        audioRef.current.src = audioSrc;
         audioRef.current.load();
         audioRef.current.volume = volume;
         audioRef.current.muted = isMuted;
@@ -429,13 +674,17 @@ export default function WebVideoPlayer({
   const handleMouseMove = () => {
     setShowControls(true);
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
-    controlsTimeoutRef.current = setTimeout(() => {
+    const timerId = setTimeout(() => {
       if (isPlaying) {
         setShowControls(false);
         setShowLanguageMenu(false);
         setShowSpeedMenu(false);
       }
     }, 2800);
+    if (typeof (timerId as any)?.unref === "function") {
+      (timerId as any).unref();
+    }
+    controlsTimeoutRef.current = timerId;
   };
 
   const handleMouseLeave = () => {
@@ -445,6 +694,15 @@ export default function WebVideoPlayer({
       setShowSpeedMenu(false);
     }
   };
+
+  useEffect(() => {
+    return () => {
+      if (controlsTimeoutRef.current) {
+        clearTimeout(controlsTimeoutRef.current);
+        controlsTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   // Keyboard shortcuts (ignoring inputs, textareas, contentEditable)
   useEffect(() => {
@@ -457,7 +715,7 @@ export default function WebVideoPlayer({
           tag === "textarea" ||
           tag === "select" ||
           target.isContentEditable ||
-          target.getAttribute("role") === "textbox"
+          target.getAttribute?.("role") === "textbox"
         ) {
           return;
         }
@@ -540,13 +798,17 @@ export default function WebVideoPlayer({
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       onDoubleClick={toggleFullscreen}
+      onContextMenu={(e) => e.preventDefault()}
     >
-      {/* HTML5 Video Element */}
+      {/* HTML5 Video Element with download and pip deterrence */}
       <video
         ref={videoRef}
-        src={videoUrl}
+        src={currentVideoUrl}
         poster={poster}
         className="w-full h-full object-contain cursor-pointer"
+        controlsList={downloadEnabled ? undefined : "nodownload"}
+        disablePictureInPicture={!downloadEnabled}
+        onContextMenu={(e) => e.preventDefault()}
         onPlay={handlePlay}
         onPause={handlePause}
         onTimeUpdate={handleTimeUpdate}
@@ -567,6 +829,25 @@ export default function WebVideoPlayer({
 
       {/* Hidden Audio Element for translated voice-over */}
       <audio ref={audioRef} onError={handleAudioError} className="hidden" />
+
+      {/* Dynamic Student Watermark Overlay (visible in normal and fullscreen playback) */}
+      {watermarkEnabled && watermarkText && (
+        <div
+          data-testid="student-watermark"
+          aria-hidden="true"
+          className="absolute pointer-events-none z-20 select-none transition-all duration-1000 ease-in-out"
+          style={{
+            top: `${watermarkPos.top}%`,
+            left: `${watermarkPos.left}%`,
+            opacity: watermarkOpacity,
+          }}
+        >
+          <div className="flex flex-col items-start px-2.5 py-1 rounded bg-black/40 backdrop-blur-[1px] border border-white/10 font-mono text-[11px] sm:text-xs font-semibold text-white tracking-wider drop-shadow-[0_2px_4px_rgba(0,0,0,0.85)]">
+            <span>{watermarkText}</span>
+            <span className="text-[9px] font-normal text-white/60 tracking-normal">Natya LMS</span>
+          </div>
+        </div>
+      )}
 
       {/* Buffering Spinner */}
       {isBuffering && !hasError && (
@@ -640,9 +921,11 @@ export default function WebVideoPlayer({
             value={progressPercent}
             onChange={(e) => {
               const val = parseFloat(e.target.value);
-              setProgressPercent(val);
-              if (videoRef.current && duration > 0) {
-                seekTo((val / 100) * duration);
+              if (Math.abs(val - progressPercent) > 0.05) {
+                setProgressPercent(val);
+                if (videoRef.current && duration > 0) {
+                  seekTo((val / 100) * duration);
+                }
               }
             }}
             aria-label="Seek video position"
@@ -670,24 +953,32 @@ export default function WebVideoPlayer({
 
             {/* 10s Rewind */}
             <button
-              onClick={() => seekRelative(-10)}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                seekRelative(-10);
+              }}
               aria-label="Seek backward 10 seconds"
               title="Rewind 10s (Left Arrow)"
-              className="p-2 rounded-full hover:bg-white/10 hover:text-[#facc15] transition-colors relative flex items-center justify-center"
+              className="p-2 rounded-full hover:bg-white/10 hover:text-[#facc15] transition-colors relative flex items-center justify-center cursor-pointer"
             >
-              <RotateCcw className="w-4 h-4" />
-              <span className="text-[9px] font-mono font-bold absolute bottom-0.5 right-0.5">10</span>
+              <RotateCcw className="w-4 h-4 pointer-events-none" />
+              <span className="text-[9px] font-mono font-bold absolute bottom-0.5 right-0.5 pointer-events-none">10</span>
             </button>
 
             {/* 10s Forward */}
             <button
-              onClick={() => seekRelative(10)}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                seekRelative(10);
+              }}
               aria-label="Seek forward 10 seconds"
               title="Forward 10s (Right Arrow)"
-              className="p-2 rounded-full hover:bg-white/10 hover:text-[#facc15] transition-colors relative flex items-center justify-center"
+              className="p-2 rounded-full hover:bg-white/10 hover:text-[#facc15] transition-colors relative flex items-center justify-center cursor-pointer"
             >
-              <RotateCw className="w-4 h-4" />
-              <span className="text-[9px] font-mono font-bold absolute bottom-0.5 right-0.5">10</span>
+              <RotateCw className="w-4 h-4 pointer-events-none" />
+              <span className="text-[9px] font-mono font-bold absolute bottom-0.5 right-0.5 pointer-events-none">10</span>
             </button>
 
             {/* Volume & Slider */}

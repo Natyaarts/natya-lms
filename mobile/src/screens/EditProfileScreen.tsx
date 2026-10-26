@@ -5,7 +5,6 @@ import {
   TextInput,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   ActivityIndicator,
   ScrollView,
   Alert,
@@ -14,7 +13,9 @@ import {
   Keyboard,
   InputAccessoryView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import client from '../api/client';
+import { headerLayout } from '../theme';
 
 const INPUT_ACCESSORY_ID = 'editProfileDoneBar';
 
@@ -34,9 +35,25 @@ export default function EditProfileScreen({ navigation }: any) {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [form, setForm] = useState({ username: '', first_name: '', last_name: '', parent_name: '', parent_phone: '' });
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const scrollViewRef = useRef<ScrollView>(null);
   const fieldOffsets = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e: any) => setKeyboardHeight(e.endCoordinates.height)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setKeyboardHeight(0)
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const handleFocus = (fieldKey: string) => {
     const y = fieldOffsets.current[fieldKey];
@@ -46,7 +63,7 @@ export default function EditProfileScreen({ navigation }: any) {
           y: Math.max(0, y - 24),
           animated: true,
         });
-      }, 100);
+      }, 120);
     }
   };
 
@@ -112,7 +129,7 @@ export default function EditProfileScreen({ navigation }: any) {
   if (loading) return <View style={styles.centered}><ActivityIndicator color="#facc15" size="large" /></View>;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.backText}>← Back</Text></TouchableOpacity>
         <Text style={styles.headerTitle}>Edit Profile</Text>
@@ -133,7 +150,10 @@ export default function EditProfileScreen({ navigation }: any) {
         >
           <ScrollView
             ref={scrollViewRef}
-            contentContainerStyle={styles.content}
+            contentContainerStyle={[
+              styles.content,
+              { paddingBottom: keyboardHeight > 0 ? keyboardHeight + 80 : 80 },
+            ]}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
             showsVerticalScrollIndicator={false}
@@ -253,7 +273,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#050505' },
   keyboardAvoidingView: { flex: 1 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#050505', padding: 24 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, borderBottomWidth: 1, borderBottomColor: '#27272a' },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: headerLayout.stackHeaderPaddingTop, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: '#27272a' },
   backText: { color: '#facc15', fontSize: 16 },
   headerTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   content: { padding: 20, paddingBottom: 80 },

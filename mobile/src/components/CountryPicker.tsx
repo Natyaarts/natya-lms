@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Modal, FlatList } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Modal, FlatList, KeyboardAvoidingView, Platform } from 'react-native';
 import Icon from './Icon';
 import { colors, spacing, radius, typography } from '../theme';
 import { COUNTRIES, Country, flagEmoji } from '../data/countries';
@@ -34,7 +34,10 @@ export default function CountryPicker({ visible, selected, onSelect, onClose }: 
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
-      <View style={styles.overlay}>
+      <KeyboardAvoidingView
+        style={styles.overlay}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
         <View style={styles.sheet}>
           <View style={styles.header}>
             <Text style={styles.title}>Select country</Text>
@@ -80,7 +83,7 @@ export default function CountryPicker({ visible, selected, onSelect, onClose }: 
             style={styles.list}
           />
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

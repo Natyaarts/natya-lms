@@ -56,18 +56,23 @@ def get_attachment_presigned_url(message, request=None):
     Preserves participant authorization and private S3 storage without
     transmitting bearer tokens in URL query parameters.
     """
-    if getattr(settings, 'AWS_STORAGE_BUCKET_NAME', '') and getattr(settings, 'AWS_ACCESS_KEY_ID', ''):
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-            region_name=getattr(settings, 'AWS_S3_REGION_NAME', 'ap-south-1') or 'ap-south-1',
-            config=Config(signature_version='s3v4')
-        )
+    bucket_name = getattr(settings, 'AWS_STORAGE_BUCKET_NAME', '')
+    access_key = getattr(settings, 'AWS_ACCESS_KEY_ID', None)
+    secret_key = getattr(settings, 'AWS_SECRET_ACCESS_KEY', None)
+    use_s3 = bool(bucket_name and (bool(access_key and secret_key) or getattr(settings, 'IS_STAGING', False) or getattr(settings, 'AWS_S3_ENABLED', False)))
+    if use_s3:
+        client_kwargs = {
+            'region_name': getattr(settings, 'AWS_S3_REGION_NAME', 'ap-south-1') or 'ap-south-1',
+            'config': Config(signature_version='s3v4')
+        }
+        if access_key and secret_key:
+            client_kwargs['aws_access_key_id'] = access_key
+            client_kwargs['aws_secret_access_key'] = secret_key
+        s3_client = boto3.client('s3', **client_kwargs)
         return s3_client.generate_presigned_url(
             'get_object',
             Params={
-                'Bucket': settings.AWS_STORAGE_BUCKET_NAME,
+                'Bucket': bucket_name,
                 'Key': message.attachment.name,
                 'ResponseContentDisposition': f'inline; filename="{message.attachment_name}"',
             },
@@ -439,8 +444,12 @@ class AttachmentDownloadView(APIView):
                 "attachment_mime_type": message.attachment_mime_type,
             })
 
-        # S3 presigned redirect in production
-        if getattr(settings, 'AWS_STORAGE_BUCKET_NAME', '') and getattr(settings, 'AWS_ACCESS_KEY_ID', ''):
+        # S3 presigned redirect in production / staging
+        bucket_name = getattr(settings, 'AWS_STORAGE_BUCKET_NAME', '')
+        access_key = getattr(settings, 'AWS_ACCESS_KEY_ID', None)
+        secret_key = getattr(settings, 'AWS_SECRET_ACCESS_KEY', None)
+        use_s3 = bool(bucket_name and (bool(access_key and secret_key) or getattr(settings, 'IS_STAGING', False) or getattr(settings, 'AWS_S3_ENABLED', False)))
+        if use_s3:
             presigned_url = get_attachment_presigned_url(message, request=request)
             return HttpResponseRedirect(presigned_url)
 

@@ -6,7 +6,7 @@ import client from '../api/client';
 import { unregisterForPushNotificationsAsync } from '../api/pushNotifications';
 import Icon, { FeatherIconName } from '../components/Icon';
 import AccountDeletionModal from '../components/AccountDeletionModal';
-import { colors, spacing, radius, typography } from '../theme';
+import { colors, spacing, radius, typography, headerLayout } from '../theme';
 
 // Phase 4.9 -- profile screen: the missing navigation hub for every
 // previously-unreachable P0 surface (live classes, subscription/payment
@@ -83,7 +83,7 @@ export default function ProfileScreen({ navigation }: any) {
   const displayName = user?.first_name || user?.username || 'Student';
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.avatarSection}>
           <View style={styles.avatar}>
@@ -156,7 +156,7 @@ const styles = StyleSheet.create({
   // a full 7-item menu (Certificates/Invoices/Logout) can render past the
   // screen edge with nothing to actually scroll against to reach it.
   scroll: { flex: 1 },
-  content: { padding: spacing.xl, paddingTop: spacing.xxl, paddingBottom: spacing.xxxl * 2 },
+  content: { padding: spacing.xl, paddingTop: spacing.lg + headerLayout.topGap, paddingBottom: spacing.xxxl * 2 },
   avatarSection: { alignItems: 'center', marginBottom: spacing.xxxl },
   avatar: {
     width: 72, height: 72, borderRadius: 36, backgroundColor: colors.accent,

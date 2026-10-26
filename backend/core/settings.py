@@ -35,6 +35,8 @@ load_dotenv(os.path.join(BASE_DIR, '.env'), override=True)
 # missing this env var would silently run with verbose debug error pages
 # and every other permissive fallback below.
 DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+ENVIRONMENT = os.environ.get('ENVIRONMENT', os.environ.get('SENTRY_ENVIRONMENT', 'development' if DEBUG else 'production')).lower()
+IS_STAGING = ENVIRONMENT in ('staging', 'stage') or os.environ.get('STAGING', 'False').lower() in ('true', '1', 'yes')
 
 # SECURITY WARNING: keep the secret key used in production secret!
 # Production MUST set SECRET_KEY -- no fallback is available outside of
@@ -500,15 +502,22 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 # AWS S3 Configuration
-AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID', '')
-AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
-AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME', '')
-AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', '')
+# In staging (IS_STAGING=True), boto3 can use the EC2 instance profile IAM role
+# when explicit keys are absent, while production strictly requires explicit keys.
+_aws_key = os.environ.get('AWS_ACCESS_KEY_ID', '').strip()
+_aws_secret = os.environ.get('AWS_SECRET_ACCESS_KEY', '').strip()
+AWS_ACCESS_KEY_ID = _aws_key if _aws_key else None
+AWS_SECRET_ACCESS_KEY = _aws_secret if _aws_secret else None
+AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME', '').strip()
+AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'ap-south-1') or 'ap-south-1'
 AWS_S3_SIGNATURE_VERSION = 's3v4'
 AWS_S3_FILE_OVERWRITE = False
 AWS_DEFAULT_ACL = None
 
-if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_STORAGE_BUCKET_NAME:
+HAS_AWS_KEYS = bool(AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)
+ALLOW_IAM_ROLE = IS_STAGING
+
+if AWS_STORAGE_BUCKET_NAME and (HAS_AWS_KEYS or ALLOW_IAM_ROLE):
     STORAGES = {
         "default": {
             "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
@@ -518,10 +527,19 @@ if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_STORAGE_BUCKET_NAME:
         },
     }
 elif not DEBUG:
-    raise ImproperlyConfigured(
-        "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_STORAGE_BUCKET_NAME must all be set in "
-        "production -- refusing to silently fall back to local/ephemeral disk storage for media uploads."
-    )
+    if not AWS_STORAGE_BUCKET_NAME:
+        raise ImproperlyConfigured(
+            "AWS_STORAGE_BUCKET_NAME must be set in production/staging -- refusing to silently "
+            "fall back to local/ephemeral disk storage for media uploads."
+        )
+    if not (HAS_AWS_KEYS or ALLOW_IAM_ROLE):
+        raise ImproperlyConfigured(
+            "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set in production -- refusing to silently "
+            "fall back to local/ephemeral disk storage."
+        )
+
+# Helper indicator for view-layer presigned URL generation and direct S3 operations
+AWS_S3_ENABLED = bool(AWS_STORAGE_BUCKET_NAME and (HAS_AWS_KEYS or ALLOW_IAM_ROLE))
 # Video and large file upload limits (allow up to 2 GB with buffer)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 2621440000  # 2.5 GB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 2621440000  # 2.5 GB
@@ -539,6 +557,9 @@ AUTH_USER_MODEL = 'users.User'
 # not a placeholder -- rotate this key if it was ever live.)
 if DEBUG:
     INTERAKT_SECRET_KEY = os.getenv('INTERAKT_SECRET_KEY', '')
+elif IS_STAGING:
+    # Staging: default to dummy key to avoid blocking boot or dispatching real WhatsApp messages
+    INTERAKT_SECRET_KEY = os.getenv('INTERAKT_SECRET_KEY', 'staging_interakt_test_dummy_key')
 else:
     INTERAKT_SECRET_KEY = os.getenv('INTERAKT_SECRET_KEY')
     if not INTERAKT_SECRET_KEY:
@@ -565,22 +586,28 @@ else:
             "RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET environment variables must be set in production."
         )
 
+# Fail-closed guard: Staging must NEVER use live Razorpay credentials,
+# and MUST require Razorpay Test Mode credentials and webhook secret.
+if IS_STAGING:
+    if not RAZORPAY_KEY_ID:
+        raise ImproperlyConfigured("RAZORPAY_KEY_ID environment variable is required in staging.")
+    if RAZORPAY_KEY_ID.startswith('rzp_live_'):
+        raise ImproperlyConfigured(
+            f"CRITICAL SECURITY HAZARD: Live Razorpay credentials ('{RAZORPAY_KEY_ID[:12]}...') detected in staging! "
+            "Staging environments are strictly restricted to Razorpay Test Mode keys (rzp_test_...)."
+        )
+    if not RAZORPAY_KEY_ID.startswith('rzp_test_'):
+        raise ImproperlyConfigured(
+            f"Staging requires Razorpay Test Mode credentials starting with 'rzp_test_', got: '{RAZORPAY_KEY_ID[:12]}...'"
+        )
+    if not RAZORPAY_KEY_SECRET:
+        raise ImproperlyConfigured("RAZORPAY_KEY_SECRET environment variable is required in staging.")
+    if not os.getenv('RAZORPAY_WEBHOOK_SECRET'):
+        raise ImproperlyConfigured("RAZORPAY_WEBHOOK_SECRET environment variable is required in staging.")
+
 # Phase 3.2: a separate secret from RAZORPAY_KEY_SECRET, configured in the
 # Razorpay dashboard specifically for webhook signature verification --
 # never the same value as the API key secret.
-#
-# Deliberately NOT a hard fail-at-boot requirement (unlike SECRET_KEY/
-# ALLOWED_HOSTS/S3/Celery in the earlier production-hardening pass): those
-# were all pieces of already-running production infrastructure, so failing
-# loudly at startup if one went missing was the safe choice. The webhook
-# endpoint is brand new -- nothing in the current production environment
-# has this variable set yet, and this app boots and serves checkout/login/
-# every other route whether or not a webhook secret is configured. Crashing
-# the ENTIRE application at startup over one new, optional-until-you-wire-
-# it-up-in-the-Razorpay-dashboard feature would be strictly worse than the
-# webhook endpoint alone refusing requests. RazorpayWebhookView checks this
-# itself at request time and returns 400 (logged) if it's blank, so the
-# feature degrades in isolation instead of taking the whole site down.
 RAZORPAY_WEBHOOK_SECRET = os.getenv('RAZORPAY_WEBHOOK_SECRET', '')
 
 # Celery Configuration
@@ -611,12 +638,27 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
 from celery.schedules import crontab
-CELERY_BEAT_SCHEDULE = {
-    'billing-daily-automation': {
-        'task': 'billing.tasks.billing_daily_automation',
-        'schedule': crontab(hour=1, minute=0),  # Runs daily at 01:00 AM IST
-    },
-}
+# Celery Beat Schedule
+# Staging safety guard: disable scheduled automated billing by default so staging
+# never executes recurring invoice generation or overdue status modifications on
+# imported or test users, unless explicitly enabled for testing via ENABLE_STAGING_BILLING_AUTOMATION.
+if IS_STAGING and not (os.environ.get('ENABLE_STAGING_BILLING_AUTOMATION', 'False').lower() in ('true', '1', 'yes')):
+    CELERY_BEAT_SCHEDULE = {}
+else:
+    CELERY_BEAT_SCHEDULE = {
+        'billing-daily-automation': {
+            'task': 'billing.tasks.billing_daily_automation',
+            'schedule': crontab(hour=1, minute=0),  # Runs daily at 01:00 AM IST
+        },
+    }
+
+# Email Backend Configuration
+# Staging and local development use the console backend by default so real emails
+# are never dispatched. Production uses SMTP / SES.
+if IS_STAGING or DEBUG:
+    EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
+else:
+    EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
 
 
 # Phase 3.9: Django cache backend, needed to make DRF throttling (OTP

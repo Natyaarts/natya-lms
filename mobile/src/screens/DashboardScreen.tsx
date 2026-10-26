@@ -9,7 +9,7 @@ import CourseCard from '../components/CourseCard';
 import SectionHeader from '../components/SectionHeader';
 import EmptyState from '../components/EmptyState';
 import ProgressBar from '../components/ProgressBar';
-import { colors, spacing, radius, typography } from '../theme';
+import { colors, spacing, radius, typography, headerLayout } from '../theme';
 
 // Walks the real, already-fetched modules/lessons of an enrolled course
 // (the same nested shape LearnScreen already reads) to find the first
@@ -108,7 +108,7 @@ export default function DashboardScreen({ navigation }: any) {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <View>
           <Text style={styles.eyebrow}>WELCOME BACK</Text>
@@ -276,7 +276,7 @@ const styles = StyleSheet.create({
 
   header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: spacing.lg, paddingTop: spacing.sm, paddingBottom: spacing.md,
+    paddingHorizontal: spacing.lg, paddingTop: headerLayout.tabHeaderPaddingTop, paddingBottom: spacing.md,
   },
   eyebrow: { ...typography.caption, marginBottom: 2 },
   headerTitle: { ...typography.title },

@@ -147,8 +147,8 @@ def _dispatch_otp(identifier: str, otp: str):
     if '@' in identifier:
         from .email_utils import OTPEmailDeliveryError, send_otp_email
         try:
-            if settings.DEBUG and not (settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY):
-                logger.info("DEBUG mode, no AWS credentials configured -- OTP for %s: %s", identifier, otp)
+            if (settings.DEBUG or getattr(settings, 'IS_STAGING', False)) and not (settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY):
+                logger.info("DEBUG/STAGING mode, no AWS credentials configured -- OTP for %s: %s", identifier, otp)
             else:
                 send_otp_email(identifier, otp)
         except OTPEmailDeliveryError as e:
@@ -159,6 +159,10 @@ def _dispatch_otp(identifier: str, otp: str):
             )
     else:
         # --- INTERAKT WHATSAPP INTEGRATION ---
+        if getattr(settings, 'IS_STAGING', False) and not (os.environ.get('ENABLE_STAGING_WHATSAPP', 'False').lower() in ('true', '1', 'yes')):
+            logger.info("STAGING MODE: Suppressing actual Interakt WhatsApp send -- OTP for %s: %s", identifier, otp)
+            return True, None
+
         INTERAKT_SECRET_KEY = settings.INTERAKT_SECRET_KEY
         TEMPLATE_NAME = settings.INTERAKT_TEMPLATE_NAME
 
@@ -1083,6 +1087,7 @@ class CurrentUserView(APIView):
             "username": request.user.username,
             "email": request.user.email,
             "phone_number": request.user.phone_number,
+            "student_id": getattr(request.user, 'student_id', None) or request.user.get_or_create_student_id(),
             "is_student": getattr(request.user, 'is_student', False),
             "is_teacher": getattr(request.user, 'is_teacher', False),
             "is_mentor": getattr(request.user, 'is_mentor', False),
@@ -1550,5 +1555,46 @@ class AutoCompleteSocialSignupView(View):
 
         from users.adapters import attach_jwt_cookies
         return attach_jwt_cookies(response, user)
+
+
+class WatermarkLookupView(APIView):
+    """
+    Staff-only administrative endpoint to look up a student by watermark ID (e.g. NAT-XXXXXX).
+    Used for incident investigation if leaked video footage containing a watermark is discovered.
+    Returns student identity details without exposing passwords, tokens, or sensitive credentials.
+    """
+    permission_classes = [IsSuperAdminOrAdmin]
+
+    def get(self, request):
+        watermark_id = request.query_params.get('id') or request.query_params.get('student_id')
+        if not watermark_id:
+            return Response(
+                {"error": "Watermark ID query parameter 'id' is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        watermark_id = watermark_id.strip()
+        user = User.objects.filter(student_id__iexact=watermark_id).first()
+        if not user:
+            return Response(
+                {"detail": f"Student with watermark ID '{watermark_id}' was not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response({
+            "student_id": user.student_id,
+            "user_id": user.id,
+            "username": user.username,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "email": user.email,
+            "phone_number": user.phone_number,
+            "parent_name": user.parent_name,
+            "parent_phone": user.parent_phone,
+            "is_active": user.is_active,
+            "is_student": user.is_student,
+            "date_joined": user.date_joined,
+        })
+
 
 

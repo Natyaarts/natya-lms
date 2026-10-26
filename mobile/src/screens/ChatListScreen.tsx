@@ -5,16 +5,16 @@ import {
   StyleSheet,
   FlatList,
   TouchableOpacity,
-  SafeAreaView,
   ActivityIndicator,
   RefreshControl,
   TextInput,
   Modal,
   Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import client from '../api/client';
 import Icon from '../components/Icon';
-import { colors, spacing, radius, typography } from '../theme';
+import { colors, spacing, radius, typography, headerLayout } from '../theme';
 
 interface UserMinimal {
   id: number;
@@ -198,7 +198,7 @@ export default function ChatListScreen({ navigation }: any) {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       {/* Top Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
@@ -376,7 +376,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
+    paddingTop: headerLayout.compactHeaderPaddingTop,
+    paddingBottom: spacing.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },

@@ -67,6 +67,17 @@ def send_expo_push_messages(messages, timeout=10):
     if not messages:
         return []
 
+    # Staging guard: suppress outbound push delivery by default to protect real students
+    try:
+        from django.conf import settings
+        is_staging = getattr(settings, 'IS_STAGING', False)
+        allow_staging_push = getattr(settings, 'ENABLE_STAGING_PUSH_NOTIFICATIONS', False) or (os.environ.get('ENABLE_STAGING_PUSH_NOTIFICATIONS', 'False').lower() in ('true', '1', 'yes'))
+        if is_staging and not allow_staging_push:
+            logger.info("Staging environment detected: suppressing actual Expo push delivery for %d messages.", len(messages))
+            return [{"status": "ok", "id": f"staging-mock-{i}"} for i in range(len(messages))]
+    except Exception:
+        pass
+
     tickets = []
     headers = _build_headers()
     for start in range(0, len(messages), EXPO_PUSH_CHUNK_SIZE):

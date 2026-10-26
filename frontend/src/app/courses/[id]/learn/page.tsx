@@ -6,7 +6,7 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Play, Check, ChevronLeft, Lock, ClipboardList, Trophy, Clock,
-  FileText, RotateCcw
+  FileText, RotateCcw, Award
 } from "lucide-react";
 import WebVideoPlayer from "@/components/player/WebVideoPlayer";
 
@@ -76,6 +76,28 @@ export default function CourseLearnPage() {
   const [savedProgressPosition, setSavedProgressPosition] = useState<number>(0);
   const lastSavedTime = useRef<number>(0);
   const activeLessonIdRef = useRef<number | null>(null);
+
+  // Playback authorization state for active lesson
+  const [playbackAuth, setPlaybackAuth] = useState<{
+    video_url: string;
+    video_duration?: number;
+    watermark?: {
+      enabled: boolean;
+      text: string;
+      student_id: string;
+      moving: boolean;
+      interval_seconds: number;
+    };
+    protection?: {
+      watermark_enabled: boolean;
+      download_enabled: boolean;
+      screen_capture_protection_enabled: boolean;
+    };
+    expires_in?: number;
+    translated_audios?: any[];
+  } | null>(null);
+  const [playbackAuthError, setPlaybackAuthError] = useState<string | null>(null);
+  const [playbackLoading, setPlaybackLoading] = useState(false);
 
   const getCsrfToken = () => {
     let csrfToken = "";
@@ -163,6 +185,94 @@ export default function CourseLearnPage() {
     };
 
     fetchProgress();
+  }, [activeLesson?.id]);
+
+  // Fetch playback authorization (short-lived signed URL, watermark, protection settings)
+  useEffect(() => {
+    if (!activeLesson?.id || activeLesson.is_locked) {
+      setPlaybackAuth(null);
+      setPlaybackAuthError(null);
+      setPlaybackLoading(false);
+      return;
+    }
+
+    const lessonId = activeLesson.id;
+    let isCancelled = false;
+
+    const fetchPlaybackAuth = async () => {
+      setPlaybackLoading(true);
+      try {
+        const res = await fetch(
+          `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${lessonId}/playback-auth/`,
+          {
+            credentials: "include",
+          }
+        );
+        if (isCancelled) return;
+        if (res.ok) {
+          const data = await res.json();
+          setPlaybackAuth(data);
+          setPlaybackAuthError(null);
+        } else if (res.status === 403) {
+          const errData = await res.json().catch(() => ({}));
+          setPlaybackAuth(null);
+          setPlaybackAuthError(errData.detail || "You do not have active access to this lesson's video.");
+        } else {
+          setPlaybackAuth(null);
+          setPlaybackAuthError("Unable to authorize playback. Please try again.");
+        }
+      } catch (err) {
+        if (!isCancelled) {
+          console.error("Playback authorization fetch failed:", err);
+          setPlaybackAuth(null);
+          setPlaybackAuthError("Network error while authorizing playback. Please check your connection.");
+        }
+      } finally {
+        if (!isCancelled) {
+          setPlaybackLoading(false);
+        }
+      }
+    };
+
+    fetchPlaybackAuth();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeLesson?.id, activeLesson?.is_locked]);
+
+  // Step 5: Refresh expiring signed playback media URLs (video and translated audio)
+  const handleRefreshPlaybackUrls = useCallback(async (): Promise<{
+    videoUrl: string;
+    translatedAudios?: any[];
+    expiresIn?: number;
+  } | null> => {
+    if (!activeLesson?.id) return null;
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${activeLesson.id}/playback-auth/`,
+        {
+          credentials: "include",
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setPlaybackAuth(data);
+        return {
+          videoUrl: data.video_url,
+          translatedAudios: data.translated_audios || [],
+          expiresIn: data.expires_in,
+        };
+      } else if (res.status === 403) {
+        const errData = await res.json().catch(() => ({}));
+        setPlaybackAuth(null);
+        setPlaybackAuthError(errData.detail || "Your access to this lesson's video has expired.");
+        return null;
+      }
+    } catch (err) {
+      console.warn("Failed to refresh playback URLs.");
+    }
+    return null;
   }, [activeLesson?.id]);
 
 
@@ -297,7 +407,8 @@ export default function CourseLearnPage() {
                   href={`/certificates/${id}`}
                   className="mt-3 flex items-center justify-center gap-2 w-full py-2 rounded-full bg-green-500/15 text-green-400 text-xs font-semibold hover:bg-green-500/25 transition-colors"
                 >
-                  🎓 View Your Certificate
+                  <Award className="w-3.5 h-3.5" />
+                  <span>View Your Certificate</span>
                 </Link>
               )}
             </div>
@@ -437,7 +548,24 @@ export default function CourseLearnPage() {
                 View Course Options
               </Link>
             </div>
-          ) : (
+          ) : playbackLoading ? (
+            <div className="w-full aspect-video bg-black flex flex-col items-center justify-center gap-3 text-[#facc15] md:rounded-2xl p-6">
+              <span className="h-8 w-8 border-2 border-[#facc15]/30 border-t-[#facc15] rounded-full animate-spin" />
+              <span className="text-xs font-medium text-zinc-400 tracking-wide">Authorizing secure playback…</span>
+            </div>
+          ) : playbackAuthError ? (
+            <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 bg-[#050505] p-6 text-center">
+              <Lock className="w-14 h-14 mb-6 text-amber-500/80" />
+              <p className="text-lg font-medium text-zinc-200 mb-2">{activeLesson.title}</p>
+              <p className="text-sm text-zinc-400 mb-6 max-w-sm leading-relaxed">{playbackAuthError}</p>
+              <Link
+                href={`/courses/${id}`}
+                className="px-5 py-2.5 bg-[#facc15] text-black font-semibold text-sm rounded-full hover:bg-yellow-400 transition-colors"
+              >
+                Renew or Enroll
+              </Link>
+            </div>
+          ) : playbackAuth?.video_url ? (
           <div className="w-full flex flex-col relative">
 
             <div className="relative bg-black md:p-6 md:pb-3">
@@ -445,11 +573,15 @@ export default function CourseLearnPage() {
               <div className="hidden md:block absolute inset-6 bg-[#facc15]/5 blur-[80px] rounded-full pointer-events-none" />
 
               <WebVideoPlayer
-                videoUrl={activeLesson.video_file}
+                videoUrl={playbackAuth.video_url}
                 title={activeLesson.title}
                 lessonId={activeLesson.id}
-                translatedAudios={activeLesson.translated_audios}
+                translatedAudios={playbackAuth.translated_audios || []}
                 savedProgressPosition={savedProgressPosition}
+                watermark={playbackAuth.watermark}
+                downloadEnabled={playbackAuth.protection?.download_enabled ?? false}
+                expiresIn={playbackAuth.expires_in}
+                onRefreshUrls={handleRefreshPlaybackUrls}
                 onSaveProgress={(pos, dur, comp) => saveProgress(activeLesson.id, pos, dur, comp)}
                 onEnded={() => {
                   if (activeLesson?.id) {
@@ -498,6 +630,11 @@ export default function CourseLearnPage() {
               )}
             </div>
           </div>
+          ) : (
+            <div className="w-full aspect-video bg-black flex flex-col items-center justify-center gap-2 text-zinc-500 md:rounded-2xl p-6">
+              <Play className="w-12 h-12 opacity-30 mb-2" />
+              <p className="text-sm font-medium">No video available for this lesson.</p>
+            </div>
           )
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 bg-[#050505]">

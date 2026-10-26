@@ -130,6 +130,16 @@ class ContentAccessSecurityTests(APITestCase):
         self.assertIn('secret_hi.mp3', lesson['translated_audios'][0]['audio_file'])
         return lesson
 
+    def _assert_student_unlocked(self, response):
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        lesson = self._get_lesson(response.data)
+        self.assertFalse(lesson['is_locked'])
+        self.assertIsNone(lesson['video_file'])
+        self.assertEqual(lesson['transcript'], "Secret transcript text.")
+        self.assertEqual(lesson['timed_transcript'], "00:00:01 --> Secret timed line.")
+        self.assertEqual(lesson['translated_audios'], [])
+        return lesson
+
     # ---- 1-5: anonymous user ----
 
     def test_anonymous_user_can_retrieve_published_course_metadata(self):
@@ -177,14 +187,14 @@ class ContentAccessSecurityTests(APITestCase):
     def test_permanent_enrollment_receives_full_content(self):
         self.client.force_authenticate(user=self.enrolled_student)
         response = self.client.get(self.detail_url)
-        self._assert_unlocked(response)
+        self._assert_student_unlocked(response)
 
     # ---- 8-10: subscription ----
 
     def test_valid_subscription_receives_full_content(self):
         self.client.force_authenticate(user=self.subscribed_student)
         response = self.client.get(self.detail_url)
-        self._assert_unlocked(response)
+        self._assert_student_unlocked(response)
 
     def test_subscription_for_another_course_does_not_grant_access(self):
         self.client.force_authenticate(user=self.wrong_course_subscriber)
@@ -246,6 +256,8 @@ class ContentAccessSecurityTests(APITestCase):
         found = next(c for c in results if c['id'] == self.course.id)
         lesson = found['modules'][0]['lessons'][0]
         self.assertFalse(lesson['is_locked'])
+        self.assertIsNone(lesson['video_file'])
+        self.assertEqual(lesson['translated_audios'], [])
 
     # ---- 16-17: direct module/lesson endpoints ----
 
@@ -335,6 +347,41 @@ class ContentAccessSecurityTests(APITestCase):
         sub.current_period_end = self.past
         sub.save()
         self.assertTrue(Enrollment.objects.filter(user=self.subscribed_student, course=self.other_course).exists())
+
+    # ---- 25-27: media URL redaction & playback authorization ----
+
+    def test_enrolled_student_accesses_playable_video_via_playback_auth(self):
+        self.client.force_authenticate(user=self.enrolled_student)
+        url = reverse('lesson-playback-auth', kwargs={'pk': self.lesson.pk})
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('video_url', response.data)
+        self.assertIn('secret.mp4', response.data['video_url'])
+        self.assertEqual(response.data['expires_in'], 900)
+        self.assertEqual(len(response.data['translated_audios']), 1)
+        self.assertIn('secret_hi.mp3', response.data['translated_audios'][0]['audio_url'])
+
+    def test_unauthorized_student_cannot_access_playback_auth(self):
+        self.client.force_authenticate(user=self.plain_student)
+        url = reverse('lesson-playback-auth', kwargs={'pk': self.lesson.pk})
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_crafted_context_cannot_bypass_student_redaction(self):
+        from rest_framework.test import APIRequestFactory
+        from courses.serializers import ModuleSerializer
+        factory = APIRequestFactory()
+        request = factory.get(self.detail_url)
+        request.user = self.enrolled_student
+        serializer = ModuleSerializer(
+            self.module,
+            context={'request': request, 'bypass_content_lock': True, 'course_content_full_access_ids': {self.course.id}}
+        )
+        data = serializer.data
+        lesson_data = data['lessons'][0]
+        self.assertFalse(lesson_data['is_locked'])
+        self.assertIsNone(lesson_data['video_file'])
+        self.assertEqual(lesson_data['translated_audios'], [])
 
 
 def _make_course_with_lessons(title, module_count, lessons_per_module):

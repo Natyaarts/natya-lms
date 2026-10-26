@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ActivityIndicator, ScrollView, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import client from '../api/client';
+import { headerLayout } from '../theme';
 
 // Phase 4.9 -- mobile assessment attempt screen. Dual-purpose, mirroring
 // the web frontend's assessments/attempt/[attemptId]/page.tsx: renders the
@@ -94,7 +96,7 @@ export default function AssessmentAttemptScreen({ route, navigation }: any) {
   const timeUp = remainingSeconds !== null && remainingSeconds <= 0;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <View style={styles.header}>
         {!isInProgress && (
           <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.backText}>← Back</Text></TouchableOpacity>
@@ -170,7 +172,7 @@ export default function AssessmentAttemptScreen({ route, navigation }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#050505' },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#050505' },
-  header: { flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#27272a' },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: headerLayout.stackHeaderPaddingTop, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: '#27272a' },
   backText: { color: '#facc15', fontSize: 16, marginRight: 12 },
   headerTitle: { color: '#fff', fontSize: 16, fontWeight: 'bold', flex: 1 },
   timer: { color: '#a1a1aa', fontSize: 16, fontWeight: 'bold', fontVariant: ['tabular-nums'] },
