@@ -379,6 +379,15 @@ class LiveBatch(models.Model):
         related_name="conducted_live_batches",
         db_index=True
     )
+    mentor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="mentored_live_batches",
+        db_index=True,
+        help_text="Assigned mentor for this batch who reviews class reports and provides guidance."
+    )
     batch_type = models.CharField(
         max_length=20,
         choices=BatchType.choices,
@@ -406,6 +415,12 @@ class LiveBatch(models.Model):
             or getattr(self.instructor, 'is_mentor', False)
         ):
             raise ValidationError("The instructor must be a teacher, mentor, or administrator.")
+        if self.mentor and not (
+            self.mentor.is_superuser or self.mentor.is_staff
+            or getattr(self.mentor, 'is_mentor', False)
+            or getattr(self.mentor, 'is_teacher', False)
+        ):
+            raise ValidationError("The mentor must be a mentor, teacher, or administrator.")
         if self.batch_type == self.BatchType.ONE_TO_ONE and self.max_participants not in (None, 1):
             raise ValidationError({"max_participants": "A ONE_TO_ONE batch is always capped at 1 -- leave this blank."})
 
@@ -1177,4 +1192,80 @@ class VideoProtectionSetting(models.Model):
             }
         )
         return settings_obj
+
+
+class LiveClassReport(models.Model):
+    """
+    Teacher's post-class summary, student engagement observations, and practice instructions.
+    - Initially submitted by teacher: visible only to batch assigned mentor and admin.
+    - Mentors review and can toggle `is_visible_to_students` to publish the summary to batch students.
+    """
+    class EngagementLevel(models.TextChoices):
+        EXCELLENT = "EXCELLENT", "Excellent - Highly Active & Responsive"
+        GOOD = "GOOD", "Good - Attentive & Participative"
+        AVERAGE = "AVERAGE", "Average - Moderate Participation"
+        NEEDS_IMPROVEMENT = "NEEDS_IMPROVEMENT", "Needs Improvement - Low Focus / Practice Required"
+
+    live_class = models.OneToOneField(
+        LiveClass,
+        on_delete=models.CASCADE,
+        related_name="report",
+        db_index=True
+    )
+    teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="submitted_class_reports"
+    )
+    topics_covered = models.TextField(
+        help_text="Summary of topics, techniques, or choreography taught in this live session."
+    )
+    student_engagement = models.CharField(
+        max_length=30,
+        choices=EngagementLevel.choices,
+        default=EngagementLevel.GOOD,
+        help_text="Overall assessment of student engagement during session."
+    )
+    engagement_notes = models.TextField(
+        blank=True,
+        help_text="Detailed observations on student attention, questions, participation, and interactions."
+    )
+    homework_instructions = models.TextField(
+        blank=True,
+        help_text="Practice exercises, instructions, or assignments for students before the next class."
+    )
+    areas_of_improvement = models.TextField(
+        blank=True,
+        help_text="Key areas, postures, rhythm, mudras, or techniques students need to refine."
+    )
+    mentor_feedback = models.TextField(
+        blank=True,
+        help_text="Review remarks or feedback added by the batch mentor."
+    )
+    is_visible_to_students = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether this report has been released by the mentor for batch students to view."
+    )
+    visible_to_students_toggled_at = models.DateTimeField(null=True, blank=True)
+    visible_to_students_toggled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="shared_class_reports"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Live Class Report"
+        verbose_name_plural = "Live Class Reports"
+
+    def __str__(self):
+        return f"Report for {self.live_class.title} (Shared: {self.is_visible_to_students})"
+
 

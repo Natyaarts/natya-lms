@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
-from .models import Course, Module, VideoLesson, TranslatedAudio, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, CourseInstructor, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswerOptionSnapshot, Certificate, CertificateTemplate, Assignment, AssignmentSubmission, VideoProtectionSetting
+from .models import Course, Module, VideoLesson, TranslatedAudio, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, LiveClassReport, CourseInstructor, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswerOptionSnapshot, Certificate, CertificateTemplate, Assignment, AssignmentSubmission, VideoProtectionSetting
 from .languages import get_language_name
 
 User = get_user_model()
@@ -428,6 +428,73 @@ class LessonProgressSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'lesson', 'progress_percentage', 'updated_at', 'completed_at']
 
 
+class LiveClassReportSerializer(serializers.ModelSerializer):
+    teacher_name = serializers.SerializerMethodField()
+    visible_to_students_toggled_by_name = serializers.SerializerMethodField()
+    batch_id = serializers.IntegerField(source='live_class.batch_id', read_only=True)
+    batch_title = serializers.SerializerMethodField()
+    live_class_title = serializers.CharField(source='live_class.title', read_only=True)
+    engagement_display = serializers.CharField(source='get_student_engagement_display', read_only=True)
+
+    class Meta:
+        model = LiveClassReport
+        fields = [
+            'id',
+            'live_class',
+            'live_class_title',
+            'teacher',
+            'teacher_name',
+            'batch_id',
+            'batch_title',
+            'topics_covered',
+            'student_engagement',
+            'engagement_display',
+            'engagement_notes',
+            'homework_instructions',
+            'areas_of_improvement',
+            'mentor_feedback',
+            'is_visible_to_students',
+            'visible_to_students_toggled_at',
+            'visible_to_students_toggled_by',
+            'visible_to_students_toggled_by_name',
+            'created_at',
+            'updated_at'
+        ]
+        read_only_fields = [
+            'id',
+            'teacher',
+            'teacher_name',
+            'batch_id',
+            'batch_title',
+            'live_class_title',
+            'engagement_display',
+            'is_visible_to_students',
+            'visible_to_students_toggled_at',
+            'visible_to_students_toggled_by',
+            'visible_to_students_toggled_by_name',
+            'created_at',
+            'updated_at'
+        ]
+
+    def get_teacher_name(self, obj):
+        if obj.teacher:
+            return obj.teacher.get_full_name() or obj.teacher.username
+        return ""
+
+    def get_visible_to_students_toggled_by_name(self, obj):
+        if obj.visible_to_students_toggled_by:
+            return obj.visible_to_students_toggled_by.get_full_name() or obj.visible_to_students_toggled_by.username
+        return ""
+
+    def get_batch_title(self, obj):
+        if obj.live_class and obj.live_class.batch:
+            b = obj.live_class.batch
+            b_type = b.get_batch_type_display() if hasattr(b, 'get_batch_type_display') else "Batch"
+            c_title = b.course.title if b.course else ""
+            return f"{c_title} - {b_type} Batch #{b.id}".strip(" - ")
+        return ""
+
+
 class LiveClassSerializer(serializers.ModelSerializer):
     course = serializers.PrimaryKeyRelatedField(queryset=Course.objects.all(), required=False)
     instructor = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False, allow_null=True)
@@ -643,8 +710,12 @@ class LiveClassSerializer(serializers.ModelSerializer):
         if instance.batch:
             b_type = instance.batch.get_batch_type_display() if hasattr(instance.batch, 'get_batch_type_display') else "Group"
             ret['batch_name'] = f"{b_type} Batch #{instance.batch.id}"
+            ret['batch_mentor_id'] = instance.batch.mentor_id
+            ret['batch_mentor_name'] = (instance.batch.mentor.get_full_name() or instance.batch.mentor.username) if instance.batch.mentor else None
         else:
             ret['batch_name'] = ""
+            ret['batch_mentor_id'] = None
+            ret['batch_mentor_name'] = None
 
         if instance.instructor:
             ret['instructor_name'] = instance.instructor.get_full_name() or instance.instructor.username
@@ -667,6 +738,30 @@ class LiveClassSerializer(serializers.ModelSerializer):
             ret['attendance_present_count'] = 0
             ret['attendance_avg_duration'] = 0
 
+        # LiveClassReport representation scoping
+        report = getattr(instance, 'report', None)
+        ret['has_report'] = bool(report)
+        ret['report_visible_to_students'] = bool(report and report.is_visible_to_students)
+        if report:
+            can_see_report = False
+            if request and request.user and request.user.is_authenticated:
+                user = request.user
+                if user.is_superuser or user.is_staff:
+                    can_see_report = True
+                elif getattr(user, 'is_teacher', False) and (instance.instructor_id == user.id or (instance.batch and instance.batch.instructor_id == user.id)):
+                    can_see_report = True
+                elif getattr(user, 'is_mentor', False) and instance.batch and instance.batch.mentor_id == user.id:
+                    can_see_report = True
+                elif report.is_visible_to_students:
+                    can_see_report = True
+
+            if can_see_report:
+                ret['report'] = LiveClassReportSerializer(report).data
+            else:
+                ret['report'] = None
+        else:
+            ret['report'] = None
+
         rec_url = ret.get('recording_url')
         if rec_url and 'amazonaws.com' in rec_url and '?' not in rec_url:
             try:
@@ -684,11 +779,29 @@ class LiveBatchSerializer(serializers.ModelSerializer):
     student_count = serializers.IntegerField(read_only=True, default=0)
     course_title = serializers.CharField(source='course.title', read_only=True)
     instructor_username = serializers.CharField(source='instructor.username', read_only=True, allow_null=True)
+    instructor_name = serializers.SerializerMethodField()
+    mentor_username = serializers.CharField(source='mentor.username', read_only=True, allow_null=True)
+    mentor_name = serializers.SerializerMethodField()
 
     class Meta:
         model = LiveBatch
-        fields = ['id', 'course', 'course_title', 'instructor', 'instructor_username', 'batch_type', 'max_participants', 'student_count', 'created_at', 'updated_at']
+        fields = [
+            'id', 'course', 'course_title',
+            'instructor', 'instructor_username', 'instructor_name',
+            'mentor', 'mentor_username', 'mentor_name',
+            'batch_type', 'max_participants', 'student_count', 'created_at', 'updated_at'
+        ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_instructor_name(self, obj):
+        if obj.instructor:
+            return obj.instructor.get_full_name() or obj.instructor.username
+        return ""
+
+    def get_mentor_name(self, obj):
+        if obj.mentor:
+            return obj.mentor.get_full_name() or obj.mentor.username
+        return ""
 
     def validate(self, attrs):
         import django.core.exceptions

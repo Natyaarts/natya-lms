@@ -21,7 +21,11 @@ import {
   Pencil,
   Square,
   Sparkles,
-  Loader2
+  Loader2,
+  FileText,
+  Eye,
+  EyeOff,
+  MessageSquare
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
@@ -245,12 +249,14 @@ export default function LiveClassesPage() {
     batchType: "GROUP" | "ONE_TO_ONE";
     maxParticipants: string;
     instructorId: string;
+    mentorId: string;
     studentIds: number[];
   }>({
     courseId: "",
     batchType: "GROUP",
     maxParticipants: "20",
     instructorId: "",
+    mentorId: "",
     studentIds: [],
   });
   const [batchCreating, setBatchCreating] = useState(false);
@@ -291,6 +297,7 @@ export default function LiveClassesPage() {
       batchType: "GROUP",
       maxParticipants: "20",
       instructorId: currentUser?.id ? String(currentUser.id) : "",
+      mentorId: "",
       studentIds: [],
     });
     setShowBatchModal(true);
@@ -311,6 +318,9 @@ export default function LiveClassesPage() {
       }
       if (isFullAdmin && batchForm.instructorId) {
         batchPayload.instructor = batchForm.instructorId;
+      }
+      if (batchForm.mentorId) {
+        batchPayload.mentor = batchForm.mentorId;
       }
       const bRes = await authedFetch("/api/courses/live-batches/", {
         method: "POST",
@@ -412,6 +422,10 @@ export default function LiveClassesPage() {
 
   const eligibleInstructors = useMemo(
     () => allUsers.filter((u) => u.is_teacher || u.is_mentor),
+    [allUsers]
+  );
+  const eligibleMentors = useMemo(
+    () => allUsers.filter((u) => u.is_mentor || u.is_superuser || u.is_staff),
     [allUsers]
   );
   const eligibleStudents = useMemo(
@@ -596,9 +610,16 @@ export default function LiveClassesPage() {
 
   const endClass = async (lc: any) => {
     setBusyId(lc.id);
-    await authedFetch(`/api/courses/live-classes/${lc.id}/end/`, { method: "POST" });
+    const res = await authedFetch(`/api/courses/live-classes/${lc.id}/end/`, { method: "POST" });
     setBusyId(null);
-    fetchClasses();
+    if (res.ok) {
+      const updated = await res.json().catch(() => lc);
+      fetchClasses();
+      // Automatically prompt teacher to fill post-class report details!
+      openReportModal(updated);
+    } else {
+      fetchClasses();
+    }
   };
 
   const [cancelTarget, setCancelTarget] = useState<any>(null);
@@ -770,6 +791,135 @@ export default function LiveClassesPage() {
     fetchClasses();
   };
 
+  // ---- Live Class Report State & Handlers ----
+  const [reportTarget, setReportTarget] = useState<any>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportSaving, setReportSaving] = useState(false);
+  const [reportToggling, setReportToggling] = useState(false);
+  const [reportForm, setReportForm] = useState({
+    topics_covered: "",
+    student_engagement: "GOOD",
+    engagement_notes: "",
+    homework_instructions: "",
+    areas_of_improvement: "",
+    mentor_feedback: "",
+    is_visible_to_students: false,
+    visible_to_students_toggled_at: null as string | null,
+    visible_to_students_toggled_by_name: null as string | null,
+    teacher_name: null as string | null,
+  });
+
+  const openReportModal = async (lc: any) => {
+    setReportTarget(lc);
+    setReportLoading(true);
+    setReportForm({
+      topics_covered: "",
+      student_engagement: "GOOD",
+      engagement_notes: "",
+      homework_instructions: "",
+      areas_of_improvement: "",
+      mentor_feedback: "",
+      is_visible_to_students: false,
+      visible_to_students_toggled_at: null,
+      visible_to_students_toggled_by_name: null,
+      teacher_name: lc.instructor_name || null,
+    });
+    try {
+      const res = await authedFetch(`/api/courses/live-classes/${lc.id}/report/`);
+      if (res.ok) {
+        const data = await res.json();
+        setReportForm({
+          topics_covered: data.topics_covered || "",
+          student_engagement: data.student_engagement || "GOOD",
+          engagement_notes: data.engagement_notes || "",
+          homework_instructions: data.homework_instructions || "",
+          areas_of_improvement: data.areas_of_improvement || "",
+          mentor_feedback: data.mentor_feedback || "",
+          is_visible_to_students: !!data.is_visible_to_students,
+          visible_to_students_toggled_at: data.visible_to_students_toggled_at || null,
+          visible_to_students_toggled_by_name: data.visible_to_students_toggled_by_name || null,
+          teacher_name: data.teacher_name || lc.instructor_name || null,
+        });
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
+  const handleSaveReport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reportTarget) return;
+    if (!reportForm.topics_covered.trim()) {
+      alert("Please enter the topics covered during this class.");
+      return;
+    }
+    setReportSaving(true);
+    try {
+      const res = await authedFetch(`/api/courses/live-classes/${reportTarget.id}/report/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topics_covered: reportForm.topics_covered,
+          student_engagement: reportForm.student_engagement,
+          engagement_notes: reportForm.engagement_notes,
+          homework_instructions: reportForm.homework_instructions,
+          areas_of_improvement: reportForm.areas_of_improvement,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setReportForm((prev) => ({
+          ...prev,
+          ...data,
+          is_visible_to_students: !!data.is_visible_to_students,
+        }));
+        setBanner("✓ Class details & student observations submitted successfully! Assigned mentor and admin can now review.");
+        fetchClasses();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || err.error || "Failed to submit class report.");
+      }
+    } catch (e) {
+      alert("Error submitting class report.");
+    } finally {
+      setReportSaving(false);
+    }
+  };
+
+  const handleToggleVisibility = async (newVal?: boolean) => {
+    if (!reportTarget) return;
+    setReportToggling(true);
+    try {
+      const res = await authedFetch(`/api/courses/live-classes/${reportTarget.id}/toggle-report-visibility/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          is_visible_to_students: newVal !== undefined ? newVal : !reportForm.is_visible_to_students,
+          mentor_feedback: reportForm.mentor_feedback,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setReportForm((prev) => ({
+          ...prev,
+          ...data,
+          is_visible_to_students: !!data.is_visible_to_students,
+        }));
+        setBanner(data.is_visible_to_students ? "✓ Class report is now VISIBLE to batch students!" : "✓ Class report is now HIDDEN from students (Mentor Review only).");
+        fetchClasses();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || err.error || "Failed to update visibility.");
+      }
+    } catch (e) {
+      alert("Error toggling report visibility.");
+    } finally {
+      setReportToggling(false);
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto pb-20">
       {/* Header Bar */}
@@ -869,6 +1019,7 @@ export default function LiveClassesPage() {
                     <th className="p-4 font-semibold">Course</th>
                     <th className="p-4 font-semibold">Batch Type</th>
                     <th className="p-4 font-semibold">Instructor</th>
+                    <th className="p-4 font-semibold">Assigned Mentor</th>
                     <th className="p-4 font-semibold">Students Enrolled</th>
                     <th className="p-4 font-semibold">Created Date</th>
                     <th className="p-4 font-semibold text-right">Actions</th>
@@ -883,7 +1034,14 @@ export default function LiveClassesPage() {
                           {b.batch_type === 'ONE_TO_ONE' ? '1-on-1' : 'Group'}
                         </span>
                       </td>
-                      <td className="p-4 text-zinc-300">{b.instructor_username || "Unassigned"}</td>
+                      <td className="p-4 text-zinc-300">{b.instructor_name || b.instructor_username || "Unassigned"}</td>
+                      <td className="p-4 text-zinc-300">
+                        {b.mentor_name || b.mentor_username ? (
+                          <span className="text-[#facc15] font-medium">{b.mentor_name || b.mentor_username}</span>
+                        ) : (
+                          <span className="text-zinc-500 italic">None assigned</span>
+                        )}
+                      </td>
                       <td className="p-4">
                         <span className="font-semibold text-white">{b.student_count || 0}</span>
                         {b.max_participants ? <span className="text-zinc-500"> / {b.max_participants} max</span> : <span className="text-zinc-500"> enrolled</span>}
@@ -1082,6 +1240,43 @@ export default function LiveClassesPage() {
                                 className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-white/20 text-zinc-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm"
                               >
                                 <UsersIcon className="w-3.5 h-3.5 text-zinc-400" /> Attendance
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openReportModal(lc)}
+                                className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm ${
+                                  lc.has_report
+                                    ? lc.report_visible_to_students
+                                      ? "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                                      : "bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border-purple-500/30"
+                                    : "bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] border-[#facc15]/30 animate-pulse"
+                                }`}
+                                title={
+                                  lc.has_report
+                                    ? lc.report_visible_to_students
+                                      ? "Class report is shared with batch students (Click to view/edit)"
+                                      : "Class report submitted — pending mentor review & share"
+                                    : "Teacher post-class report pending (Click to enter details)"
+                                }
+                              >
+                                {lc.has_report ? (
+                                  lc.report_visible_to_students ? (
+                                    <>
+                                      <FileText className="w-3.5 h-3.5 text-emerald-400" />
+                                      <span>Report (Shared)</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <EyeOff className="w-3.5 h-3.5 text-purple-400" />
+                                      <span>Report (Mentor Review)</span>
+                                    </>
+                                  )
+                                ) : (
+                                  <>
+                                    <FileText className="w-3.5 h-3.5 text-[#facc15]" />
+                                    <span>Enter Class Report</span>
+                                  </>
+                                )}
                               </button>
                             </>
                           ) : lc.status === "LIVE" ? (
@@ -1824,6 +2019,25 @@ export default function LiveClassesPage() {
               )}
 
               <div>
+                <label className={labelCls}>Assigned Mentor (Reviews Post-Class Reports & Guidance)</label>
+                <select
+                  value={batchForm.mentorId}
+                  onChange={(e) => setBatchForm(f => ({ ...f, mentorId: e.target.value }))}
+                  className={inputCls}
+                >
+                  <option value="">No dedicated mentor (or select later)</option>
+                  {eligibleMentors.map((u: any) => (
+                    <option key={u.id} value={u.id}>
+                      {(u.first_name ? `${u.first_name} ${u.last_name || ""}` : u.username)} {u.is_mentor ? "(Mentor)" : "(Admin)"}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-zinc-500 mt-1">
+                  The assigned mentor receives the teacher's class report after each session and decides when to publish it to batch students.
+                </p>
+              </div>
+
+              <div>
                 <label className={labelCls}>Assign Students ({batchForm.studentIds.length} selected)</label>
                 <div className="max-h-40 overflow-y-auto space-y-1 bg-zinc-950 border border-white/10 rounded-xl p-2.5">
                   {eligibleStudents.length === 0 ? (
@@ -1874,6 +2088,195 @@ export default function LiveClassesPage() {
                 </button>
               </div>
             </form>
+          </Modal>
+        )}
+      </AnimatePresence>
+
+      {/* ---------------- Class Report Modal ---------------- */}
+      <AnimatePresence>
+        {reportTarget && (
+          <Modal
+            title={reportTarget.title ? `Class Report: ${reportTarget.title}` : "Class Details & Student Engagement Report"}
+            onClose={() => setReportTarget(null)}
+            wide
+          >
+            {reportLoading ? (
+              <div className="py-12 flex flex-col items-center justify-center gap-3 text-zinc-400">
+                <Loader2 className="w-6 h-6 animate-spin text-[#facc15]" />
+                <p className="text-xs">Loading class report...</p>
+              </div>
+            ) : (
+              <div className="space-y-5">
+                {/* Status Bar */}
+                <div className={`p-4 rounded-xl border flex items-center justify-between flex-wrap gap-3 ${
+                  reportForm.is_visible_to_students
+                    ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                    : "bg-purple-500/10 border-purple-500/20 text-purple-300"
+                }`}>
+                  <div className="flex items-center gap-2.5">
+                    {reportForm.is_visible_to_students ? (
+                      <Eye className="w-5 h-5 text-emerald-400 shrink-0" />
+                    ) : (
+                      <EyeOff className="w-5 h-5 text-purple-400 shrink-0" />
+                    )}
+                    <div>
+                      <div className="text-xs font-bold uppercase tracking-wider">
+                        {reportForm.is_visible_to_students
+                          ? "✓ Published to Batch Students"
+                          : "🔒 Private: Visible to Mentor & Admin Only"}
+                      </div>
+                      <div className="text-[11px] text-zinc-400 mt-0.5">
+                        {reportForm.is_visible_to_students
+                          ? `Shared by ${reportForm.visible_to_students_toggled_by_name || "Mentor"} — visible to students in this batch.`
+                          : "Students cannot see this report until the assigned batch mentor reviews and shares it."}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Mentor Visibility Toggle Button */}
+                  {(isFullAdmin || (reportTarget.batch_mentor_id && reportTarget.batch_mentor_id === currentUser?.id)) && (
+                    <button
+                      type="button"
+                      disabled={reportToggling}
+                      onClick={() => handleToggleVisibility(!reportForm.is_visible_to_students)}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm ${
+                        reportForm.is_visible_to_students
+                          ? "bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-white/10"
+                          : "bg-emerald-500 hover:bg-emerald-400 text-black shadow-emerald-500/20"
+                      }`}
+                    >
+                      {reportToggling ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : reportForm.is_visible_to_students ? (
+                        <>
+                          <EyeOff className="w-3.5 h-3.5" /> Unshare with Students
+                        </>
+                      ) : (
+                        <>
+                          <Eye className="w-3.5 h-3.5" /> Share with Students
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+
+                {/* Batch & Instructor Context Pill */}
+                <div className="flex items-center gap-3 p-3 bg-zinc-950/60 rounded-xl border border-white/5 text-xs text-zinc-400 flex-wrap">
+                  {reportTarget.batch_name && (
+                    <div><span className="text-zinc-500">Batch:</span> <span className="text-zinc-200 font-medium">{reportTarget.batch_name}</span></div>
+                  )}
+                  {reportTarget.course_title && (
+                    <div><span className="text-zinc-500">Course:</span> <span className="text-zinc-200 font-medium">{reportTarget.course_title}</span></div>
+                  )}
+                  {reportTarget.instructor_name && (
+                    <div><span className="text-zinc-500">Instructor:</span> <span className="text-zinc-200 font-medium">{reportTarget.instructor_name}</span></div>
+                  )}
+                  {reportTarget.batch_mentor_name && (
+                    <div><span className="text-zinc-500">Mentor:</span> <span className="text-[#facc15] font-medium">{reportTarget.batch_mentor_name}</span></div>
+                  )}
+                </div>
+
+                {/* Teacher Entry Form */}
+                <form onSubmit={handleSaveReport} className="space-y-4">
+                  <div>
+                    <label className={labelCls}>
+                      Topics & Techniques Covered *
+                    </label>
+                    <textarea
+                      required
+                      rows={3}
+                      value={reportForm.topics_covered}
+                      onChange={(e) => setReportForm(f => ({ ...f, topics_covered: e.target.value }))}
+                      placeholder="e.g. Completed Alarippu sequence in Tisra Ekam thalam. Practiced Aramandi variations and Adavu footwork speeds 1-3."
+                      className={inputCls}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelCls}>Student Engagement Level</label>
+                      <select
+                        value={reportForm.student_engagement}
+                        onChange={(e) => setReportForm(f => ({ ...f, student_engagement: e.target.value }))}
+                        className={inputCls}
+                      >
+                        <option value="EXCELLENT">🌟 Excellent - Highly Active & Responsive</option>
+                        <option value="GOOD">👍 Good - Attentive & Participative</option>
+                        <option value="AVERAGE">👌 Average - Moderate Participation</option>
+                        <option value="NEEDS_IMPROVEMENT">⚠️ Needs Improvement - Low Focus / Practice Required</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className={labelCls}>Areas of Improvement</label>
+                      <input
+                        type="text"
+                        value={reportForm.areas_of_improvement}
+                        onChange={(e) => setReportForm(f => ({ ...f, areas_of_improvement: e.target.value }))}
+                        placeholder="e.g. Knee depth in Aramandi posture, hand mudra firmness."
+                        className={inputCls}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className={labelCls}>Student Engagement & Observations</label>
+                    <textarea
+                      rows={2}
+                      value={reportForm.engagement_notes}
+                      onChange={(e) => setReportForm(f => ({ ...f, engagement_notes: e.target.value }))}
+                      placeholder="e.g. Students responded well to the rhythmic clapping exercises. 2 students had questions about transition tempo."
+                      className={inputCls}
+                    />
+                  </div>
+
+                  <div>
+                    <label className={labelCls}>Homework / Practice Instructions</label>
+                    <textarea
+                      rows={2}
+                      value={reportForm.homework_instructions}
+                      onChange={(e) => setReportForm(f => ({ ...f, homework_instructions: e.target.value }))}
+                      placeholder="e.g. Practice Tattu Adavu steps 1-4 with metronome set to 60bpm and 80bpm for 15 minutes daily before next class."
+                      className={inputCls}
+                    />
+                  </div>
+
+                  {/* Mentor Review Notes Section (Editable by Mentor/Admin) */}
+                  {(isFullAdmin || (reportTarget.batch_mentor_id && reportTarget.batch_mentor_id === currentUser?.id)) && (
+                    <div className="pt-2 border-t border-white/10">
+                      <label className="block text-[10px] font-semibold text-[#facc15] mb-1.5 uppercase tracking-wide flex items-center gap-1.5">
+                        <MessageSquare className="w-3.5 h-3.5" /> Mentor Feedback & Remarks
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={reportForm.mentor_feedback}
+                        onChange={(e) => setReportForm(f => ({ ...f, mentor_feedback: e.target.value }))}
+                        placeholder="e.g. Reviewed teacher notes. Excellent progress on Adavus. Approved for student visibility."
+                        className="w-full px-3 py-2 bg-zinc-950 border border-[#facc15]/30 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 pt-3 border-t border-white/5">
+                    <button
+                      type="button"
+                      onClick={() => setReportTarget(null)}
+                      className="px-4 py-2.5 bg-white/5 hover:bg-white/10 text-zinc-300 font-semibold rounded-xl transition-all text-xs"
+                    >
+                      Close
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={reportSaving}
+                      className="flex-1 py-2.5 bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-all text-xs disabled:opacity-50 flex items-center justify-center gap-2"
+                    >
+                      {reportSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+                      <span>{reportSaving ? "Saving..." : "Save Class Report"}</span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
           </Modal>
         )}
       </AnimatePresence>

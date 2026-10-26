@@ -1,7 +1,7 @@
 from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 from django.forms import BaseInlineFormSet
-from .models import Course, Module, VideoLesson, TranslatedAudio, LiveClass, LiveBatch, LiveBatchStudent, CourseInstructor, RecurrenceRule, TeacherAvailability, Attendance, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswer, VideoProtectionSetting
+from .models import Course, Module, VideoLesson, TranslatedAudio, LiveClass, LiveBatch, LiveBatchStudent, LiveClassReport, CourseInstructor, RecurrenceRule, TeacherAvailability, Attendance, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswer, VideoProtectionSetting
 
 class VideoLessonInline(admin.TabularInline):
     model = VideoLesson
@@ -120,9 +120,9 @@ class LiveClassAdmin(admin.ModelAdmin):
 
 @admin.register(LiveBatch)
 class LiveBatchAdmin(admin.ModelAdmin):
-    list_display = ('course', 'instructor', 'batch_type', 'created_at')
-    list_filter = ('batch_type', 'course', 'instructor')
-    search_fields = ('course__title', 'instructor__username', 'instructor__email')
+    list_display = ('course', 'instructor', 'mentor', 'batch_type', 'created_at')
+    list_filter = ('batch_type', 'course', 'instructor', 'mentor')
+    search_fields = ('course__title', 'instructor__username', 'mentor__username')
 
 
 @admin.register(LiveBatchStudent)
@@ -130,6 +130,13 @@ class LiveBatchStudentAdmin(admin.ModelAdmin):
     list_display = ('batch', 'student', 'purchase', 'created_at')
     list_filter = ('batch__batch_type', 'batch__course')
     search_fields = ('student__username', 'student__email', 'batch__course__title')
+
+
+@admin.register(LiveClassReport)
+class LiveClassReportAdmin(admin.ModelAdmin):
+    list_display = ('live_class', 'teacher', 'student_engagement', 'is_visible_to_students', 'created_at')
+    list_filter = ('student_engagement', 'is_visible_to_students', 'created_at')
+    search_fields = ('live_class__title', 'teacher__username', 'topics_covered')
 
 
 @admin.register(CourseInstructor)

@@ -4,8 +4,8 @@ from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied as DRFPermissionDenied
-from .models import Course, Module, VideoLesson, Enrollment, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, TranslatedAudio, CourseInstructor, RecurrenceRule, TeacherAvailability, Attendance, VideoProtectionSetting
-from .serializers import CourseSerializer, ModuleSerializer, VideoLessonSerializer, LessonProgressSerializer, LiveClassSerializer, LiveBatchSerializer, LiveBatchStudentSerializer, TranslatedAudioSerializer, TranslatedAudioUploadSerializer, CourseInstructorSerializer, RecurrenceRuleSerializer, TeacherAvailabilitySerializer, AttendanceSerializer, VideoProtectionSettingSerializer
+from .models import Course, Module, VideoLesson, Enrollment, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, LiveClassReport, TranslatedAudio, CourseInstructor, RecurrenceRule, TeacherAvailability, Attendance, VideoProtectionSetting
+from .serializers import CourseSerializer, ModuleSerializer, VideoLessonSerializer, LessonProgressSerializer, LiveClassSerializer, LiveClassReportSerializer, LiveBatchSerializer, LiveBatchStudentSerializer, TranslatedAudioSerializer, TranslatedAudioUploadSerializer, CourseInstructorSerializer, RecurrenceRuleSerializer, TeacherAvailabilitySerializer, AttendanceSerializer, VideoProtectionSettingSerializer
 from users.permissions import IsSuperAdminOrTeacherOrReadOnly  # noqa: F401 -- retained for any other reuse; Course/Module/Lesson now use IsSuperAdminOrCourseInstructorOrReadOnly below
 
 
@@ -1323,7 +1323,7 @@ class IsSuperAdminOrAuthorizedTeacherOrReadOnly(permissions.BasePermission):
             from .models import LiveBatchStudent, Enrollment
             if obj.batch and LiveBatchStudent.objects.filter(batch=obj.batch, student=request.user).exists():
                 return True
-            if obj.course and Enrollment.objects.filter(course=obj.course, student=request.user).exists():
+            if obj.course and Enrollment.objects.filter(course=obj.course, user=request.user).exists():
                 return True
             if getattr(request.user, 'is_teacher', False) or getattr(request.user, 'is_mentor', False):
                 return True
@@ -1331,8 +1331,12 @@ class IsSuperAdminOrAuthorizedTeacherOrReadOnly(permissions.BasePermission):
         # If batch is NULL, students/teachers/mentors have NO access (legacy/orphaned isolation)
         if not obj.batch:
             return False
-        # Teachers/mentors can only access classes where they are the batch instructor
+        # Teachers/mentors can access classes where they are the batch instructor or assigned mentor
         if getattr(request.user, 'is_teacher', False) or getattr(request.user, 'is_mentor', False):
+            if request.method in permissions.SAFE_METHODS:
+                return obj.batch.instructor == request.user or obj.batch.mentor == request.user
+            if getattr(view, 'action', None) in ('report', 'toggle_report_visibility'):
+                return obj.batch.instructor == request.user or obj.batch.mentor == request.user
             return obj.batch.instructor == request.user
         # Students can only access classes they are assigned to via LiveBatchStudent (Safe methods only)
         if request.method in permissions.SAFE_METHODS:
@@ -1434,12 +1438,12 @@ class LiveClassViewSet(viewsets.ModelViewSet):
 
         # If no students directly attached to batch, pull from course enrollments
         if not students and live_class.course:
-            for enr in Enrollment.objects.filter(course=live_class.course).select_related('student'):
-                if enr.student:
-                    students.add(enr.student)
+            for enr in Enrollment.objects.filter(course=live_class.course).select_related('user'):
+                if enr.user:
+                    students.add(enr.user)
                     if live_class.batch:
                         try:
-                            LiveBatchStudent.objects.get_or_create(batch=live_class.batch, student=enr.student)
+                            LiveBatchStudent.objects.get_or_create(batch=live_class.batch, student=enr.user)
                         except Exception:
                             pass
 
@@ -1512,11 +1516,13 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             return LiveClass.objects.none()
 
         if user.is_superuser or user.is_staff:
-            queryset = LiveClass.objects.all().select_related('course', 'instructor', 'batch', 'batch__course').prefetch_related('attendance_records')
+            queryset = LiveClass.objects.all().select_related('course', 'instructor', 'batch', 'batch__course', 'batch__mentor', 'report').prefetch_related('attendance_records')
         elif getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False):
-            queryset = LiveClass.objects.filter(batch__instructor=user).select_related('course', 'instructor', 'batch', 'batch__course').prefetch_related('attendance_records')
+            queryset = LiveClass.objects.filter(
+                Q(batch__instructor=user) | Q(batch__mentor=user)
+            ).distinct().select_related('course', 'instructor', 'batch', 'batch__course', 'batch__mentor', 'report').prefetch_related('attendance_records')
         else:
-            queryset = LiveClass.objects.filter(batch__students__student=user).distinct().select_related('course', 'instructor', 'batch', 'batch__course').prefetch_related('attendance_records')
+            queryset = LiveClass.objects.filter(batch__students__student=user).distinct().select_related('course', 'instructor', 'batch', 'batch__course', 'batch__mentor', 'report').prefetch_related('attendance_records')
 
         # Filter by course
         course_id = self.request.query_params.get('course')
@@ -1709,6 +1715,130 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 pass
         serializer = self.get_serializer(live_class)
         return Response(serializer.data)
+
+    @action(detail=True, methods=['get', 'post'], url_path='report')
+    def report(self, request, pk=None):
+        live_class = self.get_object()
+        user = request.user
+        is_admin = bool(user.is_superuser or user.is_staff)
+        is_instructor = bool(
+            live_class.instructor_id == user.id or
+            (live_class.batch and live_class.batch.instructor_id == user.id)
+        )
+        is_mentor = bool(
+            live_class.batch and live_class.batch.mentor_id == user.id
+        )
+
+        if request.method == 'GET':
+            report = getattr(live_class, 'report', None)
+            if not report:
+                return Response(
+                    {"detail": "No report submitted for this live class yet."},
+                    status=drf_status.HTTP_404_NOT_FOUND
+                )
+
+            # Check if viewer has teacher, mentor, or admin access
+            if is_admin or is_instructor or is_mentor:
+                return Response(LiveClassReportSerializer(report).data)
+
+            # Check student permission
+            from courses.models import LiveBatchStudent, Enrollment
+            is_student_in_batch = (
+                (live_class.batch and LiveBatchStudent.objects.filter(batch=live_class.batch, student=user).exists()) or
+                (live_class.course and Enrollment.objects.filter(course=live_class.course, user=user).exists())
+            )
+            if is_student_in_batch:
+                if report.is_visible_to_students:
+                    return Response(LiveClassReportSerializer(report).data)
+                return Response(
+                    {"detail": "Class report has not been published to students yet."},
+                    status=drf_status.HTTP_403_FORBIDDEN
+                )
+
+            return Response(
+                {"detail": "You do not have permission to view this class report."},
+                status=drf_status.HTTP_403_FORBIDDEN
+            )
+
+        elif request.method == 'POST':
+            # Only the assigned instructor or admin can submit/update the teacher report
+            if not (is_admin or is_instructor):
+                return Response(
+                    {"detail": "Only the assigned instructor or administrator can submit a class report."},
+                    status=drf_status.HTTP_403_FORBIDDEN
+                )
+
+            topics_covered = request.data.get('topics_covered')
+            if not topics_covered:
+                return Response(
+                    {"topics_covered": "This field is required."},
+                    status=drf_status.HTTP_400_BAD_REQUEST
+                )
+
+            report, created = LiveClassReport.objects.get_or_create(
+                live_class=live_class,
+                defaults={'teacher': user, 'topics_covered': topics_covered}
+            )
+
+            if not created:
+                report.topics_covered = topics_covered
+
+            if not report.teacher:
+                report.teacher = user
+
+            if 'student_engagement' in request.data:
+                report.student_engagement = request.data.get('student_engagement')
+            if 'engagement_notes' in request.data:
+                report.engagement_notes = request.data.get('engagement_notes', '')
+            if 'homework_instructions' in request.data:
+                report.homework_instructions = request.data.get('homework_instructions', '')
+            if 'areas_of_improvement' in request.data:
+                report.areas_of_improvement = request.data.get('areas_of_improvement', '')
+
+            report.save()
+
+            return Response(
+                LiveClassReportSerializer(report).data,
+                status=drf_status.HTTP_201_CREATED if created else drf_status.HTTP_200_OK
+            )
+
+    @action(detail=True, methods=['post'], url_path='toggle-report-visibility')
+    def toggle_report_visibility(self, request, pk=None):
+        from django.utils import timezone
+        live_class = self.get_object()
+        user = request.user
+        is_admin = bool(user.is_superuser or user.is_staff)
+        is_assigned_mentor = bool(live_class.batch and live_class.batch.mentor_id == user.id)
+
+        if not (is_admin or is_assigned_mentor):
+            return Response(
+                {"detail": "Only the assigned batch mentor or an administrator can toggle student visibility."},
+                status=drf_status.HTTP_403_FORBIDDEN
+            )
+
+        report = getattr(live_class, 'report', None)
+        if not report:
+            return Response(
+                {"detail": "No report has been submitted for this live class yet."},
+                status=drf_status.HTTP_404_NOT_FOUND
+            )
+
+        if 'is_visible_to_students' in request.data:
+            val = request.data.get('is_visible_to_students')
+            if isinstance(val, str):
+                val = val.lower() in ('true', '1', 'yes')
+            report.is_visible_to_students = bool(val)
+        else:
+            report.is_visible_to_students = not report.is_visible_to_students
+
+        if 'mentor_feedback' in request.data:
+            report.mentor_feedback = request.data.get('mentor_feedback', '')
+
+        report.visible_to_students_toggled_at = timezone.now()
+        report.visible_to_students_toggled_by = user
+        report.save()
+
+        return Response(LiveClassReportSerializer(report).data)
 
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
@@ -2163,7 +2293,7 @@ class IsSuperAdminOrStaffOrReadOnlyBatches(permissions.BasePermission):
             return True
         if getattr(request.user, 'is_teacher', False) or getattr(request.user, 'is_mentor', False):
             if request.method in permissions.SAFE_METHODS:
-                return obj.instructor == request.user
+                return obj.instructor == request.user or obj.mentor == request.user
             # Write access to an existing batch: only its own instructor.
             return obj.instructor == request.user
         if request.method in permissions.SAFE_METHODS:
@@ -2184,14 +2314,14 @@ class LiveBatchViewSet(viewsets.ModelViewSet):
         if user.is_superuser or user.is_staff:
             queryset = LiveBatch.objects.all()
         elif getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False):
-            queryset = LiveBatch.objects.filter(instructor=user)
+            queryset = LiveBatch.objects.filter(Q(instructor=user) | Q(mentor=user)).distinct()
         else:
             queryset = LiveBatch.objects.filter(students__student=user)
 
         # Optimize loading with annotations & select_related
         queryset = queryset.annotate(
             student_count=Count('students')
-        ).select_related('course', 'instructor')
+        ).select_related('course', 'instructor', 'mentor')
 
         return queryset
 

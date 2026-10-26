@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { Video, Calendar as CalendarIcon, List as ListIcon, ExternalLink, PlayCircle, CheckCircle2, Play, Film, X, Copy, Clock } from "lucide-react";
+import { Video, Calendar as CalendarIcon, List as ListIcon, ExternalLink, PlayCircle, CheckCircle2, Play, Film, X, Copy, Clock, FileText, Star, BookOpen, Sparkles, Loader2, MessageSquare } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
 
@@ -31,6 +31,33 @@ export default function StudentLiveClassesPage() {
   const [attendanceById, setAttendanceById] = useState<Record<number, { status: string; duration_minutes: number }>>({});
   const [watchTarget, setWatchTarget] = useState<any>(null);
   const activeHeartbeats = useRef<Record<number, NodeJS.Timeout>>({});
+
+  const [reportTarget, setReportTarget] = useState<any>(null);
+  const [reportData, setReportData] = useState<any>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+
+  const openReportModal = async (lc: any) => {
+    setReportTarget(lc);
+    if (lc.report) {
+      setReportData(lc.report);
+      return;
+    }
+    setReportLoading(true);
+    setReportData(null);
+    try {
+      const res = await authedFetch(`/api/courses/live-classes/${lc.id}/report/`);
+      if (res.ok) {
+        setReportData(await res.json());
+      } else {
+        setReportData(null);
+      }
+    } catch (e) {
+      console.error(e);
+      setReportData(null);
+    } finally {
+      setReportLoading(false);
+    }
+  };
 
   const authedFetch = (path: string, init?: RequestInit) =>
     fetch(`${API}${path}`, { credentials: "include", ...init });
@@ -228,6 +255,11 @@ export default function StudentLiveClassesPage() {
                         <Film className="w-3 h-3" /> Recording Available
                       </span>
                     )}
+                    {(lc.report_visible_to_students || lc.report) && (
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-[#facc15]/15 text-[#facc15] border border-[#facc15]/30 flex items-center gap-1">
+                        <FileText className="w-3 h-3" /> Class Notes & Practice Guide
+                      </span>
+                    )}
                   </div>
                   {(lc.course_title || lc.batch_name) && (
                     <p className="text-xs text-zinc-300 font-medium mb-1">
@@ -241,7 +273,7 @@ export default function StudentLiveClassesPage() {
                     <p className="text-red-400/80 text-xs mt-1">Reason: {lc.cancellation_reason}</p>
                   )}
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-2 shrink-0 flex-wrap">
                   {(lc.status === "LIVE" || lc.status === "SCHEDULED") && (lc.host_url || lc.meeting_url) && (
                     <button
                       type="button"
@@ -252,6 +284,15 @@ export default function StudentLiveClassesPage() {
                       }`}
                     >
                       <PlayCircle className="w-4 h-4" /> {lc.status === "LIVE" ? (lc.host_url ? "Start as Host" : "Join Now") : (lc.host_url ? "Start Class" : "Join")}
+                    </button>
+                  )}
+                  {lc.status === "COMPLETED" && (lc.report_visible_to_students || lc.report) && (
+                    <button
+                      type="button"
+                      onClick={() => openReportModal(lc)}
+                      className="px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] border border-[#facc15]/30 transition-all shadow-sm"
+                    >
+                      <FileText className="w-4 h-4" /> View Notes & Feedback
                     </button>
                   )}
                   {lc.status === "COMPLETED" && lc.recording_url && (
@@ -326,6 +367,137 @@ export default function StudentLiveClassesPage() {
                     </a>
                   </div>
                 </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* ---------------- Student Class Notes & Feedback Modal ---------------- */}
+      <AnimatePresence>
+        {reportTarget && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setReportTarget(null)}>
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-2xl bg-zinc-900 border border-white/10 rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[85vh]"
+            >
+              <div className="flex items-center justify-between px-5 py-4 border-b border-white/5 shrink-0 bg-[#121216]">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-[#facc15]/10 border border-[#facc15]/20 flex items-center justify-center text-[#facc15]">
+                    <FileText className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-white text-sm">
+                      Class Notes & Practice Guide
+                    </h3>
+                    <p className="text-[11px] text-zinc-400">
+                      {reportTarget.title} &middot; {new Date(reportTarget.scheduled_start).toLocaleDateString()}
+                    </p>
+                  </div>
+                </div>
+                <button onClick={() => setReportTarget(null)} className="p-1 rounded-lg hover:bg-white/5 text-zinc-400 hover:text-white">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-5 overflow-y-auto space-y-4 text-xs">
+                {reportLoading ? (
+                  <div className="py-12 flex flex-col items-center justify-center gap-2.5 text-zinc-400">
+                    <Loader2 className="w-6 h-6 animate-spin text-[#facc15]" />
+                    <p>Loading class notes...</p>
+                  </div>
+                ) : !reportData ? (
+                  <div className="py-10 text-center text-zinc-400">
+                    <p>No published notes available for this session yet.</p>
+                  </div>
+                ) : (
+                  <>
+                    {/* Header Context Banner */}
+                    <div className="p-3.5 rounded-xl bg-[#facc15]/5 border border-[#facc15]/20 flex items-center justify-between flex-wrap gap-2 text-[11px]">
+                      <div className="flex items-center gap-2 text-zinc-300">
+                        <span>Instructor: <strong className="text-white">{reportData.teacher_name || reportTarget.instructor_name || "Assigned Teacher"}</strong></span>
+                        <span>&middot;</span>
+                        <span>Reviewed by: <strong className="text-[#facc15]">{reportData.visible_to_students_toggled_by_name || "Batch Mentor"}</strong></span>
+                      </div>
+                      {reportData.engagement_display && (
+                        <span className="px-2.5 py-0.5 rounded-md bg-[#facc15]/20 text-[#facc15] font-semibold flex items-center gap-1">
+                          <Star className="w-3 h-3 fill-current" /> {reportData.engagement_display}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Topics Covered */}
+                    <div className="p-4 rounded-xl bg-zinc-950 border border-white/5 space-y-1.5">
+                      <div className="flex items-center gap-2 text-zinc-400 font-semibold uppercase tracking-wider text-[10px]">
+                        <BookOpen className="w-3.5 h-3.5 text-[#facc15]" /> Topics Covered
+                      </div>
+                      <p className="text-zinc-200 text-xs leading-relaxed whitespace-pre-line font-medium">
+                        {reportData.topics_covered}
+                      </p>
+                    </div>
+
+                    {/* Homework / Practice Instructions */}
+                    {reportData.homework_instructions && (
+                      <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 space-y-1.5">
+                        <div className="flex items-center gap-2 text-amber-400 font-semibold uppercase tracking-wider text-[10px]">
+                          <Sparkles className="w-3.5 h-3.5 text-amber-400" /> Homework & Practice Instructions
+                        </div>
+                        <p className="text-zinc-200 text-xs leading-relaxed whitespace-pre-line font-medium">
+                          {reportData.homework_instructions}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Areas for Improvement */}
+                    {reportData.areas_of_improvement && (
+                      <div className="p-4 rounded-xl bg-zinc-950 border border-white/5 space-y-1.5">
+                        <div className="flex items-center gap-2 text-zinc-400 font-semibold uppercase tracking-wider text-[10px]">
+                          <Star className="w-3.5 h-3.5 text-yellow-400" /> Technique Focus & Areas for Improvement
+                        </div>
+                        <p className="text-zinc-300 text-xs leading-relaxed whitespace-pre-line">
+                          {reportData.areas_of_improvement}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Student Engagement & Session Observations */}
+                    {reportData.engagement_notes && (
+                      <div className="p-4 rounded-xl bg-zinc-950 border border-white/5 space-y-1.5">
+                        <div className="flex items-center gap-2 text-zinc-400 font-semibold uppercase tracking-wider text-[10px]">
+                          <MessageSquare className="w-3.5 h-3.5 text-zinc-400" /> Teacher's Session Observations
+                        </div>
+                        <p className="text-zinc-300 text-xs leading-relaxed whitespace-pre-line">
+                          {reportData.engagement_notes}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Mentor Feedback & Review */}
+                    {reportData.mentor_feedback && (
+                      <div className="p-4 rounded-xl bg-purple-500/10 border border-purple-500/20 space-y-1.5">
+                        <div className="flex items-center gap-2 text-purple-300 font-semibold uppercase tracking-wider text-[10px]">
+                          <MessageSquare className="w-3.5 h-3.5 text-purple-400" /> Mentor Feedback
+                        </div>
+                        <p className="text-purple-100 text-xs leading-relaxed whitespace-pre-line italic">
+                          "{reportData.mentor_feedback}"
+                        </p>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div className="p-4 bg-[#121216] border-t border-white/5 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setReportTarget(null)}
+                  className="px-4 py-2 bg-[#facc15] text-black font-bold text-xs rounded-xl hover:bg-yellow-400 transition-colors shadow-sm"
+                >
+                  Done
+                </button>
               </div>
             </motion.div>
           </div>
