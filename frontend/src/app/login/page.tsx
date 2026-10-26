@@ -22,6 +22,7 @@ export default function Login() {
   const [otpLoading, setOtpLoading] = useState(false);
   const [verifyLoading, setVerifyLoading] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
+  const [devOtp, setDevOtp] = useState("");
   const RESEND_COOLDOWN_SECONDS = 30;
 
   useEffect(() => {
@@ -85,6 +86,10 @@ export default function Login() {
       if (res.ok) {
         setStep(2);
         setResendCooldown(RESEND_COOLDOWN_SECONDS);
+        if (data.dev_otp) {
+          setDevOtp(data.dev_otp);
+          setFormData(prev => ({ ...prev, otp: data.dev_otp }));
+        }
       } else {
         setError(data.error || "Failed to send OTP");
       }
@@ -240,6 +245,12 @@ export default function Login() {
           <form onSubmit={handleVerifyOTP} className="space-y-4">
             <div>
               <div className="text-sm text-zinc-400 mb-2">We sent a 6-digit code to {authMethod === 'mobile' ? `${countryCode}${formData.identifier}` : formData.identifier}</div>
+              {devOtp && (
+                <div className="mb-3 px-3 py-2 rounded-xl bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-xs flex items-center justify-between">
+                  <span>Dev Mode OTP: <strong className="text-sm text-yellow-300 font-mono tracking-wider ml-1">{devOtp}</strong></span>
+                  <span className="text-zinc-400 text-[11px] font-medium">(Auto-filled)</span>
+                </div>
+              )}
               <input
                 type="text"
                 name="otp"

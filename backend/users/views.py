@@ -257,7 +257,10 @@ class SendOTPView(APIView):
             otp=otp,
             purpose=OTPVerification.Purpose.LOGIN
         )
-        return Response({"message": "OTP sent successfully"})
+        resp_data = {"message": "OTP sent successfully"}
+        if settings.DEBUG:
+            resp_data["dev_otp"] = otp
+        return Response(resp_data)
 
 
 class VerifyOTPView(APIView):
