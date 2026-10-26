@@ -111,4 +111,28 @@ jobs:
             --version-label "backend-${{ github.sha }}" \
             --region ap-south-1
 
-          echo "Deployment command sent successfully to AWS Elastic Beanstalk!"
+          echo "Deployment initiated. Waiting for environment update to complete..."
+          sleep 25
+          DEPLOY_SUCCESS=false
+          for i in $(seq 1 45); do
+            ENV_INFO=$(aws elasticbeanstalk describe-environments --environment-names Natya-lms-backend-env --region ap-south-1 --query 'Environments[0].[Status,Health,VersionLabel]' --output text 2>/dev/null || echo "")
+            read -r STATUS HEALTH VERSION <<< "$ENV_INFO"
+            echo "[$i/45] Status: $STATUS | Health: $HEALTH | Version: $VERSION"
+            if [ "$STATUS" = "Ready" ]; then
+              if [ "$VERSION" = "backend-${{ github.sha }}" ]; then
+                echo "Deployment successfully verified! Version: $VERSION, Health: $HEALTH"
+                DEPLOY_SUCCESS=true
+                break
+              else
+                echo "::error::Environment reached Ready state but active VersionLabel ($VERSION) does not match expected backend-${{ github.sha }}! Deployment failed or rolled back."
+                break
+              fi
+            fi
+            sleep 10
+          done
+
+          if [ "$DEPLOY_SUCCESS" != "true" ]; then
+            echo "=== RECENT ELASTIC BEANSTALK EVENTS ==="
+            aws elasticbeanstalk describe-events --environment-name Natya-lms-backend-env --max-items 25 --region ap-south-1 || true
+            exit 1
+          fi

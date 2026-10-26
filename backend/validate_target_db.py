@@ -16,7 +16,7 @@ import sys
 REQUIRED_STAGING_DB_NAME = 'natyalms_staging_db'
 PROD_DB_NAMES = {'natyalms', 'natyalms_prod', 'natyalms_production', 'production'}
 PROD_S3_BUCKETS = {'natyalms-media-2026'}
-RECOGNIZED_ENVIRONMENTS = {'staging', 'stage', 'production', 'local-dev', 'test'}
+RECOGNIZED_ENVIRONMENTS = {'staging', 'stage', 'production', 'local-dev', 'development', 'test'}
 
 
 def evaluate_staging_target(
@@ -140,7 +140,7 @@ def evaluate_staging_target(
         return True, "Production pre-migration target checks PASSED successfully."
 
     # 4. Local Development / Test Environment
-    elif environment in ('local-dev', 'test'):
+    elif environment in ('local-dev', 'development', 'test'):
         if not (env.get('DEBUG', 'False') == 'True' or 'test' in sys.argv or environment == 'test'):
             return False, f"Environment '{environment}' is only permitted when DEBUG=True or during automated tests."
         return True, f"Environment '{environment}' target checks PASSED."
@@ -158,6 +158,11 @@ def validate_staging_target():
 
     from django.db import connection
     from django.conf import settings
+
+    # Ensure ENVIRONMENT is resolved if not explicitly set in OS environment
+    if not os.environ.get('ENVIRONMENT'):
+        default_env = getattr(settings, 'ENVIRONMENT', 'production' if not getattr(settings, 'DEBUG', False) else 'local-dev')
+        os.environ['ENVIRONMENT'] = default_env
 
     db_settings = connection.settings_dict
     db_name = str(db_settings.get('NAME', '')).strip()

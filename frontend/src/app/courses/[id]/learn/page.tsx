@@ -218,8 +218,9 @@ export default function CourseLearnPage() {
           setPlaybackAuth(null);
           setPlaybackAuthError(errData.detail || "You do not have active access to this lesson's video.");
         } else {
+          const errData = await res.json().catch(() => ({}));
           setPlaybackAuth(null);
-          setPlaybackAuthError("Unable to authorize playback. Please try again.");
+          setPlaybackAuthError(errData.detail || "Unable to authorize playback. Please try again.");
         }
       } catch (err) {
         if (!isCancelled) {
