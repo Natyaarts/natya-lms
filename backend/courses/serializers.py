@@ -250,9 +250,29 @@ class ModuleSerializer(serializers.ModelSerializer):
             return False
         return obj.course_id in full_access_ids
 
+    def _has_authoring_access(self, obj):
+        """
+        Verify real endpoint permissions and the provenance of authoring access.
+        Only genuine staff/superusers or assigned instructors for this course
+        may receive direct storage media URLs. We do not treat context flags
+        alone as proof of authorization.
+        """
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if not user or not getattr(user, 'is_authenticated', False):
+            return False
+        if getattr(user, 'is_superuser', False) or getattr(user, 'is_staff', False):
+            return True
+        cached_ids = self.context.get('authoring_course_ids')
+        if cached_ids is not None:
+            return obj.course_id in cached_ids
+        from .services.access import instructor_course_ids_for_user
+        return obj.course_id in instructor_course_ids_for_user(user)
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         has_access = self._has_full_content_access(instance)
+        can_author = self._has_authoring_access(instance)
         completed_lesson_ids = self.context.get('completed_lesson_ids', set())
         for lesson_data in data['lessons']:
             lesson_data['is_locked'] = not has_access
@@ -262,18 +282,18 @@ class ModuleSerializer(serializers.ModelSerializer):
             # extended to completion state; see the Phase 4.5 report).
             lesson_data['is_completed'] = lesson_data['id'] in completed_lesson_ids
             if not has_access:
-                # video_file/transcript/timed_transcript/translated_audios
-                # (and each translated_audios entry's own audio_file) are
-                # the only fields ever redacted -- title/description/order/
-                # module stay visible, matching the approved "outline
-                # visible, content locked" contract; nulling them here
-                # (rather than not fetching them at all) means no
-                # functional S3 URL is ever included in the response, per
-                # the security requirement, without needing to change how
-                # VideoLessonSerializer/TranslatedAudioSerializer fetch
-                # their data.
+                # Text transcripts stay hidden if locked
                 lesson_data['transcript'] = None
                 lesson_data['timed_transcript'] = None
+
+            # Video & translated audio media URLs:
+            # Student-facing course-detail responses MUST NEVER contain direct
+            # media URLs (video_file / translated_audios), even for enrolled or
+            # subscribed learners. Playable media URLs are only issued via the
+            # authenticated, monitored playback-auth endpoint.
+            # Only authenticated staff/instructors with legitimate authoring access
+            # retain media filenames/URLs for editing, CMS, and preview workflows.
+            if not can_author:
                 lesson_data['video_file'] = None
                 lesson_data['translated_audios'] = []
 

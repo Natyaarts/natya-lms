@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, SafeAreaView, RefreshControl } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import client from '../api/client';
+import { headerLayout } from '../theme';
 
 // Phase 4.9 -- read-only notification list + mark-as-read, reusing the
 // existing NotificationViewSet exactly (GET api/notifications/,
@@ -58,7 +60,7 @@ export default function NotificationsScreen({ navigation }: any) {
   if (loading) return <View style={styles.centered}><ActivityIndicator color="#facc15" size="large" /></View>;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.backText}>← Back</Text></TouchableOpacity>
         <Text style={styles.headerTitle}>Notifications</Text>
@@ -83,7 +85,7 @@ export default function NotificationsScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#050505' },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#050505' },
-  header: { flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#27272a' },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: headerLayout.stackHeaderPaddingTop, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: '#27272a' },
   backText: { color: '#facc15', fontSize: 16, marginRight: 16 },
   headerTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold', flex: 1 },
   markAllText: { color: '#facc15', fontSize: 12, fontWeight: '600' },

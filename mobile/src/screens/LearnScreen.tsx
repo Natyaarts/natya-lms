@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Linking, Image, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import client, { resolveMediaUrl } from '../api/client';
@@ -66,6 +66,7 @@ export default function LearnScreen({ route, navigation }: any) {
       download_enabled: boolean;
       screen_capture_protection_enabled: boolean;
     };
+    expires_in?: number;
     translated_audios?: any[];
   } | null>(null);
   const [playbackAuthError, setPlaybackAuthError] = useState<string | null>(null);
@@ -259,6 +260,48 @@ export default function LearnScreen({ route, navigation }: any) {
     })
     .filter((t): t is AudioTrackOption => t !== null);
 
+  // Step 5: Refresh expiring signed playback media URLs
+  const handleRefreshUrls = useCallback(async (): Promise<{
+    source: string;
+    audioTracks?: AudioTrackOption[];
+    expiresIn?: number;
+  } | null> => {
+    if (!activeLesson?.id) return null;
+    try {
+      const res = await client.get(`courses/lessons/${activeLesson.id}/playback-auth/`);
+      setPlaybackAuth(res.data);
+      const rawVideo = res.data?.video_url || null;
+      const newSource = rawVideo ? resolveMediaUrl(rawVideo) : null;
+      if (!newSource) return null;
+
+      const rawAudioList = res.data?.translated_audios || [];
+      const newAudioTracks: AudioTrackOption[] = rawAudioList
+        .filter((a: any) => (!a.status || a.status === 'completed') && (a.audio_file || a.audio_url))
+        .map((a: any) => {
+          const url = resolveMediaUrl(a.audio_file || a.audio_url);
+          if (!url) return null;
+          return {
+            code: a.language_code.split('-')[0],
+            name: a.language_name || LANGUAGE_NAME_MAP[a.language_code.split('-')[0].toLowerCase()] || a.language_code,
+            url,
+          };
+        })
+        .filter((t: AudioTrackOption | null): t is AudioTrackOption => t !== null);
+
+      return {
+        source: newSource,
+        audioTracks: newAudioTracks,
+        expiresIn: res.data?.expires_in || 900,
+      };
+    } catch (err: any) {
+      if (err.response?.status === 403) {
+        setPlaybackAuth(null);
+        setPlaybackAuthError(err.response?.data?.detail || 'Your access to this lesson has expired.');
+      }
+      return null;
+    }
+  }, [activeLesson?.id]);
+
   const handlePurchase = () => {
     // Redirect to web app for purchase to bypass app store 30% fee
     Linking.openURL(`https://academy.natyaarts.com/courses/${courseId}`);
@@ -305,6 +348,7 @@ export default function LearnScreen({ route, navigation }: any) {
           </View>
         ) : videoSource ? (
           <CustomVideoPlayer
+            key={activeLesson?.id}
             source={videoSource}
             audioTracks={audioTracks}
             lessonKey={activeLesson?.id}
@@ -312,6 +356,8 @@ export default function LearnScreen({ route, navigation }: any) {
             onProgress={handleVideoProgress}
             watermark={playbackAuth?.watermark}
             screenCaptureProtectionEnabled={playbackAuth?.protection?.screen_capture_protection_enabled ?? true}
+            onRefreshUrls={handleRefreshUrls}
+            expiresIn={playbackAuth?.expires_in}
           />
         ) : (
           <View style={styles.noVideo}>

@@ -5,7 +5,6 @@ import {
   StyleSheet,
   Image,
   ActivityIndicator,
-  SafeAreaView,
   ScrollView,
   TouchableOpacity,
   Linking,
@@ -14,9 +13,10 @@ import {
   Modal,
   AppState,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import client, { resolveMediaUrl } from '../api/client';
 import Icon from '../components/Icon';
-import { colors, spacing, radius, typography } from '../theme';
+import { colors, spacing, radius, typography, headerLayout } from '../theme';
 
 const FALLBACK_THUMB = 'https://images.unsplash.com/photo-1514320291840-2e0a9bf2a9ae?q=80&w=1470&auto=format&fit=crop';
 
@@ -171,7 +171,7 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.artworkWrap}>
           <Image source={{ uri: thumbUrl }} style={styles.artwork} />
@@ -322,7 +322,7 @@ const styles = StyleSheet.create({
   artwork: { width: '100%', height: '100%', resizeMode: 'cover' },
   backButton: {
     position: 'absolute',
-    top: spacing.lg,
+    top: spacing.lg + headerLayout.topGap,
     left: spacing.lg,
     width: 38,
     height: 38,
@@ -333,7 +333,7 @@ const styles = StyleSheet.create({
   },
   typeBadge: {
     position: 'absolute',
-    top: spacing.lg,
+    top: spacing.lg + headerLayout.topGap,
     right: spacing.lg,
     backgroundColor: colors.scrim,
     borderRadius: radius.pill,

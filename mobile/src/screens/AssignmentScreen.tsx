@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   ActivityIndicator,
   ScrollView,
   TextInput,
@@ -14,8 +13,10 @@ import {
   Platform,
   Keyboard,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import client from '../api/client';
+import { headerLayout } from '../theme';
 
 // Phase 4.9/4.10 -- mobile assignment detail/submission screen, mirroring
 // the web frontend's assignments/[assignmentId]/page.tsx contract exactly
@@ -142,7 +143,7 @@ export default function AssignmentScreen({ route, navigation }: any) {
 
   if (error || !assignment) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
         <View style={styles.centered}>
           <Text style={styles.errorText}>{error || 'Assignment not found.'}</Text>
           <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.backLink}>Go Back</Text></TouchableOpacity>
@@ -152,7 +153,7 @@ export default function AssignmentScreen({ route, navigation }: any) {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.backText}>← Back</Text></TouchableOpacity>
       </View>
@@ -273,7 +274,7 @@ const styles = StyleSheet.create({
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#050505', padding: 24 },
   errorText: { color: '#f87171', fontSize: 15, textAlign: 'center', marginBottom: 16 },
   backLink: { color: '#facc15', fontSize: 14 },
-  header: { flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#27272a' },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: headerLayout.stackHeaderPaddingTop, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: '#27272a' },
   backText: { color: '#facc15', fontSize: 16 },
   content: { padding: 24, paddingBottom: 60 },
   title: { color: '#fff', fontSize: 24, fontWeight: 'bold', marginBottom: 8 },

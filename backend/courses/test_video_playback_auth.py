@@ -108,7 +108,7 @@ class VideoPlaybackAuthTests(APITestCase):
         self.assertEqual(data['lesson_id'], self.lesson.id)
         self.assertEqual(data['title'], self.lesson.title)
         self.assertTrue(data['video_url'])
-        self.assertEqual(data['expires_in'], 1800)
+        self.assertEqual(data['expires_in'], 900)
         self.assertEqual(data['student_id'], self.enrolled_student.student_id)
 
         # Watermark payload check
@@ -173,3 +173,30 @@ class VideoPlaybackAuthTests(APITestCase):
         self.client.force_authenticate(user=self.enrolled_student)
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_s3_presigned_url_expiry_argument_is_900_seconds(self):
+        """When S3 storage is enabled, generate_presigned_url is called with ExpiresIn=900."""
+        from unittest import mock
+        mock_s3 = mock.MagicMock()
+        mock_s3.generate_presigned_url.return_value = "https://s3.example.com/signed-test-video.mp4"
+
+        with mock.patch('boto3.client', return_value=mock_s3):
+            with self.settings(
+                AWS_STORAGE_BUCKET_NAME="test-secure-bucket",
+                AWS_ACCESS_KEY_ID="test-key",
+                AWS_SECRET_ACCESS_KEY="test-secret",
+                AWS_S3_ENABLED=True,
+            ):
+                self.client.force_authenticate(user=self.enrolled_student)
+                response = self.client.get(self.url)
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual(response.data['expires_in'], 900)
+
+                # Verify generate_presigned_url was called with 900 seconds
+                self.assertTrue(mock_s3.generate_presigned_url.called)
+                for call_args in mock_s3.generate_presigned_url.call_args_list:
+                    self.assertEqual(call_args.kwargs.get('ExpiresIn'), 900)
+                    self.assertEqual(
+                        call_args.kwargs.get('Params', {}).get('ResponseContentDisposition'),
+                        'inline'
+                    )

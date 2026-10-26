@@ -6,7 +6,7 @@ import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Play, Check, ChevronLeft, Lock, ClipboardList, Trophy, Clock,
-  FileText, RotateCcw
+  FileText, RotateCcw, Award
 } from "lucide-react";
 import WebVideoPlayer from "@/components/player/WebVideoPlayer";
 
@@ -93,6 +93,7 @@ export default function CourseLearnPage() {
       download_enabled: boolean;
       screen_capture_protection_enabled: boolean;
     };
+    expires_in?: number;
     translated_audios?: any[];
   } | null>(null);
   const [playbackAuthError, setPlaybackAuthError] = useState<string | null>(null);
@@ -240,6 +241,40 @@ export default function CourseLearnPage() {
     };
   }, [activeLesson?.id, activeLesson?.is_locked]);
 
+  // Step 5: Refresh expiring signed playback media URLs (video and translated audio)
+  const handleRefreshPlaybackUrls = useCallback(async (): Promise<{
+    videoUrl: string;
+    translatedAudios?: any[];
+    expiresIn?: number;
+  } | null> => {
+    if (!activeLesson?.id) return null;
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/lessons/${activeLesson.id}/playback-auth/`,
+        {
+          credentials: "include",
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setPlaybackAuth(data);
+        return {
+          videoUrl: data.video_url,
+          translatedAudios: data.translated_audios || [],
+          expiresIn: data.expires_in,
+        };
+      } else if (res.status === 403) {
+        const errData = await res.json().catch(() => ({}));
+        setPlaybackAuth(null);
+        setPlaybackAuthError(errData.detail || "Your access to this lesson's video has expired.");
+        return null;
+      }
+    } catch (err) {
+      console.warn("Failed to refresh playback URLs.");
+    }
+    return null;
+  }, [activeLesson?.id]);
+
 
   // Phase 4.5: refreshes just the course/module completion numbers
   // (re-fetches the same GET /api/courses/<id>/ the mount effect below
@@ -372,7 +407,8 @@ export default function CourseLearnPage() {
                   href={`/certificates/${id}`}
                   className="mt-3 flex items-center justify-center gap-2 w-full py-2 rounded-full bg-green-500/15 text-green-400 text-xs font-semibold hover:bg-green-500/25 transition-colors"
                 >
-                  🎓 View Your Certificate
+                  <Award className="w-3.5 h-3.5" />
+                  <span>View Your Certificate</span>
                 </Link>
               )}
             </div>
@@ -544,6 +580,8 @@ export default function CourseLearnPage() {
                 savedProgressPosition={savedProgressPosition}
                 watermark={playbackAuth.watermark}
                 downloadEnabled={playbackAuth.protection?.download_enabled ?? false}
+                expiresIn={playbackAuth.expires_in}
+                onRefreshUrls={handleRefreshPlaybackUrls}
                 onSaveProgress={(pos, dur, comp) => saveProgress(activeLesson.id, pos, dur, comp)}
                 onEnded={() => {
                   if (activeLesson?.id) {

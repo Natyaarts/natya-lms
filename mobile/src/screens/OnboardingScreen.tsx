@@ -8,12 +8,12 @@ import {
   ActivityIndicator,
   ScrollView,
   Alert,
-  SafeAreaView,
   Modal,
   KeyboardAvoidingView,
   Platform,
   Keyboard,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import client from '../api/client';
 
 export default function OnboardingScreen({ navigation }: any) {
@@ -21,12 +21,28 @@ export default function OnboardingScreen({ navigation }: any) {
   const [formData, setFormData] = useState<any>({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   
   // Custom dropdown selection modal state
   const [activeDropdownField, setActiveDropdownField] = useState<any>(null);
 
   const scrollViewRef = useRef<ScrollView>(null);
   const fieldOffsets = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e: any) => setKeyboardHeight(e.endCoordinates.height)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setKeyboardHeight(0)
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const handleFieldFocus = (fieldName: string) => {
     const y = fieldOffsets.current[fieldName];
@@ -36,7 +52,7 @@ export default function OnboardingScreen({ navigation }: any) {
           y: Math.max(0, y - 24),
           animated: true,
         });
-      }, 100);
+      }, 120);
     }
   };
 
@@ -125,7 +141,7 @@ export default function OnboardingScreen({ navigation }: any) {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Complete Your Profile</Text>
         <Text style={styles.headerSubtitle}>Please fill in a few details to get started.</Text>
@@ -137,7 +153,10 @@ export default function OnboardingScreen({ navigation }: any) {
       >
         <ScrollView
           ref={scrollViewRef}
-          contentContainerStyle={styles.formContainer}
+          contentContainerStyle={[
+            styles.formContainer,
+            { paddingBottom: keyboardHeight > 0 ? keyboardHeight + 60 : 40 },
+          ]}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}

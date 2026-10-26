@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, FlatList, StyleSheet, ActivityIndicator, SafeAreaView, RefreshControl } from 'react-native';
+import { View, Text, FlatList, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import client from '../api/client';
 import CourseCard from '../components/CourseCard';
 import EmptyState from '../components/EmptyState';
-import { colors, spacing, typography } from '../theme';
+import { colors, spacing, typography, headerLayout } from '../theme';
 
 // The definitive, complete list of everything the student is enrolled in --
 // distinct from Home's compact "Continue Learning" hero + rail summary.
@@ -47,7 +48,7 @@ export default function MyLearningScreen({ navigation }: any) {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>My Learning</Text>
         <Text style={styles.headerSubtitle}>Every course you're enrolled in, in one place.</Text>
@@ -87,7 +88,7 @@ export default function MyLearningScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   centered: { justifyContent: 'center', alignItems: 'center' },
-  header: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm, paddingBottom: spacing.lg },
+  header: { paddingHorizontal: spacing.lg, paddingTop: headerLayout.tabHeaderPaddingTop, paddingBottom: spacing.lg },
   headerTitle: { ...typography.title },
   headerSubtitle: { ...typography.bodyRegular, marginTop: 4 },
   listContainer: { paddingHorizontal: spacing.lg, paddingBottom: spacing.xxl, flexGrow: 1 },

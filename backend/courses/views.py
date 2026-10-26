@@ -139,8 +139,10 @@ class CourseViewSet(viewsets.ModelViewSet):
             context['bypass_content_lock'] = True
         else:
             from .services.access import accessible_course_ids_for_user, instructor_course_ids_for_user
+            instructor_ids = instructor_course_ids_for_user(user)
+            context['authoring_course_ids'] = instructor_ids
             context['course_content_full_access_ids'] = (
-                accessible_course_ids_for_user(user) | instructor_course_ids_for_user(user)
+                accessible_course_ids_for_user(user) | instructor_ids
             )
 
         # Phase 4.3: same "compute once per request" precedent as the two
@@ -753,8 +755,8 @@ class VideoLessonViewSet(viewsets.ModelViewSet):
         # Retrieve or generate stable student_id for watermark
         student_id = getattr(user, 'student_id', None) or user.get_or_create_student_id()
 
-        # Playback signed URL validity (30 minutes = 1800s)
-        expires_in = 1800
+        # Playback signed URL validity (15 minutes = 900s)
+        expires_in = 900
 
         def _get_signed_url(file_field):
             if not file_field:

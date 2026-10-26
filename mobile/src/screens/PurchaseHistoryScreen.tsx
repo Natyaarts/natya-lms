@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, SafeAreaView, RefreshControl } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import client from '../api/client';
+import { headerLayout } from '../theme';
 
 // Mobile purchase-history gap fix ("Mobile has no one-time purchase/
 // payment history"). Combines the two backend flows that both represent a
@@ -108,7 +110,7 @@ export default function PurchaseHistoryScreen({ navigation }: any) {
   if (loading) return <View style={styles.centered}><ActivityIndicator color="#facc15" size="large" /></View>;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.backText}>← Back</Text></TouchableOpacity>
         <Text style={styles.headerTitle}>Purchase History</Text>
@@ -143,7 +145,7 @@ export default function PurchaseHistoryScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#050505' },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#050505' },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, borderBottomWidth: 1, borderBottomColor: '#27272a' },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: headerLayout.stackHeaderPaddingTop, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: '#27272a' },
   backText: { color: '#facc15', fontSize: 16 },
   headerTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   listContainer: { padding: 16 },

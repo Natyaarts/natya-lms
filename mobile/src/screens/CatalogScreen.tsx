@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, TextInput, ActivityIndicator, SafeAreaView, RefreshControl } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, TextInput, ActivityIndicator, RefreshControl } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import client from '../api/client';
 import Icon from '../components/Icon';
 import CourseCard from '../components/CourseCard';
 import EmptyState from '../components/EmptyState';
-import { colors, spacing, radius, typography } from '../theme';
+import { colors, spacing, radius, typography, headerLayout } from '../theme';
 
 // course_type is a real, small enum on the Course model (LIVE | RECORDED)
 // -- these filter chips are derived from that actual field, never an
@@ -68,7 +69,7 @@ export default function CatalogScreen({ navigation }: any) {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Explore</Text>
       </View>
@@ -142,7 +143,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   centered: { justifyContent: 'center', alignItems: 'center' },
 
-  header: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm, paddingBottom: spacing.md },
+  header: { paddingHorizontal: spacing.lg, paddingTop: headerLayout.tabHeaderPaddingTop, paddingBottom: spacing.md },
   headerTitle: { ...typography.title },
 
   searchRow: {
