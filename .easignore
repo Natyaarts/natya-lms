@@ -1,11 +1,13 @@
 # Ignore everything outside mobile
 backend/
+frontend/
 scratch_binaries/
 Natya Analytics.xlsx
 *.xlsx
 *.zip
 *.apk
 *.aab
+.claude/
 
 # Inside mobile
 mobile/node_modules/
@@ -17,3 +19,4 @@ mobile/ios/
 mobile/*.apk
 mobile/*.aab
 mobile/.env*.local
+
