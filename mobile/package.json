@@ -37,6 +37,7 @@
     "typescript": "~6.0.3"
   },
   "scripts": {
+    "postinstall": "node ./scripts/fix-rniap-podspec.js",
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
