@@ -13,6 +13,8 @@ Provides:
 import base64
 import json
 import logging
+import re
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 import jwt
@@ -21,7 +23,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from django.conf import settings
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from courses.models import Course, Enrollment
@@ -29,6 +31,12 @@ from orders.models import Purchase
 from orders.services import fulfill_purchase
 
 logger = logging.getLogger('orders.apple')
+
+
+def get_expected_bundle_id() -> str:
+    """Returns configured Apple Bundle ID, dynamically reading settings for testability."""
+    return getattr(settings, 'APPLE_BUNDLE_ID', 'com.natyaarts.academy').strip()
+
 
 EXPECTED_BUNDLE_ID = getattr(settings, 'APPLE_BUNDLE_ID', 'com.natyaarts.academy')
 
@@ -130,23 +138,32 @@ class AppleIAPService:
             except Exception as e:
                 raise AppleVerificationError(f"Cryptographic certificate chain broken between cert {i} and {i+1}: {e}") from e
 
+        leaf_cert = certs[0]
+
+        # Validate leaf certificate StoreKit 2 custom extension marker (OID 1.2.840.113635.100.6.11.1)
+        has_marker = any(
+            ext.oid.dotted_string == STOREKIT2_EXTENSION_OID
+            for ext in leaf_cert.extensions
+        )
+        if not has_marker:
+            raise AppleVerificationError(
+                f"Apple leaf certificate missing required StoreKit 2 extension ({STOREKIT2_EXTENSION_OID})."
+            )
+
+        # In testing mode with mock certificates, bypass root fingerprint check
+        if getattr(settings, 'APPLE_IAP_TEST_MODE', False):
+            return leaf_cert
+
         # Validate the root of the chain against trusted Apple Root CA fingerprints
         root_cert = certs[-1]
         root_fingerprint = root_cert.fingerprint(hashes.SHA256()).hex().lower()
 
-        # In testing mode with mock certificates, bypass root fingerprint check
-        if getattr(settings, 'APPLE_IAP_TEST_MODE', False):
-            return certs[0]
-
         if root_fingerprint not in TRUSTED_APPLE_ROOT_FINGERPRINTS:
-            # Also verify if root was self-signed or if intermediate is signed by Apple Root
-            issuer_common_name = root_cert.issuer.rfc4514_string()
-            if "Apple" not in issuer_common_name:
-                raise AppleVerificationError(
-                    f"Certificate chain does not root to an authorized Apple Root CA (fingerprint: {root_fingerprint})."
-                )
+            raise AppleVerificationError(
+                f"Certificate chain does not root to an authorized Apple Root CA (fingerprint: {root_fingerprint})."
+            )
 
-        return certs[0]
+        return leaf_cert
 
     @classmethod
     def verify_jws_token(cls, jws_token: str, is_transaction: bool = True) -> Dict[str, Any]:
@@ -204,38 +221,43 @@ class AppleIAPService:
         - notificationType present
         - bundleId in data (if present) matches expected bundle ID
         - environment is valid (Sandbox or Production)
+        - sandbox notifications must adhere to explicit server setting
         """
         if not payload.get('notificationType'):
             raise AppleVerificationError("Notification payload missing required 'notificationType'.")
 
+        expected_bundle_id = get_expected_bundle_id()
         data = payload.get('data', {})
         bundle_id = data.get('bundleId')
-        if bundle_id and bundle_id != EXPECTED_BUNDLE_ID:
+        if bundle_id and bundle_id != expected_bundle_id:
             raise AppleVerificationError(
-                f"Bundle ID mismatch in notification: expected '{EXPECTED_BUNDLE_ID}', got '{bundle_id}'"
+                f"Bundle ID mismatch in notification: expected '{expected_bundle_id}', got '{bundle_id}'"
             )
 
         env = data.get('environment') or payload.get('environment')
         if env and env not in ('Production', 'Sandbox'):
             raise AppleVerificationError(f"Invalid Apple StoreKit environment: '{env}'")
 
-        if env == 'Sandbox' and not settings.DEBUG and not getattr(settings, 'APPLE_IAP_ALLOW_SANDBOX', False) and not getattr(settings, 'APPLE_IAP_TEST_MODE', False):
-            raise AppleVerificationError("Sandbox notification received in production environment.")
+        allow_sandbox = getattr(settings, 'APPLE_IAP_ALLOW_SANDBOX', False) or getattr(settings, 'APPLE_IAP_TEST_MODE', False)
+        if env == 'Sandbox' and not allow_sandbox:
+            raise AppleVerificationError("Sandbox notification received, but Sandbox environment is not allowed by server configuration.")
 
     @classmethod
     def _validate_transaction_claims(cls, payload: Dict[str, Any]) -> None:
         """
         Enforces security invariants on StoreKit 2 payload:
-        - bundleId matches com.natyaarts.academy
+        - bundleId matches configured Apple Bundle ID
         - transactionId present
         - productId present
         - revocationDate is None
         - environment is valid (Sandbox or Production)
+        - sandbox transactions must adhere to explicit server setting
         """
+        expected_bundle_id = get_expected_bundle_id()
         bundle_id = payload.get('bundleId')
-        if bundle_id != EXPECTED_BUNDLE_ID:
+        if bundle_id != expected_bundle_id:
             raise AppleVerificationError(
-                f"Bundle ID mismatch: expected '{EXPECTED_BUNDLE_ID}', got '{bundle_id}'"
+                f"Bundle ID mismatch: expected '{expected_bundle_id}', got '{bundle_id}'"
             )
 
         if not payload.get('transactionId'):
@@ -253,29 +275,56 @@ class AppleIAPService:
         if env and env not in ('Production', 'Sandbox'):
             raise AppleVerificationError(f"Invalid Apple StoreKit environment: '{env}'")
 
-        # In live production, reject Sandbox tokens unless specifically allowed for review/testing
-        if env == 'Sandbox' and not settings.DEBUG and not getattr(settings, 'APPLE_IAP_ALLOW_SANDBOX', False) and not getattr(settings, 'APPLE_IAP_TEST_MODE', False):
-            raise AppleVerificationError("Sandbox transaction received in production environment.")
+        # Explicit environment setting check for Sandbox
+        allow_sandbox = getattr(settings, 'APPLE_IAP_ALLOW_SANDBOX', False) or getattr(settings, 'APPLE_IAP_TEST_MODE', False)
+        if env == 'Sandbox' and not allow_sandbox:
+            raise AppleVerificationError("Sandbox transaction received, but Sandbox environment is not allowed by server configuration.")
 
     @classmethod
     def resolve_course_for_product(cls, product_id: str) -> Course:
-        """Maps Apple Product ID to Course."""
+        r"""
+        Maps Apple Product ID to Course.
+        Resolution rules:
+        1. Exact match against Course.apple_product_id.
+        2. Strict fallback pattern: <bundle_id>.course.<course_id>
+           - Matches regex f"^{re.escape(get_expected_bundle_id())}\.course\.(\d+)$".
+           - Verifies Course exists with id=<course_id>.
+           - Disambiguation check: If course has a custom apple_product_id configured
+             that differs from this default pattern ID, rejects to prevent ambiguity.
+        3. Fails safely on unknown or ambiguous product IDs without broad exception swallowing.
+        """
+        if not product_id or not isinstance(product_id, str):
+            raise Course.DoesNotExist("Apple Product ID cannot be empty.")
+
         product_id = product_id.strip()
 
-        try:
-            course = Course.objects.filter(apple_product_id=product_id).first()
-            if course:
-                return course
-        except Exception:
-            pass
+        # 1. Direct custom apple_product_id lookup
+        course = Course.objects.filter(apple_product_id=product_id).first()
+        if course:
+            return course
 
-        parts = product_id.split('.')
-        candidate_id = parts[-1]
-        if candidate_id.isdigit():
+        # 2. Strict default pattern lookup: <bundle_id>.course.<course_id>
+        expected_bundle_id = get_expected_bundle_id()
+        default_pattern = rf"^{re.escape(expected_bundle_id)}\.course\.(\d+)$"
+        match = re.match(default_pattern, product_id)
+        if match:
+            course_id = int(match.group(1))
             try:
-                return Course.objects.get(id=int(candidate_id))
+                course = Course.objects.get(id=course_id)
             except Course.DoesNotExist:
-                pass
+                raise Course.DoesNotExist(
+                    f"No course found for default Apple Product ID '{product_id}' (course ID {course_id} does not exist)."
+                )
+
+            # Disambiguation guard: If course has an explicit custom apple_product_id
+            # set to something else, default pattern identifier must not be accepted.
+            if course.apple_product_id and course.apple_product_id != product_id:
+                raise AppleVerificationError(
+                    f"Product ID '{product_id}' is ambiguous or inactive: course #{course.id} "
+                    f"is explicitly configured with custom Apple Product ID '{course.apple_product_id}'."
+                )
+
+            return course
 
         raise Course.DoesNotExist(f"No course found matching Apple Product ID '{product_id}'")
 
@@ -311,6 +360,22 @@ class AppleIAPService:
 
         course = cls.resolve_course_for_product(verified_product_id)
 
+        # Audit and currency compatibility: StoreKit 2 transactions provide ISO-4217 'currency'
+        # (e.g. 'INR', 'USD') and price in milliunits. Catalog course price (INR) is retained
+        # on the Purchase record to guarantee full compatibility with the existing INR ledger,
+        # instructor revenue share, and invoicing system without schema or accounting divergence.
+        apple_currency = verified_payload.get('currency')
+        apple_price_raw = verified_payload.get('price')
+        logger.info(
+            "Apple IAP verification: user=%s, course=%s, tx=%s, catalog_price=%s INR, apple_currency=%s, apple_price_raw=%s",
+            user.id,
+            course.id,
+            transaction_id,
+            course.price,
+            apple_currency,
+            apple_price_raw,
+        )
+
         with transaction.atomic():
             existing_purchase = (
                 Purchase.objects.select_for_update()
@@ -329,32 +394,89 @@ class AppleIAPService:
                     )
                     raise AppleVerificationError("This Apple transaction is already associated with another user account.")
 
+                # VERIFY COURSE: Transaction cannot be mapped to a different course
+                if existing_purchase.course_id != course.id:
+                    logger.error(
+                        "Transaction course mismatch: tx %s is for course %s, incoming verification requested course %s",
+                        transaction_id,
+                        existing_purchase.course_id,
+                        course.id
+                    )
+                    raise AppleVerificationError(
+                        f"Transaction {transaction_id} is already associated with another course."
+                    )
+
                 logger.info(
-                    "Apple transaction %s already processed (Purchase #%s); ensuring enrollment for user %s.",
+                    "Apple transaction %s already processed (Purchase #%s); ensuring enrollment for user %s on course %s.",
                     transaction_id,
                     existing_purchase.id,
-                    user.id
+                    user.id,
+                    course.id
                 )
-                Enrollment.objects.get_or_create(user=user, course=course)
+                Enrollment.objects.get_or_create(user=user, course=existing_purchase.course)
                 return existing_purchase, False
 
-            # Create new Purchase record
-            purchase = Purchase.objects.create(
-                user=user,
-                course=course,
-                amount=course.price,
-                status=Purchase.Status.SUCCESS,
-                payment_provider=Purchase.PaymentProvider.APPLE_IAP,
-                apple_transaction_id=transaction_id,
-                apple_original_transaction_id=original_transaction_id,
-                apple_product_id=verified_product_id,
-            )
+            is_sandbox = (verified_payload.get('environment') == 'Sandbox')
+            purchase_amount = Decimal('0.00') if is_sandbox else course.price
 
-            # Idempotently fulfill purchase
-            fulfill_purchase(purchase, previous_status=Purchase.Status.PENDING)
+            # Create new Purchase record with savepoint to handle concurrent race conditions
+            try:
+                with transaction.atomic():
+                    purchase = Purchase.objects.create(
+                        user=user,
+                        course=course,
+                        amount=purchase_amount,
+                        status=Purchase.Status.SUCCESS,
+                        payment_provider=Purchase.PaymentProvider.APPLE_IAP,
+                        apple_transaction_id=transaction_id,
+                        apple_original_transaction_id=original_transaction_id,
+                        apple_product_id=verified_product_id,
+                    )
+            except IntegrityError:
+                logger.warning(
+                    "IntegrityError on apple_transaction_id=%s during concurrent creation. Reloading existing purchase.",
+                    transaction_id
+                )
+                existing_purchase = (
+                    Purchase.objects.select_for_update()
+                    .filter(apple_transaction_id=transaction_id)
+                    .first()
+                )
+                if not existing_purchase:
+                    raise
+
+                # Verify ownership on the concurrent transaction
+                if existing_purchase.user_id != user.id:
+                    logger.error(
+                        "Race conflict ownership violation: user %s attempted to claim tx %s owned by user %s",
+                        user.id,
+                        transaction_id,
+                        existing_purchase.user_id
+                    )
+                    raise AppleVerificationError("This Apple transaction is already associated with another user account.")
+
+                # Verify course on the concurrent transaction
+                if existing_purchase.course_id != course.id:
+                    logger.error(
+                        "Race conflict course mismatch: tx %s is for course %s, incoming verification requested course %s",
+                        transaction_id,
+                        existing_purchase.course_id,
+                        course.id
+                    )
+                    raise AppleVerificationError(
+                        f"Transaction {transaction_id} is already associated with another course."
+                    )
+
+                # Grant enrollment safely without duplicate fulfillment
+                Enrollment.objects.get_or_create(user=user, course=existing_purchase.course)
+                return existing_purchase, False
+
+            # Idempotently fulfill purchase: skip accounting/invoicing/notifications for sandbox review transactions
+            fulfill_purchase(purchase, previous_status=Purchase.Status.PENDING, skip_accounting=is_sandbox)
 
             logger.info(
-                "Successfully verified and fulfilled Apple IAP: user %s, course %s, tx %s (Purchase #%s)",
+                "Successfully verified and fulfilled Apple IAP (sandbox=%s): user %s, course %s, tx %s (Purchase #%s)",
+                is_sandbox,
                 user.id,
                 course.id,
                 transaction_id,

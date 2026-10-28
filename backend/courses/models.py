@@ -27,6 +27,14 @@ class Course(models.Model):
         default=CourseType.RECORDED,
         db_index=True
     )
+    apple_product_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        unique=True,
+        db_index=True,
+        help_text="Optional custom Apple In-App Purchase Product ID (e.g., com.natyaarts.academy.course.5). If blank, defaults to com.natyaarts.academy.course.<id>."
+    )
 
     def __str__(self):
         return self.title

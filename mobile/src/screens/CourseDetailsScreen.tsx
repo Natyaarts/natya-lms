@@ -20,14 +20,15 @@ import { colors, spacing, radius, typography, headerLayout } from '../theme';
 
 const FALLBACK_THUMB = 'https://images.unsplash.com/photo-1514320291840-2e0a9bf2a9ae?q=80&w=1470&auto=format&fit=crop';
 
-let RNIap: any = null;
-if (Platform.OS === 'ios') {
-  try {
-    RNIap = require('react-native-iap');
-  } catch (e) {
-    console.warn('react-native-iap unavailable in current runtime:', e);
-  }
-}
+import {
+  fetchAppleProduct,
+  requestApplePurchase,
+  restorePurchases,
+  showRestoreFeedback,
+  subscribeIap,
+  recoverUnfinishedTransactions,
+  isUserCancellation,
+} from '../api/appleIap';
 
 // A module's completion fields are only non-null when its content is
 // actually unlocked for this user (see courses/serializers.py
@@ -51,24 +52,39 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
   // StoreKit (iOS IAP) states
   const [iapProduct, setIapProduct] = useState<any>(null);
   const [iapLoading, setIapLoading] = useState(false);
+  const [iapFetching, setIapFetching] = useState(Platform.OS === 'ios');
 
   const awaitingPaymentRef = useRef(awaitingPayment);
   awaitingPaymentRef.current = awaitingPayment;
   const pendingPurchaseIdRef = useRef(pendingPurchaseId);
   pendingPurchaseIdRef.current = pendingPurchaseId;
 
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   const fetchCourseDetails = async () => {
     try {
       const res = await client.get(`courses/${courseId}/`);
-      setCourse(res.data);
+      if (isMountedRef.current) {
+        setCourse(res.data);
+      }
       return res.data;
     } catch (err) {
       console.error(err);
-      Alert.alert('Error', 'Could not load course details');
-      navigation.goBack();
+      if (isMountedRef.current) {
+        Alert.alert('Error', 'Could not load course details');
+        navigation.goBack();
+      }
       return null;
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -90,23 +106,27 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
 
       if (res.data?.is_enrolled) {
         // Payment verified! Refresh course to unlock curriculum and player
-        setAwaitingPayment(false);
-        setPendingPurchaseId(null);
-        const updatedCourse = await fetchCourseDetails();
-        Alert.alert(
-          'Payment Successful! 🎉',
-          'Your payment has been confirmed by Razorpay and the course is now unlocked. Happy learning!',
-          [
-            {
-              text: 'Start Learning',
-              onPress: () => {
-                navigation.navigate('Learn', { courseId, isEnrolled: true });
+        if (isMountedRef.current) {
+          setAwaitingPayment(false);
+          setPendingPurchaseId(null);
+        }
+        await fetchCourseDetails();
+        if (isMountedRef.current) {
+          Alert.alert(
+            'Payment Successful! 🎉',
+            'Your payment has been confirmed by Razorpay and the course is now unlocked. Happy learning!',
+            [
+              {
+                text: 'Start Learning',
+                onPress: () => {
+                  navigation.navigate('Learn', { courseId, isEnrolled: true });
+                },
               },
-            },
-            { text: 'OK' },
-          ]
-        );
-      } else if (isManual) {
+              { text: 'OK' },
+            ]
+          );
+        }
+      } else if (isManual && isMountedRef.current) {
         Alert.alert(
           'Payment Pending',
           'Payment has not been confirmed yet. If you have already completed the transaction, please wait a moment and tap "Verify Payment" again. The course will remain locked until confirmation is received from Razorpay.'
@@ -114,11 +134,13 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
       }
     } catch (err: any) {
       console.error('Error verifying payment:', err);
-      if (isManual) {
+      if (isManual && isMountedRef.current) {
         Alert.alert('Verification Check', 'Unable to verify payment status right now. Please try again.');
       }
     } finally {
-      setCheckingPayment(false);
+      if (isMountedRef.current) {
+        setCheckingPayment(false);
+      }
     }
   };
 
@@ -139,26 +161,84 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
 
   useEffect(() => {
     let isMounted = true;
-    if (Platform.OS === 'ios' && RNIap) {
+    if (Platform.OS === 'ios') {
       (async () => {
         try {
-          await RNIap.initConnection();
-          const products = await RNIap.getProducts({ skus: [appleProductId] });
-          if (isMounted && products && products.length > 0) {
-            setIapProduct(products[0]);
+          if (isMounted && isMountedRef.current) setIapFetching(true);
+          const product = await fetchAppleProduct(appleProductId);
+          if (isMounted && isMountedRef.current) {
+            setIapProduct(product);
           }
         } catch (err) {
           console.warn('Failed to fetch Apple StoreKit products:', err);
+          if (isMounted && isMountedRef.current) setIapProduct(null);
+        } finally {
+          if (isMounted && isMountedRef.current) setIapFetching(false);
         }
       })();
     }
     return () => {
       isMounted = false;
-      if (Platform.OS === 'ios' && RNIap) {
-        RNIap.endConnection?.().catch(() => {});
-      }
     };
   }, [appleProductId]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    let isMounted = true;
+
+    // 1. Register subscriber FIRST so any event emitted during recovery or startup is captured
+    const unsubscribe = subscribeIap({
+      onSuccess: async (_purchase, _resData) => {
+        if (!isMounted || !isMountedRef.current) return;
+        setIapLoading(false);
+        await fetchCourseDetails();
+        if (!isMounted || !isMountedRef.current) return;
+        Alert.alert(
+          'Course Unlocked! 🎉',
+          'Your Apple purchase was verified successfully. Enjoy your learning!',
+          [
+            {
+              text: 'Start Learning',
+              onPress: () => {
+                if (isMountedRef.current) {
+                  navigation.navigate('Learn', { courseId, isEnrolled: true });
+                }
+              },
+            },
+            { text: 'OK' },
+          ]
+        );
+      },
+      onError: (err: any) => {
+        if (!isMounted || !isMountedRef.current) return;
+        setIapLoading(false);
+        if (isUserCancellation(err)) {
+          return;
+        }
+        console.error('Apple purchase event error:', err);
+        const errMsg = err?.response?.data?.error || err?.message || 'Could not complete Apple In-App Purchase.';
+        if (isMountedRef.current) {
+          Alert.alert('Purchase Error', errMsg);
+        }
+      },
+    });
+
+    // 2. Start recovery AFTER subscriber is registered, and catch promise errors
+    recoverUnfinishedTransactions()
+      .then(({ recovered }) => {
+        if (isMounted && isMountedRef.current && recovered > 0) {
+          fetchCourseDetails();
+        }
+      })
+      .catch((err) => {
+        console.warn('[CourseDetailsScreen] recoverUnfinishedTransactions error:', err);
+      });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, [courseId]);
 
   if (loading || !course) {
     return (
@@ -173,64 +253,30 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
 
   // iOS Apple StoreKit In-App Purchase Flow
   const handleApplePurchase = async () => {
-    if (buying || iapLoading) return;
+    if (buying || iapLoading || iapFetching) return;
+    if (!iapProduct) {
+      Alert.alert(
+        'Product Unavailable',
+        'This course is currently not configured or available for purchase on the App Store.'
+      );
+      return;
+    }
     setIapLoading(true);
     try {
-      if (!RNIap) {
-        Alert.alert(
-          'In-App Purchase Notice',
-          'Apple In-App Purchases require a physical iOS test device or TestFlight build.'
-        );
-        return;
-      }
-      await RNIap.initConnection();
-      const purchase: any = await RNIap.requestPurchase({
-        sku: appleProductId,
-        andDangerouslyFinishTransactionAutomaticallyIOS: false,
-      });
-
-      const signedTx =
-        purchase.signedTransactionInfo ||
-        purchase.transactionReceipt ||
-        purchase.jwsRepresentation ||
-        purchase.transactionId;
-
-      if (!signedTx) {
-        throw new Error('No transaction receipt received from Apple.');
-      }
-
-      // Verify transaction cryptographically on backend
-      const res = await client.post('orders/apple/verify-purchase/', {
-        signed_transaction_info: signedTx,
-        product_id: appleProductId,
-      });
-
-      if (res.status === 200) {
-        await RNIap.finishTransaction({ purchase, isConsumable: false });
-        await fetchCourseDetails();
-        Alert.alert(
-          'Course Unlocked! 🎉',
-          'Your Apple purchase was verified successfully. Enjoy your learning!',
-          [
-            {
-              text: 'Start Learning',
-              onPress: () => navigation.navigate('Learn', { courseId, isEnrolled: true }),
-            },
-            { text: 'OK' },
-          ]
-        );
-      } else {
-        throw new Error(res.data?.error || 'Server verification failed.');
-      }
+      await requestApplePurchase(appleProductId);
+      // Asynchronous transaction fulfillment and UI alerts are handled by subscribeIap above.
     } catch (err: any) {
-      if (err.code === 'E_USER_CANCELLED') {
+      if (isMountedRef.current) {
+        setIapLoading(false);
+      }
+      if (isUserCancellation(err)) {
         return;
       }
-      console.error('Apple purchase error:', err);
-      const errMsg = err.response?.data?.error || err.message || 'Could not complete Apple In-App Purchase.';
-      Alert.alert('Purchase Error', errMsg);
-    } finally {
-      setIapLoading(false);
+      console.error('Apple purchase initiation error:', err);
+      const errMsg = err.response?.data?.error || err.message || 'Could not initiate Apple In-App Purchase.';
+      if (isMountedRef.current) {
+        Alert.alert('Purchase Error', errMsg);
+      }
     }
   };
 
@@ -239,47 +285,26 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
     if (iapLoading) return;
     setIapLoading(true);
     try {
-      if (!RNIap) {
-        Alert.alert('Notice', 'Restore Purchases requires an iOS device with active App Store.');
-        return;
+      const result = await restorePurchases();
+      if (result.newlyRestoredCount > 0 || result.previouslyVerifiedFinishedCount > 0) {
+        await fetchCourseDetails();
       }
-      await RNIap.initConnection();
-      const purchases = await RNIap.getAvailablePurchases();
-      let restoredCount = 0;
-
-      for (const p of purchases) {
-        const signedTx =
-          p.signedTransactionInfo ||
-          p.transactionReceipt ||
-          p.jwsRepresentation ||
-          p.transactionId;
-        if (signedTx) {
-          try {
-            const res = await client.post('orders/apple/verify-purchase/', {
-              signed_transaction_info: signedTx,
-              product_id: p.productId,
-            });
-            if (res.status === 200) {
-              await RNIap.finishTransaction({ purchase: p, isConsumable: false });
-              restoredCount++;
-            }
-          } catch (e) {
-            console.warn('Failed restoring transaction:', e);
+      if (isMountedRef.current) {
+        showRestoreFeedback(result, () => {
+          if (isMountedRef.current) {
+            fetchCourseDetails();
           }
-        }
-      }
-
-      await fetchCourseDetails();
-      if (restoredCount > 0) {
-        Alert.alert('Purchases Restored', `Successfully restored ${restoredCount} course purchase(s).`);
-      } else {
-        Alert.alert('Restore Purchases', 'No previous purchases were found for this Apple ID.');
+        });
       }
     } catch (err: any) {
       console.error('Failed to restore purchases:', err);
-      Alert.alert('Restore Error', 'Could not restore purchases from Apple Store. Please try again.');
+      if (isMountedRef.current) {
+        Alert.alert('Restore Error', err.message || 'Could not restore purchases from Apple Store. Please try again.');
+      }
     } finally {
-      setIapLoading(false);
+      if (isMountedRef.current) {
+        setIapLoading(false);
+      }
     }
   };
 
@@ -293,25 +318,33 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
         course_id: courseId,
       });
 
-      const { payment_url, purchase_id, order_id } = res.data;
+      const { payment_url, purchase_id } = res.data;
 
       if (payment_url) {
         // 2. Redirect directly to Razorpay's official checkout URL
-        setPendingPurchaseId(purchase_id);
-        setAwaitingPayment(true);
+        if (isMountedRef.current) {
+          setPendingPurchaseId(purchase_id);
+          setAwaitingPayment(true);
+        }
         await Linking.openURL(payment_url);
       } else {
-        Alert.alert(
-          'Payment Notice',
-          'Razorpay checkout link is currently unavailable. Please check your network or try again in a moment.'
-        );
+        if (isMountedRef.current) {
+          Alert.alert(
+            'Payment Notice',
+            'Razorpay checkout link is currently unavailable. Please check your network or try again in a moment.'
+          );
+        }
       }
     } catch (err: any) {
       console.error('Failed to create Razorpay order:', err);
       const errMsg = err.response?.data?.error || 'Could not initiate Razorpay checkout. Please try again.';
-      Alert.alert('Checkout Error', errMsg);
+      if (isMountedRef.current) {
+        Alert.alert('Checkout Error', errMsg);
+      }
     } finally {
-      setBuying(false);
+      if (isMountedRef.current) {
+        setBuying(false);
+      }
     }
   };
 
@@ -443,22 +476,39 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
         ) : Platform.OS === 'ios' ? (
           <View style={styles.iosPurchaseContainer}>
             <TouchableOpacity
-              style={[styles.primaryButton, (iapLoading || buying) && styles.disabledButton]}
+              style={[
+                styles.primaryButton,
+                (iapLoading || buying || iapFetching || !iapProduct) && styles.disabledButton,
+              ]}
               onPress={handleApplePurchase}
-              disabled={iapLoading || buying}
+              disabled={iapLoading || buying || iapFetching || !iapProduct}
               accessibilityRole="button"
-              accessibilityLabel="Unlock course with In-App Purchase"
+              accessibilityLabel={
+                iapFetching
+                  ? "Checking App Store availability"
+                  : iapProduct
+                  ? `Unlock course for ${iapProduct.localizedPrice}`
+                  : "Course unavailable for purchase on App Store"
+              }
             >
               {iapLoading ? (
                 <ActivityIndicator color={colors.textInverse} size="small" />
-              ) : (
+              ) : iapFetching ? (
+                <>
+                  <ActivityIndicator color={colors.textInverse} size="small" />
+                  <Text style={styles.primaryButtonText}>Checking App Store...</Text>
+                </>
+              ) : iapProduct ? (
                 <>
                   <Icon name="credit-card" size={16} color={colors.textInverse} />
                   <Text style={styles.primaryButtonText}>
-                    {iapProduct?.localizedPrice
-                      ? `Unlock Course (${iapProduct.localizedPrice})`
-                      : `Unlock Course (₹${course.price})`}
+                    Unlock Course ({iapProduct.localizedPrice})
                   </Text>
+                </>
+              ) : (
+                <>
+                  <Icon name="alert-circle" size={16} color={colors.textInverse} />
+                  <Text style={styles.primaryButtonText}>Unavailable on App Store</Text>
                 </>
               )}
             </TouchableOpacity>
@@ -466,7 +516,7 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
             <TouchableOpacity
               style={styles.restoreButton}
               onPress={handleRestorePurchases}
-              disabled={iapLoading}
+              disabled={iapLoading || iapFetching}
               accessibilityRole="button"
               accessibilityLabel="Restore Purchases"
             >

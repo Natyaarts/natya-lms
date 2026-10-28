@@ -30,7 +30,7 @@ def _grant_course_access(user, course):
     Enrollment.objects.get_or_create(user=user, course=course)
 
 
-def fulfill_purchase(purchase, previous_status):
+def fulfill_purchase(purchase, previous_status, skip_accounting=False):
     """
     Call this immediately after saving `purchase.status = 'SUCCESS'`
     (or right after creating a Purchase that is *already* SUCCESS),
@@ -46,12 +46,25 @@ def fulfill_purchase(purchase, previous_status):
       (see NotificationService.trigger_payment_success), so it will not be
       sent twice for the same purchase.
 
+    When `skip_accounting=True` (e.g. for Apple StoreKit Sandbox transactions),
+    course access is granted normally, but ledger revenue entries, customer
+    tax invoices, and external customer notifications are skipped so no
+    phantom revenue or tax liability is created.
+
     No-ops entirely if the purchase is not (or no longer) SUCCESS.
     """
     if purchase.status != 'SUCCESS':
         return
 
     _grant_course_access(purchase.user, purchase.course)
+
+    if skip_accounting:
+        logger.info(
+            "fulfill_purchase: skipping notifications, ledger earnings, and invoice for non-billable / sandbox purchase #%s",
+            purchase.id
+        )
+        return
+
     NotificationService.trigger_payment_success(purchase, previous_status)
 
     # Phase 3.5.2: revenue attribution, hooked into this already-proven

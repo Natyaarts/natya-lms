@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 from .models import Course, Module, VideoLesson, TranslatedAudio, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, LiveClassReport, CourseInstructor, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswerOptionSnapshot, Certificate, CertificateTemplate, Assignment, AssignmentSubmission, VideoProtectionSetting
@@ -324,7 +325,8 @@ class CourseSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'description', 'price', 'thumbnail', 'is_published', 'created_at', 'course_type', 'modules', 'progress_percentage', 'apple_product_id']
 
     def get_apple_product_id(self, obj):
-        return getattr(obj, 'apple_product_id', None) or f"com.natyaarts.academy.course.{obj.id}"
+        bundle_id = getattr(settings, 'APPLE_BUNDLE_ID', 'com.natyaarts.academy')
+        return getattr(obj, 'apple_product_id', None) or f"{bundle_id}.course.{obj.id}"
 
     def get_progress_percentage(self, obj):
         """

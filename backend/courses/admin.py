@@ -13,9 +13,9 @@ class ModuleInline(admin.TabularInline):
 
 @admin.register(Course)
 class CourseAdmin(admin.ModelAdmin):
-    list_display = ('title', 'price', 'course_type', 'created_at')
+    list_display = ('title', 'price', 'course_type', 'apple_product_id', 'created_at')
     list_filter = ('course_type',)
-    search_fields = ('title',)
+    search_fields = ('title', 'apple_product_id')
     inlines = [ModuleInline]
 
 @admin.register(Module)

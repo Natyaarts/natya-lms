@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Alert, Linking, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import client from '../api/client';
 import { unregisterForPushNotificationsAsync } from '../api/pushNotifications';
+import { restorePurchases, showRestoreFeedback, resetIapSessionState } from '../api/appleIap';
 import Icon, { FeatherIconName } from '../components/Icon';
 import AccountDeletionModal from '../components/AccountDeletionModal';
 import { colors, spacing, radius, typography, headerLayout } from '../theme';
@@ -18,6 +19,15 @@ export default function ProfileScreen({ navigation }: any) {
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [restoringPurchases, setRestoringPurchases] = useState(false);
+
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const load = async () => {
@@ -26,10 +36,12 @@ export default function ProfileScreen({ navigation }: any) {
           client.get('users/me/'),
           client.get('notifications/unread-count/'),
         ]);
-        if (userRes.status === 'fulfilled') setUser(userRes.value.data);
-        if (countRes.status === 'fulfilled') setUnreadCount(countRes.value.data.count || 0);
+        if (isMountedRef.current && userRes.status === 'fulfilled') setUser(userRes.value.data);
+        if (isMountedRef.current && countRes.status === 'fulfilled') setUnreadCount(countRes.value.data.count || 0);
       } finally {
-        setLoading(false);
+        if (isMountedRef.current) {
+          setLoading(false);
+        }
       }
     };
     load();
@@ -43,6 +55,7 @@ export default function ProfileScreen({ navigation }: any) {
     }
     await AsyncStorage.removeItem('access_token');
     await AsyncStorage.removeItem('refresh_token');
+    resetIapSessionState();
     // Same call DashboardScreen's own (unchanged) logout already uses --
     // React Navigation bubbles this up to the root Stack automatically
     // since 'Login' isn't one of MainTabs' own screens.
@@ -58,6 +71,7 @@ export default function ProfileScreen({ navigation }: any) {
     }
     await AsyncStorage.removeItem('access_token');
     await AsyncStorage.removeItem('refresh_token');
+    resetIapSessionState();
     Alert.alert(
       'Account Deleted',
       'Your account has been permanently deleted and your session has ended.',
@@ -69,46 +83,22 @@ export default function ProfileScreen({ navigation }: any) {
   if (loading) return <View style={styles.centered}><ActivityIndicator color={colors.accent} size="large" /></View>;
 
   const handleRestorePurchases = async () => {
-    let RNIap: any = null;
+    if (restoringPurchases) return;
+    setRestoringPurchases(true);
     try {
-      RNIap = require('react-native-iap');
-    } catch (e) {
-      Alert.alert('Notice', 'Restore Purchases requires a native iOS build.');
-      return;
-    }
-    try {
-      await RNIap.initConnection();
-      const purchases = await RNIap.getAvailablePurchases();
-      let restoredCount = 0;
-      for (const p of purchases) {
-        const signedTx =
-          p.signedTransactionInfo ||
-          p.transactionReceipt ||
-          p.jwsRepresentation ||
-          p.transactionId;
-        if (signedTx) {
-          try {
-            const res = await client.post('orders/apple/verify-purchase/', {
-              signed_transaction_info: signedTx,
-              product_id: p.productId,
-            });
-            if (res.status === 200) {
-              await RNIap.finishTransaction({ purchase: p, isConsumable: false });
-              restoredCount++;
-            }
-          } catch (err) {
-            console.warn('Error verifying restored purchase:', err);
-          }
-        }
+      const result = await restorePurchases();
+      if (isMountedRef.current) {
+        showRestoreFeedback(result);
       }
-      if (restoredCount > 0) {
-        Alert.alert('Purchases Restored', `Successfully restored ${restoredCount} course purchase(s).`);
-      } else {
-        Alert.alert('Restore Purchases', 'No previous purchases found to restore for this Apple ID.');
-      }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to restore purchases:', err);
-      Alert.alert('Restore Error', 'Could not restore purchases from Apple Store.');
+      if (isMountedRef.current) {
+        Alert.alert('Restore Error', err.message || 'Could not restore purchases from Apple Store.');
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setRestoringPurchases(false);
+      }
     }
   };
 
