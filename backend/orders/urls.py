@@ -4,7 +4,7 @@ from .views import (
     CreateOrderView, VerifyPaymentView, CheckPaymentStatusView, AdminPurchaseViewSet, RazorpayWebhookView,
     BundleViewSet, OrderViewSet, CreateSubscriptionView, VerifySubscriptionPaymentView,
     SubscriptionMeView, CancelSubscriptionView, SubscriptionPlanViewSet, SubscriptionPaymentHistoryView,
-    AdminSubscriptionViewSet, MyPurchaseListView,
+    AdminSubscriptionViewSet, MyPurchaseListView, AppleVerifyPurchaseView, AppleWebhookView,
 )
 
 router = DefaultRouter()
@@ -28,6 +28,8 @@ urlpatterns = [
     path('check-status/', CheckPaymentStatusView.as_view(), name='check-payment-status'),
     path('my-purchases/', MyPurchaseListView.as_view(), name='my-purchases'),
     path('webhook/razorpay/', RazorpayWebhookView.as_view(), name='razorpay-webhook'),
+    path('apple/verify-purchase/', AppleVerifyPurchaseView.as_view(), name='apple-verify-purchase'),
+    path('webhook/apple/', AppleWebhookView.as_view(), name='apple-webhook'),
     # Phase 3.4.2/3.4.5/3.4.6: intentionally plain APIView paths (not
     # router-registered ViewSet actions) -- mirrors create-order/
     # verify-payment's shape. Still no full SubscriptionViewSet for

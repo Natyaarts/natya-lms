@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Alert, Linking } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Alert, Linking, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import client from '../api/client';
@@ -68,11 +68,58 @@ export default function ProfileScreen({ navigation }: any) {
 
   if (loading) return <View style={styles.centered}><ActivityIndicator color={colors.accent} size="large" /></View>;
 
-  const menuItems: { label: string; icon: FeatherIconName; screen?: string; url?: string; badge?: number }[] = [
+  const handleRestorePurchases = async () => {
+    let RNIap: any = null;
+    try {
+      RNIap = require('react-native-iap');
+    } catch (e) {
+      Alert.alert('Notice', 'Restore Purchases requires a native iOS build.');
+      return;
+    }
+    try {
+      await RNIap.initConnection();
+      const purchases = await RNIap.getAvailablePurchases();
+      let restoredCount = 0;
+      for (const p of purchases) {
+        const signedTx =
+          p.signedTransactionInfo ||
+          p.transactionReceipt ||
+          p.jwsRepresentation ||
+          p.transactionId;
+        if (signedTx) {
+          try {
+            const res = await client.post('orders/apple/verify-purchase/', {
+              signed_transaction_info: signedTx,
+              product_id: p.productId,
+            });
+            if (res.status === 200) {
+              await RNIap.finishTransaction({ purchase: p, isConsumable: false });
+              restoredCount++;
+            }
+          } catch (err) {
+            console.warn('Error verifying restored purchase:', err);
+          }
+        }
+      }
+      if (restoredCount > 0) {
+        Alert.alert('Purchases Restored', `Successfully restored ${restoredCount} course purchase(s).`);
+      } else {
+        Alert.alert('Restore Purchases', 'No previous purchases found to restore for this Apple ID.');
+      }
+    } catch (err) {
+      console.error('Failed to restore purchases:', err);
+      Alert.alert('Restore Error', 'Could not restore purchases from Apple Store.');
+    }
+  };
+
+  const menuItems: { label: string; icon: FeatherIconName; screen?: string; url?: string; action?: () => void; badge?: number }[] = [
     { label: 'Edit Profile', icon: 'edit-2', screen: 'EditProfile' },
     { label: 'Live Classes', icon: 'video', screen: 'LiveClasses' },
     { label: 'Subscription & Payments', icon: 'credit-card', screen: 'Subscription' },
     { label: 'Purchase History', icon: 'file-text', screen: 'PurchaseHistory' },
+    ...(Platform.OS === 'ios'
+      ? [{ label: 'Restore Purchases', icon: 'refresh-cw' as FeatherIconName, action: handleRestorePurchases }]
+      : []),
     { label: 'Messages', icon: 'message-square', screen: 'ChatList' },
     { label: 'Notifications', icon: 'bell', screen: 'Notifications', badge: unreadCount },
     { label: 'Certificates', icon: 'award', screen: 'Certificates' },
@@ -100,7 +147,9 @@ export default function ProfileScreen({ navigation }: any) {
               key={item.screen || item.label}
               style={[styles.menuRow, idx === menuItems.length - 1 && styles.menuRowLast]}
               onPress={() => {
-                if (item.url) {
+                if (item.action) {
+                  item.action();
+                } else if (item.url) {
                   Linking.openURL(item.url).catch((err) => console.error("Couldn't open URL", err));
                 } else if (item.screen) {
                   navigation.navigate(item.screen);

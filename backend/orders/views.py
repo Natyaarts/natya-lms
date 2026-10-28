@@ -2263,3 +2263,79 @@ class SubscriptionPaymentHistoryView(generics.ListAPIView):
         return SubscriptionPayment.objects.filter(
             subscription__user=self.request.user
         ).select_related('subscription', 'subscription__plan').order_by('-created_at')
+
+
+class AppleVerifyPurchaseView(APIView):
+    """
+    POST /api/orders/apple/verify-purchase/
+    Secure endpoint for iOS devices to verify Apple StoreKit 2 transactions.
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [JWTCookieAuthentication, CsrfExemptSessionAuthentication]
+
+    @method_decorator(csrf_exempt)
+    def dispatch(self, *args, **kwargs):
+        return super().dispatch(*args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        signed_tx_info = request.data.get('signed_transaction_info') or request.data.get('jws_representation')
+        client_product_id = request.data.get('product_id')
+
+        if not signed_tx_info:
+            return Response(
+                {"error": "Missing required 'signed_transaction_info' parameter."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        from .apple_service import AppleIAPService, AppleVerificationError
+        try:
+            purchase, created = AppleIAPService.process_purchase_verification(
+                user=request.user,
+                signed_transaction_info=signed_tx_info,
+                client_product_id=client_product_id
+            )
+            return Response({
+                "status": "SUCCESS" if created else "ALREADY_PROCESSED",
+                "message": "Purchase verified successfully" if created else "Transaction already verified",
+                "purchase_id": purchase.id,
+                "course_id": purchase.course_id,
+                "enrolled": True
+            }, status=status.HTTP_200_OK)
+        except AppleVerificationError as ave:
+            return Response({"error": str(ave)}, status=status.HTTP_400_BAD_REQUEST)
+        except Course.DoesNotExist as cde:
+            return Response({"error": str(cde)}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response(
+                {"error": f"Internal error verifying Apple transaction: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AppleWebhookView(APIView):
+    """
+    POST /api/orders/webhook/apple/
+    Server-to-Server endpoint for Apple App Store Server Notifications v2.
+    """
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    @method_decorator(csrf_exempt)
+    def dispatch(self, *args, **kwargs):
+        return super().dispatch(*args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        signed_payload = request.data.get('signedPayload')
+        if not signed_payload:
+            return Response(
+                {"error": "Missing signedPayload"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        from .apple_service import AppleIAPService
+        try:
+            result = AppleIAPService.handle_server_notification_v2(signed_payload)
+            return Response({"status": "PROCESSED", "result": result}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"status": "ERROR", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+

@@ -354,10 +354,9 @@ export default function LoginScreen({ navigation }: any) {
                   )}
 
                   <View style={styles.footer}>
-                    <Text style={styles.footerText}>Don't have an account? </Text>
-                    <TouchableOpacity onPress={() => Linking.openURL('https://academy.natyaarts.com/register')}>
-                      <Text style={styles.signupText}>Sign up</Text>
-                    </TouchableOpacity>
+                    <Text style={styles.footerText}>
+                      New to Natya? Enter your mobile number above to sign in or create an account.
+                    </Text>
                   </View>
                 </>
               ) : (

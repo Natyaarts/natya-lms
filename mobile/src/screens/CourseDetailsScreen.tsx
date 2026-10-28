@@ -20,6 +20,15 @@ import { colors, spacing, radius, typography, headerLayout } from '../theme';
 
 const FALLBACK_THUMB = 'https://images.unsplash.com/photo-1514320291840-2e0a9bf2a9ae?q=80&w=1470&auto=format&fit=crop';
 
+let RNIap: any = null;
+if (Platform.OS === 'ios') {
+  try {
+    RNIap = require('react-native-iap');
+  } catch (e) {
+    console.warn('react-native-iap unavailable in current runtime:', e);
+  }
+}
+
 // A module's completion fields are only non-null when its content is
 // actually unlocked for this user (see courses/serializers.py
 // ModuleSerializer.to_representation -- locked modules get
@@ -38,6 +47,10 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
   const [checkingPayment, setCheckingPayment] = useState(false);
   const [awaitingPayment, setAwaitingPayment] = useState(false);
   const [pendingPurchaseId, setPendingPurchaseId] = useState<number | null>(null);
+
+  // StoreKit (iOS IAP) states
+  const [iapProduct, setIapProduct] = useState<any>(null);
+  const [iapLoading, setIapLoading] = useState(false);
 
   const awaitingPaymentRef = useRef(awaitingPayment);
   awaitingPaymentRef.current = awaitingPayment;
@@ -122,6 +135,31 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
     };
   }, [courseId]);
 
+  const appleProductId = course?.apple_product_id || `com.natyaarts.academy.course.${courseId}`;
+
+  useEffect(() => {
+    let isMounted = true;
+    if (Platform.OS === 'ios' && RNIap) {
+      (async () => {
+        try {
+          await RNIap.initConnection();
+          const products = await RNIap.getProducts({ skus: [appleProductId] });
+          if (isMounted && products && products.length > 0) {
+            setIapProduct(products[0]);
+          }
+        } catch (err) {
+          console.warn('Failed to fetch Apple StoreKit products:', err);
+        }
+      })();
+    }
+    return () => {
+      isMounted = false;
+      if (Platform.OS === 'ios' && RNIap) {
+        RNIap.endConnection?.().catch(() => {});
+      }
+    };
+  }, [appleProductId]);
+
   if (loading || !course) {
     return (
       <View style={[styles.container, styles.centered]}>
@@ -133,7 +171,119 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
   const thumbUrl = resolveMediaUrl(course.thumbnail) || FALLBACK_THUMB;
   const owned = hasCourseAccess(course);
 
-  // Directly initiates Razorpay payment flow
+  // iOS Apple StoreKit In-App Purchase Flow
+  const handleApplePurchase = async () => {
+    if (buying || iapLoading) return;
+    setIapLoading(true);
+    try {
+      if (!RNIap) {
+        Alert.alert(
+          'In-App Purchase Notice',
+          'Apple In-App Purchases require a physical iOS test device or TestFlight build.'
+        );
+        return;
+      }
+      await RNIap.initConnection();
+      const purchase: any = await RNIap.requestPurchase({
+        sku: appleProductId,
+        andDangerouslyFinishTransactionAutomaticallyIOS: false,
+      });
+
+      const signedTx =
+        purchase.signedTransactionInfo ||
+        purchase.transactionReceipt ||
+        purchase.jwsRepresentation ||
+        purchase.transactionId;
+
+      if (!signedTx) {
+        throw new Error('No transaction receipt received from Apple.');
+      }
+
+      // Verify transaction cryptographically on backend
+      const res = await client.post('orders/apple/verify-purchase/', {
+        signed_transaction_info: signedTx,
+        product_id: appleProductId,
+      });
+
+      if (res.status === 200) {
+        await RNIap.finishTransaction({ purchase, isConsumable: false });
+        await fetchCourseDetails();
+        Alert.alert(
+          'Course Unlocked! 🎉',
+          'Your Apple purchase was verified successfully. Enjoy your learning!',
+          [
+            {
+              text: 'Start Learning',
+              onPress: () => navigation.navigate('Learn', { courseId, isEnrolled: true }),
+            },
+            { text: 'OK' },
+          ]
+        );
+      } else {
+        throw new Error(res.data?.error || 'Server verification failed.');
+      }
+    } catch (err: any) {
+      if (err.code === 'E_USER_CANCELLED') {
+        return;
+      }
+      console.error('Apple purchase error:', err);
+      const errMsg = err.response?.data?.error || err.message || 'Could not complete Apple In-App Purchase.';
+      Alert.alert('Purchase Error', errMsg);
+    } finally {
+      setIapLoading(false);
+    }
+  };
+
+  // iOS Restore Purchases Flow
+  const handleRestorePurchases = async () => {
+    if (iapLoading) return;
+    setIapLoading(true);
+    try {
+      if (!RNIap) {
+        Alert.alert('Notice', 'Restore Purchases requires an iOS device with active App Store.');
+        return;
+      }
+      await RNIap.initConnection();
+      const purchases = await RNIap.getAvailablePurchases();
+      let restoredCount = 0;
+
+      for (const p of purchases) {
+        const signedTx =
+          p.signedTransactionInfo ||
+          p.transactionReceipt ||
+          p.jwsRepresentation ||
+          p.transactionId;
+        if (signedTx) {
+          try {
+            const res = await client.post('orders/apple/verify-purchase/', {
+              signed_transaction_info: signedTx,
+              product_id: p.productId,
+            });
+            if (res.status === 200) {
+              await RNIap.finishTransaction({ purchase: p, isConsumable: false });
+              restoredCount++;
+            }
+          } catch (e) {
+            console.warn('Failed restoring transaction:', e);
+          }
+        }
+      }
+
+      await fetchCourseDetails();
+      if (restoredCount > 0) {
+        Alert.alert('Purchases Restored', `Successfully restored ${restoredCount} course purchase(s).`);
+      } else {
+        Alert.alert('Restore Purchases', 'No previous purchases were found for this Apple ID.');
+      }
+    } catch (err: any) {
+      console.error('Failed to restore purchases:', err);
+      Alert.alert('Restore Error', 'Could not restore purchases from Apple Store. Please try again.');
+    } finally {
+      setIapLoading(false);
+    }
+  };
+
+  // Android & Web Razorpay payment flow (preserved untouched)
   const handleBuyCourse = async () => {
     if (buying) return;
     setBuying(true);
@@ -151,7 +301,6 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
         setAwaitingPayment(true);
         await Linking.openURL(payment_url);
       } else {
-        // If payment link generation is unavailable, alert user
         Alert.alert(
           'Payment Notice',
           'Razorpay checkout link is currently unavailable. Please check your network or try again in a moment.'
@@ -240,48 +389,50 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
         </View>
       </ScrollView>
 
-      {/* Razorpay Verification Modal */}
-      <Modal
-        visible={awaitingPayment}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setAwaitingPayment(false)}
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalIconWrap}>
-              <Icon name="credit-card" size={28} color={colors.accent} />
+      {/* Razorpay Verification Modal (Android only) */}
+      {Platform.OS !== 'ios' && (
+        <Modal
+          visible={awaitingPayment}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setAwaitingPayment(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <View style={styles.modalIconWrap}>
+                <Icon name="credit-card" size={28} color={colors.accent} />
+              </View>
+              <Text style={styles.modalTitle}>Payment in Progress</Text>
+              <Text style={styles.modalDescription}>
+                Complete your payment on the Razorpay screen. Your course will unlock automatically once payment is confirmed.
+              </Text>
+
+              <TouchableOpacity
+                style={[styles.primaryButton, styles.modalButton]}
+                onPress={() => verifyPaymentAndUnlock(true)}
+                disabled={checkingPayment}
+              >
+                {checkingPayment ? (
+                  <ActivityIndicator color={colors.textInverse} size="small" />
+                ) : (
+                  <>
+                    <Icon name="refresh-cw" size={16} color={colors.textInverse} />
+                    <Text style={styles.primaryButtonText}>Verify Payment & Unlock</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.cancelModalButton}
+                onPress={() => setAwaitingPayment(false)}
+                disabled={checkingPayment}
+              >
+                <Text style={styles.cancelModalButtonText}>Close / Check Later</Text>
+              </TouchableOpacity>
             </View>
-            <Text style={styles.modalTitle}>Payment in Progress</Text>
-            <Text style={styles.modalDescription}>
-              Complete your payment on the Razorpay screen. Your course will unlock automatically once payment is confirmed.
-            </Text>
-
-            <TouchableOpacity
-              style={[styles.primaryButton, styles.modalButton]}
-              onPress={() => verifyPaymentAndUnlock(true)}
-              disabled={checkingPayment}
-            >
-              {checkingPayment ? (
-                <ActivityIndicator color={colors.textInverse} size="small" />
-              ) : (
-                <>
-                  <Icon name="refresh-cw" size={16} color={colors.textInverse} />
-                  <Text style={styles.primaryButtonText}>Verify Payment & Unlock</Text>
-                </>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.cancelModalButton}
-              onPress={() => setAwaitingPayment(false)}
-              disabled={checkingPayment}
-            >
-              <Text style={styles.cancelModalButtonText}>Close / Check Later</Text>
-            </TouchableOpacity>
           </View>
-        </View>
-      </Modal>
+        </Modal>
+      )}
 
       <View style={styles.footer}>
         {owned ? (
@@ -289,6 +440,39 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
             <Icon name="play" size={16} color={colors.textInverse} />
             <Text style={styles.primaryButtonText}>Go to Course</Text>
           </TouchableOpacity>
+        ) : Platform.OS === 'ios' ? (
+          <View style={styles.iosPurchaseContainer}>
+            <TouchableOpacity
+              style={[styles.primaryButton, (iapLoading || buying) && styles.disabledButton]}
+              onPress={handleApplePurchase}
+              disabled={iapLoading || buying}
+              accessibilityRole="button"
+              accessibilityLabel="Unlock course with In-App Purchase"
+            >
+              {iapLoading ? (
+                <ActivityIndicator color={colors.textInverse} size="small" />
+              ) : (
+                <>
+                  <Icon name="credit-card" size={16} color={colors.textInverse} />
+                  <Text style={styles.primaryButtonText}>
+                    {iapProduct?.localizedPrice
+                      ? `Unlock Course (${iapProduct.localizedPrice})`
+                      : `Unlock Course (₹${course.price})`}
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.restoreButton}
+              onPress={handleRestorePurchases}
+              disabled={iapLoading}
+              accessibilityRole="button"
+              accessibilityLabel="Restore Purchases"
+            >
+              <Text style={styles.restoreButtonText}>Restore Purchases</Text>
+            </TouchableOpacity>
+          </View>
         ) : (
           <TouchableOpacity
             style={[styles.primaryButton, buying && styles.disabledButton]}
@@ -442,5 +626,20 @@ const styles = StyleSheet.create({
   cancelModalButtonText: {
     ...typography.meta,
     color: colors.textSecondary,
+  },
+  iosPurchaseContainer: {
+    width: '100%',
+    alignItems: 'center',
+  },
+  restoreButton: {
+    marginTop: spacing.sm,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+  },
+  restoreButtonText: {
+    ...typography.meta,
+    color: colors.accent,
+    fontWeight: '600',
+    textAlign: 'center',
   },
 });

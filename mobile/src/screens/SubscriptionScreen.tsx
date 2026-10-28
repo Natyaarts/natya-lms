@@ -113,27 +113,25 @@ export default function SubscriptionScreen({ navigation }: any) {
         ) : (
           <View style={styles.plansSection}>
             <Text style={styles.sectionTitle}>Subscription Plans</Text>
-            {plans.length === 0 ? (
+            {Platform.OS === 'ios' ? (
+              <View style={styles.iosInfoBox}>
+                <Text style={styles.iosInfoText}>
+                  Natya Academy memberships are multiplatform. If you have an active membership, your full course library and features will unlock here automatically upon signing in.
+                </Text>
+              </View>
+            ) : plans.length === 0 ? (
               <Text style={styles.emptyText}>No subscription plans available right now.</Text>
             ) : plans.map((plan: any) => (
               <View key={plan.id} style={styles.planCard}>
                 <Text style={styles.planName}>{plan.name}</Text>
                 <Text style={styles.planPrice}>₹{plan.price} / {plan.billing_interval === 'MONTHLY' ? 'month' : 'year'}</Text>
                 {!!plan.description && <Text style={styles.planDescription}>{plan.description}</Text>}
-                {Platform.OS === 'android' ? (
-                  <TouchableOpacity
-                    style={styles.subscribeButton}
-                    onPress={() => Linking.openURL('https://academy.natyaarts.com/subscriptions')}
-                  >
-                    <Text style={styles.subscribeButtonText}>Subscribe via Web</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <View style={styles.iosInfoBox}>
-                    <Text style={styles.iosInfoText}>
-                      Subscriptions can be managed on our website. Active plans will appear here automatically.
-                    </Text>
-                  </View>
-                )}
+                <TouchableOpacity
+                  style={styles.subscribeButton}
+                  onPress={() => Linking.openURL('https://academy.natyaarts.com/subscriptions')}
+                >
+                  <Text style={styles.subscribeButtonText}>Subscribe via Web</Text>
+                </TouchableOpacity>
               </View>
             ))}
           </View>

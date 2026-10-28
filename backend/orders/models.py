@@ -31,11 +31,42 @@ class Purchase(models.Model):
         FAILED = 'FAILED', 'Failed'
         REFUNDED = 'REFUNDED', 'Refunded'
 
+    class PaymentProvider(models.TextChoices):
+        RAZORPAY = 'RAZORPAY', 'Razorpay'
+        APPLE_IAP = 'APPLE_IAP', 'Apple In-App Purchase'
+
     user = models.ForeignKey(User, related_name='purchases', on_delete=models.CASCADE)
     course = models.ForeignKey(Course, related_name='purchases', on_delete=models.CASCADE)
+    payment_provider = models.CharField(
+        max_length=20,
+        choices=PaymentProvider.choices,
+        default=PaymentProvider.RAZORPAY,
+        db_index=True
+    )
     razorpay_order_id = models.CharField(max_length=255, blank=True, null=True)
     razorpay_payment_id = models.CharField(max_length=255, blank=True, null=True)
     razorpay_signature = models.CharField(max_length=255, blank=True, null=True)
+    apple_transaction_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        unique=True,
+        db_index=True,
+        help_text="Apple StoreKit transaction identifier for replay protection and idempotency"
+    )
+    apple_original_transaction_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text="Apple StoreKit original transaction identifier for restoration/renewal tracking"
+    )
+    apple_product_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Apple App Store Connect In-App Purchase Product ID"
+    )
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=50, choices=Status.choices, default=Status.PENDING)
     created_at = models.DateTimeField(auto_now_add=True)

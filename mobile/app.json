@@ -14,7 +14,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.natyaarts.academy",
-      "buildNumber": "6",
+      "buildNumber": "7",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -43,7 +43,8 @@
       "expo-document-picker",
       "expo-notifications",
       "expo-font",
-      "@sentry/react-native"
+      "@sentry/react-native",
+      "react-native-iap"
     ],
     "extra": {
       "eas": {

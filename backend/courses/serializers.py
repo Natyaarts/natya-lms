@@ -317,10 +317,14 @@ class ModuleSerializer(serializers.ModelSerializer):
 class CourseSerializer(serializers.ModelSerializer):
     modules = ModuleSerializer(many=True, read_only=True)
     progress_percentage = serializers.SerializerMethodField()
+    apple_product_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
-        fields = ['id', 'title', 'description', 'price', 'thumbnail', 'is_published', 'created_at', 'course_type', 'modules', 'progress_percentage']
+        fields = ['id', 'title', 'description', 'price', 'thumbnail', 'is_published', 'created_at', 'course_type', 'modules', 'progress_percentage', 'apple_product_id']
+
+    def get_apple_product_id(self, obj):
+        return getattr(obj, 'apple_product_id', None) or f"com.natyaarts.academy.course.{obj.id}"
 
     def get_progress_percentage(self, obj):
         """

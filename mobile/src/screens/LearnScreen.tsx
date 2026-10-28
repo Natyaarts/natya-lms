@@ -303,8 +303,7 @@ export default function LearnScreen({ route, navigation }: any) {
   }, [activeLesson?.id]);
 
   const handlePurchase = () => {
-    // Redirect to web app for purchase to bypass app store 30% fee
-    Linking.openURL(`https://academy.natyaarts.com/courses/${courseId}`);
+    navigation.navigate('CourseDetails', { courseId });
   };
 
   if (loading) return <View style={styles.centered}><ActivityIndicator color={colors.accent} size="large" /></View>;

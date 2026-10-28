@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Local build artifacts
+*.apk
+*.aab
+*.tar.gz
+*.zip
+dist/
+web-build/
+.expo/
+
+# Native folders (EAS prebuilds them in cloud)
+android/
+ios/
+
+# Local env & tools
+.env*.local
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+.DS_Store
+.git/
+.claude/
