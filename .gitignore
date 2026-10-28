@@ -1,5 +1,8 @@
 node_modules/
 .next/
+frontend/.next/
+frontend/node_modules/
+scratch_binaries/
 dist/
 build/
 .env

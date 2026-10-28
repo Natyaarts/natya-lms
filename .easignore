@@ -1,0 +1,19 @@
+# Ignore everything outside mobile
+backend/
+scratch_binaries/
+Natya Analytics.xlsx
+*.xlsx
+*.zip
+*.apk
+*.aab
+
+# Inside mobile
+mobile/node_modules/
+mobile/dist/
+mobile/web-build/
+mobile/.expo/
+mobile/android/
+mobile/ios/
+mobile/*.apk
+mobile/*.aab
+mobile/.env*.local
