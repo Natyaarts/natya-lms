@@ -2299,6 +2299,7 @@ class AppleVerifyPurchaseView(APIView):
                 "message": "Purchase verified successfully" if created else "Transaction already verified",
                 "purchase_id": purchase.id,
                 "course_id": purchase.course_id,
+                "environment": purchase.apple_environment,
                 "enrolled": True
             }, status=status.HTTP_200_OK)
         except AppleVerificationError as ave:

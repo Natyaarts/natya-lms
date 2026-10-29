@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, Image, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, Image, TouchableOpacity, StyleSheet, Platform } from 'react-native';
 import Icon from './Icon';
 import ProgressBar from './ProgressBar';
 import { resolveMediaUrl } from '../api/client';
@@ -14,6 +14,7 @@ interface CourseCardProps {
   completionPercent?: number | null;
   isCompleted?: boolean;
   price?: number | string;
+  localizedPrice?: string | null;
   locked?: boolean;
   onPress: () => void;
   // 'rail': fixed-width card for a horizontal scroller (Dashboard).
@@ -28,12 +29,19 @@ export default function CourseCard({
   completionPercent,
   isCompleted,
   price,
+  localizedPrice,
   locked,
   onPress,
   variant = 'list',
 }: CourseCardProps) {
   const thumbUrl = resolveMediaUrl(thumbnail) || FALLBACK_THUMB;
   const isRail = variant === 'rail';
+  const displayPrice =
+    Platform.OS === 'ios'
+      ? localizedPrice || null
+      : price !== undefined
+      ? `₹${price}`
+      : null;
 
   return (
     <TouchableOpacity
@@ -65,8 +73,8 @@ export default function CourseCard({
           {typeof moduleCount === 'number' && (
             <Text style={typography.meta}>{moduleCount} {moduleCount === 1 ? 'module' : 'modules'}</Text>
           )}
-          {price !== undefined && (
-            <Text style={styles.price}>₹{price}</Text>
+          {displayPrice !== null && (
+            <Text style={styles.price}>{displayPrice}</Text>
           )}
         </View>
 

@@ -220,7 +220,8 @@ def check_purchase_missing_ledger_entry(queryset: Optional[QuerySet] = None) -> 
     from orders.models import Purchase
     from .models import LedgerEntry
 
-    qs = queryset if queryset is not None else Purchase.objects.filter(status=Purchase.Status.SUCCESS)
+    base_qs = queryset if queryset is not None else Purchase.objects.filter(status=Purchase.Status.SUCCESS)
+    qs = base_qs.exclude(apple_environment=Purchase.AppleEnvironment.SANDBOX)
     has_entry_ids = set(
         LedgerEntry.objects.filter(entry_type=LedgerEntry.EntryType.EARNING, purchase__isnull=False)
         .values_list('purchase_id', flat=True)
@@ -254,7 +255,8 @@ def check_purchase_missing_invoice(queryset: Optional[QuerySet] = None) -> List[
     from orders.models import Purchase
     from .models import Invoice
 
-    qs = queryset if queryset is not None else Purchase.objects.filter(status=Purchase.Status.SUCCESS)
+    base_qs = queryset if queryset is not None else Purchase.objects.filter(status=Purchase.Status.SUCCESS)
+    qs = base_qs.exclude(apple_environment=Purchase.AppleEnvironment.SANDBOX)
     has_invoice_ids = set(Invoice.objects.filter(purchase__isnull=False).values_list('purchase_id', flat=True))
     missing = qs.exclude(id__in=has_invoice_ids).only('id')
     return [
@@ -971,7 +973,9 @@ def run_reconciliation(*, severity=None, issue_type=None, source_type=None, inst
     from orders.models import Order, Purchase, SubscriptionPayment
     from .models import Payout, Refund
 
-    purchase_qs = Purchase.objects.filter(status=Purchase.Status.SUCCESS)
+    purchase_qs = Purchase.objects.filter(status=Purchase.Status.SUCCESS).exclude(
+        apple_environment=Purchase.AppleEnvironment.SANDBOX
+    )
     order_qs = Order.objects.filter(status=Order.Status.PAID)
     subpay_qs = SubscriptionPayment.objects.filter(status=SubscriptionPayment.Status.SUCCESS)
 

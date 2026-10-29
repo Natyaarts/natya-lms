@@ -123,6 +123,9 @@ def _create_earning_entry(*, courses, gross_amount, currency, purchase=None, ord
 def create_earning_entry_for_purchase(purchase):
     """Called from orders/services.py's fulfill_purchase(), after
     _grant_course_access -- a Purchase always maps to exactly one course."""
+    if getattr(purchase, 'is_apple_sandbox', False) or getattr(purchase, 'apple_environment', None) == 'Sandbox':
+        logger.info(f"Ledger: skipping Apple Sandbox test Purchase {purchase.id}.")
+        return
     _create_earning_entry(
         courses=[purchase.course],
         gross_amount=purchase.amount,
@@ -499,6 +502,9 @@ def create_invoice_for_purchase(purchase):
     is an accurate proxy for "when payment completed" in practice.
     """
     from .models import Invoice
+    if getattr(purchase, 'is_apple_sandbox', False) or getattr(purchase, 'apple_environment', None) == 'Sandbox':
+        logger.info(f"Invoice: skipping Apple Sandbox test Purchase {purchase.id}.")
+        return
     try:
         with transaction.atomic():
             Invoice.objects.create(

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Linking, Image, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Linking, Image, Alert, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import client, { resolveMediaUrl } from '../api/client';
+import { fetchAppleProduct, getCourseAppleSku, Product } from '../api/appleIap';
 import CustomVideoPlayer, { AudioTrackOption } from '../components/CustomVideoPlayer';
 import Icon from '../components/Icon';
 import ProgressBar from '../components/ProgressBar';
@@ -45,6 +46,7 @@ export default function LearnScreen({ route, navigation }: any) {
   const { courseId, isEnrolled } = route.params;
   const [course, setCourse] = useState<any>(null);
   const [activeLesson, setActiveLesson] = useState<any>(null);
+  const [iapProduct, setIapProduct] = useState<Product | null>(null);
   const [loading, setLoading] = useState(true);
   const [marking, setMarking] = useState(false);
   const [savedPosition, setSavedPosition] = useState<number>(0);
@@ -97,6 +99,21 @@ export default function LearnScreen({ route, navigation }: any) {
   useEffect(() => {
     fetchCourse();
   }, [courseId]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios' || isEnrolled || !course) return;
+    let isCancelled = false;
+    const sku = getCourseAppleSku(course, courseId);
+    if (!sku) return;
+    fetchAppleProduct(sku).then((product) => {
+      if (!isCancelled) {
+        setIapProduct(product);
+      }
+    });
+    return () => {
+      isCancelled = true;
+    };
+  }, [course?.id, course?.apple_product_id, courseId, isEnrolled]);
 
   // Phase 2C: Fetch saved lesson progress when a lesson is opened or switched
   useEffect(() => {
@@ -324,10 +341,25 @@ export default function LearnScreen({ route, navigation }: any) {
           <>
             <Image source={{ uri: resolveMediaUrl(course.thumbnail) || FALLBACK_THUMB }} style={styles.previewImage} />
             <View style={styles.previewOverlay}>
-              <TouchableOpacity style={styles.purchaseButton} onPress={handlePurchase}>
-                <Text style={styles.purchaseButtonText}>Purchase for ₹{course.price}</Text>
-              </TouchableOpacity>
-              <Text style={styles.secureCheckoutText}>Secure checkout via web</Text>
+              {Platform.OS === 'ios' ? (
+                <>
+                  <TouchableOpacity style={styles.purchaseButton} onPress={handlePurchase}>
+                    <Text style={styles.purchaseButtonText}>
+                      {iapProduct?.localizedPrice
+                        ? `Unlock Course (${iapProduct.localizedPrice})`
+                        : 'Unlock Course'}
+                    </Text>
+                  </TouchableOpacity>
+                  <Text style={styles.secureCheckoutText}>In-App Purchase via App Store</Text>
+                </>
+              ) : (
+                <>
+                  <TouchableOpacity style={styles.purchaseButton} onPress={handlePurchase}>
+                    <Text style={styles.purchaseButtonText}>Purchase for ₹{course.price}</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.secureCheckoutText}>Secure checkout via web</Text>
+                </>
+              )}
             </View>
           </>
         ) : playbackLoading ? (

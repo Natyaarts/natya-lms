@@ -430,10 +430,23 @@ class RequestAccountDeletionOTPView(APIView):
                 status=status.HTTP_429_TOO_MANY_REQUESTS
             )
 
-        otp = _generate_otp()
-        success, err_resp = _dispatch_otp(identifier, otp)
-        if not success:
-            return err_resp
+        if _is_reviewer_request(identifier) and user_phone and identifier == user_phone:
+            # Apple App Store reviewer path:
+            # Bypass external WhatsApp/email dispatch ONLY when reviewer access is
+            # explicitly enabled, the authenticated user owns the configured review
+            # phone number, and the deletion OTP target matches that review number.
+            # Standard 5-minute expiry, attempt lockout, single-use enforcement,
+            # and rate limits apply identically. Never logs or returns the OTP value.
+            otp = settings.APP_REVIEW_STATIC_OTP
+            logger.warning(
+                "App Reviewer account deletion OTP requested for configured review account (IP: %s)",
+                request.META.get('REMOTE_ADDR')
+            )
+        else:
+            otp = _generate_otp()
+            success, err_resp = _dispatch_otp(identifier, otp)
+            if not success:
+                return err_resp
 
         OTPVerification.objects.create(
             identifier=identifier,
@@ -901,16 +914,17 @@ class AdminStatsView(APIView):
                 "enrollments": c.enrollment_count
             })
 
-        # Payments & Revenue
-        revenue = Purchase.objects.filter(status='SUCCESS').aggregate(total=Sum('amount'))['total'] or 0.00
-        current_month_revenue = Purchase.objects.filter(status='SUCCESS', created_at__gte=start_of_month).aggregate(total=Sum('amount'))['total'] or 0.00
+        # Payments & Revenue (strictly exclude Apple StoreKit Sandbox test transactions)
+        billable_purchases = Purchase.objects.exclude(apple_environment=Purchase.AppleEnvironment.SANDBOX)
+        revenue = billable_purchases.filter(status='SUCCESS').aggregate(total=Sum('amount'))['total'] or 0.00
+        current_month_revenue = billable_purchases.filter(status='SUCCESS', created_at__gte=start_of_month).aggregate(total=Sum('amount'))['total'] or 0.00
         
-        success_payments = Purchase.objects.filter(status='SUCCESS').count()
-        pending_payments = Purchase.objects.filter(status='PENDING').count()
-        failed_payments = Purchase.objects.filter(status='FAILED').count()
+        success_payments = billable_purchases.filter(status='SUCCESS').count()
+        pending_payments = billable_purchases.filter(status='PENDING').count()
+        failed_payments = billable_purchases.filter(status='FAILED').count()
 
         # Monthly breakdown
-        monthly_rev = Purchase.objects.filter(status='SUCCESS') \
+        monthly_rev = billable_purchases.filter(status='SUCCESS') \
             .annotate(month=TruncMonth('created_at')) \
             .values('month') \
             .annotate(total=Sum('amount')) \
@@ -928,7 +942,7 @@ class AdminStatsView(APIView):
         total_enrollments = Enrollment.objects.count()
         new_enrollments_month = Enrollment.objects.filter(enrolled_at__gte=start_of_month).count()
         
-        purchases = Purchase.objects.filter(
+        purchases = billable_purchases.filter(
             user_id=OuterRef('user_id'),
             course_id=OuterRef('course_id'),
             status='SUCCESS'
@@ -948,7 +962,7 @@ class AdminStatsView(APIView):
                 "date_joined": u.date_joined
             })
 
-        recent_pay_qs = Purchase.objects.select_related('user', 'course').order_by('-created_at')[:5]
+        recent_pay_qs = billable_purchases.select_related('user', 'course').order_by('-created_at')[:5]
         recent_payments = []
         for p in recent_pay_qs:
             name = f"{p.user.first_name} {p.user.last_name}".strip() or p.user.username

@@ -934,6 +934,22 @@ APP_REVIEW_PHONE_NUMBER = os.environ.get('APP_REVIEW_PHONE_NUMBER', '+9199999000
 APP_REVIEW_STATIC_OTP = os.environ.get('APP_REVIEW_STATIC_OTP', '839201').strip()
 
 # ---------------------------------------------------------------------------
+# Apple In-App Purchase (StoreKit 2) Configuration
+# ---------------------------------------------------------------------------
+# Bundle ID verified against StoreKit 2 JWS transaction and notification payloads.
+APPLE_BUNDLE_ID = os.environ.get('APPLE_BUNDLE_ID', 'com.natyaarts.academy').strip()
+
+# Controls whether Apple StoreKit Sandbox transactions and notifications are accepted.
+# SECURITY & ACCOUNTING: Configured strictly via APPLE_IAP_ALLOW_SANDBOX and defaults
+# to False (never silently defaults to True). When explicitly enabled (e.g. during
+# Apple App Review, where reviewers test the production App Store binary with Sandbox
+# Apple IDs), verified Sandbox transactions are tagged with apple_environment='Sandbox',
+# recorded at amount=0.00, and excluded from ledger earnings, tax invoices, and
+# real-money revenue metrics.
+APPLE_IAP_ALLOW_SANDBOX = os.environ.get('APPLE_IAP_ALLOW_SANDBOX', 'False').strip().lower() in ('true', '1')
+APPLE_IAP_TEST_MODE = False
+
+# ---------------------------------------------------------------------------
 # Zoom Server-to-Server OAuth Credentials
 # ---------------------------------------------------------------------------
 ZOOM_ACCOUNT_ID = os.environ.get('ZOOM_ACCOUNT_ID', 'btl6dp5ATMCqve1PVjtUbQ').strip()

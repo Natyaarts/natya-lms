@@ -3,6 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Purchase, Product, PurchaseError } from 'react-native-iap';
 import client, { onSessionExpired } from './client';
 
+export type { Product };
+
 /**
  * Shared Apple In-App Purchase Service for Natya LMS.
  *
@@ -441,9 +443,25 @@ export async function requestApplePurchase(sku: string): Promise<void> {
 }
 
 /**
+ * Resolves the Apple App Store Product ID (SKU) for a course, preferring
+ * an explicit `apple_product_id` from the API and falling back to the
+ * canonical bundle convention.
+ */
+export function getCourseAppleSku(
+  course: { id?: number | string; apple_product_id?: string | null } | null | undefined,
+  fallbackCourseId?: number | string
+): string {
+  const explicit = course?.apple_product_id?.trim();
+  if (explicit) return explicit;
+  const id = course?.id ?? fallbackCourseId;
+  return id !== undefined && id !== null ? `com.natyaarts.academy.course.${id}` : '';
+}
+
+/**
  * Fetches product metadata for a given Apple Product ID.
  */
 export async function fetchAppleProduct(sku: string): Promise<Product | null> {
+  if (!sku) return null;
   const RNIap = getRNIap();
   if (!RNIap) return null;
 
@@ -459,6 +477,38 @@ export async function fetchAppleProduct(sku: string): Promise<Product | null> {
   } catch (err) {
     console.warn(`[AppleIAP] Failed to fetch product info for ${sku}:`, err);
     return null;
+  }
+}
+
+/**
+ * Batch-fetches StoreKit product metadata for multiple Apple Product IDs.
+ * Returns a map keyed by `productId` for O(1) localized price lookup in course cards.
+ */
+export async function fetchAppleProducts(skus: string[]): Promise<Record<string, Product>> {
+  const uniqueSkus = Array.from(new Set(skus.map((s) => (s || '').trim()).filter(Boolean)));
+  if (uniqueSkus.length === 0) return {};
+
+  const RNIap = getRNIap();
+  if (!RNIap) return {};
+
+  const connected = await initIapConnection();
+  if (!connected) {
+    console.warn('[AppleIAP] Cannot batch-fetch products: StoreKit connection failed.');
+    return {};
+  }
+
+  try {
+    const products: Product[] = await RNIap.getProducts({ skus: uniqueSkus });
+    const map: Record<string, Product> = {};
+    for (const product of products || []) {
+      if (product?.productId) {
+        map[product.productId] = product;
+      }
+    }
+    return map;
+  } catch (err) {
+    console.warn('[AppleIAP] Failed to batch-fetch product info:', err);
+    return {};
   }
 }
 

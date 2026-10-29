@@ -209,5 +209,65 @@ async function simulateVerifyAndFinish(purchase, sessionState, mockBackend, mock
   assert.strictEqual(classifyRestore({ totalFound: 1, newlyRestoredCount: 0, previouslyVerifiedFinishedCount: 0, alreadyFinishedCount: 0, inFlightCount: 0, failedCount: 1 }), 'FAILED');
   console.log('✔ Test 4: Restore accounting 5-category tallying and classification passed.');
 
+  // -------------------------------------------------------------
+  // Test 5: iOS checkout wording & StoreKit localized currency rules
+  // -------------------------------------------------------------
+  const fs = require('fs');
+  const path = require('path');
+
+  function getCourseAppleSku(course, fallbackCourseId) {
+    const explicit = course && course.apple_product_id ? String(course.apple_product_id).trim() : '';
+    if (explicit) return explicit;
+    const id = (course && course.id !== undefined && course.id !== null) ? course.id : fallbackCourseId;
+    return id !== undefined && id !== null ? `com.natyaarts.academy.course.${id}` : '';
+  }
+
+  function resolveCourseCardDisplayPrice(platformOS, price, localizedPrice) {
+    return platformOS === 'ios'
+      ? (localizedPrice || null)
+      : (price !== undefined ? `₹${price}` : null);
+  }
+
+  // 5.1 SKU resolution prefers explicit apple_product_id, falls back to bundle convention
+  assert.strictEqual(
+    getCourseAppleSku({ id: 7, apple_product_id: 'com.natyaarts.academy.course.custom7' }, 7),
+    'com.natyaarts.academy.course.custom7'
+  );
+  assert.strictEqual(
+    getCourseAppleSku({ id: 7, apple_product_id: null }),
+    'com.natyaarts.academy.course.7'
+  );
+  assert.strictEqual(getCourseAppleSku(null, 12), 'com.natyaarts.academy.course.12');
+
+  // 5.2 Platform price display: iOS uses StoreKit localizedPrice only (never INR fallback), Android preserves ₹
+  assert.strictEqual(resolveCourseCardDisplayPrice('ios', '1499.00', '$19.99'), '$19.99');
+  assert.strictEqual(resolveCourseCardDisplayPrice('ios', '1499.00', undefined), null);
+  assert.strictEqual(resolveCourseCardDisplayPrice('android', '1499.00', '$19.99'), '₹1499.00');
+  assert.strictEqual(resolveCourseCardDisplayPrice('android', undefined, '$19.99'), null);
+
+  // 5.3 Source assertions across mobile checkout & course-card files
+  const mobileSrc = path.join(__dirname, '..', 'src');
+  const learnSrc = fs.readFileSync(path.join(mobileSrc, 'screens', 'LearnScreen.tsx'), 'utf8');
+  const detailsSrc = fs.readFileSync(path.join(mobileSrc, 'screens', 'CourseDetailsScreen.tsx'), 'utf8');
+  const cardSrc = fs.readFileSync(path.join(mobileSrc, 'components', 'CourseCard.tsx'), 'utf8');
+  const catalogSrc = fs.readFileSync(path.join(mobileSrc, 'screens', 'CatalogScreen.tsx'), 'utf8');
+  const dashboardSrc = fs.readFileSync(path.join(mobileSrc, 'screens', 'DashboardScreen.tsx'), 'utf8');
+
+  // LearnScreen gates web checkout text off iOS and uses StoreKit localizedPrice on iOS while keeping Android Razorpay text
+  assert.ok(learnSrc.includes("Platform.OS === 'ios'"), 'LearnScreen must branch on Platform.OS === ios');
+  assert.ok(learnSrc.includes('In-App Purchase via App Store'), 'LearnScreen must show App Store IAP label on iOS');
+  assert.ok(learnSrc.includes('iapProduct?.localizedPrice'), 'LearnScreen must use StoreKit localizedPrice on iOS');
+  assert.ok(learnSrc.includes('Secure checkout via web'), 'LearnScreen must preserve Android/non-iOS web checkout wording');
+
+  // CourseDetailsScreen gates ₹{course.price} off iOS and uses iapProduct.localizedPrice on iOS
+  assert.ok(detailsSrc.includes('iapProduct?.localizedPrice'), 'CourseDetailsScreen must use StoreKit localizedPrice in header on iOS');
+  assert.ok(detailsSrc.includes('Buy Course for ₹{course.price}'), 'CourseDetailsScreen must preserve Android Razorpay purchase button');
+
+  // CourseCard, CatalogScreen, and DashboardScreen wire StoreKit localizedPrice on iOS
+  assert.ok(cardSrc.includes('localizedPrice'), 'CourseCard must accept StoreKit localizedPrice');
+  assert.ok(catalogSrc.includes('fetchAppleProducts'), 'CatalogScreen must batch-fetch StoreKit prices on iOS');
+  assert.ok(dashboardSrc.includes('fetchAppleProducts'), 'DashboardScreen must batch-fetch StoreKit prices on iOS');
+  console.log('✔ Test 5: iOS checkout wording & StoreKit localized currency rules passed.');
+
   console.log('\nAll Apple IAP client accounting & lifecycle tests PASSED successfully.');
 })();

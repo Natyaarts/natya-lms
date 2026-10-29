@@ -374,7 +374,15 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
           <Text style={styles.title}>{course.title}</Text>
 
           <View style={styles.metaRow}>
-            {!owned && <Text style={styles.price}>₹{course.price}</Text>}
+            {!owned && (
+              Platform.OS === 'ios' ? (
+                iapProduct?.localizedPrice ? (
+                  <Text style={styles.price}>{iapProduct.localizedPrice}</Text>
+                ) : null
+              ) : (
+                <Text style={styles.price}>₹{course.price}</Text>
+              )
+            )}
             {typeof course.total_module_count === 'number' && course.total_module_count > 0 && (
               <Text style={typography.meta}>
                 {course.total_module_count} {course.total_module_count === 1 ? 'module' : 'modules'}

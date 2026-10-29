@@ -38,6 +38,23 @@ def get_expected_bundle_id() -> str:
     return getattr(settings, 'APPLE_BUNDLE_ID', 'com.natyaarts.academy').strip()
 
 
+def is_apple_sandbox_allowed() -> bool:
+    """
+    Returns True ONLY when APPLE_IAP_ALLOW_SANDBOX is explicitly enabled in
+    Django settings (boolean True or string 'true'/'1'), or when
+    APPLE_IAP_TEST_MODE is active during automated unit tests.
+    Never silently defaults to True.
+    """
+    raw = getattr(settings, 'APPLE_IAP_ALLOW_SANDBOX', False)
+    if isinstance(raw, bool):
+        explicit_allow = raw
+    elif isinstance(raw, str):
+        explicit_allow = raw.strip().lower() in ('true', '1')
+    else:
+        explicit_allow = False
+    return explicit_allow or bool(getattr(settings, 'APPLE_IAP_TEST_MODE', False))
+
+
 EXPECTED_BUNDLE_ID = getattr(settings, 'APPLE_BUNDLE_ID', 'com.natyaarts.academy')
 
 # Official Apple Root CA SHA-256 Fingerprints (Apple Inc. Root CA & Apple Root CA - G3)
@@ -235,11 +252,14 @@ class AppleIAPService:
             )
 
         env = data.get('environment') or payload.get('environment')
-        if env and env not in ('Production', 'Sandbox'):
+        test_mode = bool(getattr(settings, 'APPLE_IAP_TEST_MODE', False))
+        if not env:
+            if not test_mode:
+                raise AppleVerificationError("Notification payload missing required 'environment' claim.")
+        elif env not in (Purchase.AppleEnvironment.PRODUCTION, Purchase.AppleEnvironment.SANDBOX):
             raise AppleVerificationError(f"Invalid Apple StoreKit environment: '{env}'")
 
-        allow_sandbox = getattr(settings, 'APPLE_IAP_ALLOW_SANDBOX', False) or getattr(settings, 'APPLE_IAP_TEST_MODE', False)
-        if env == 'Sandbox' and not allow_sandbox:
+        if env == Purchase.AppleEnvironment.SANDBOX and not is_apple_sandbox_allowed():
             raise AppleVerificationError("Sandbox notification received, but Sandbox environment is not allowed by server configuration.")
 
     @classmethod
@@ -250,7 +270,7 @@ class AppleIAPService:
         - transactionId present
         - productId present
         - revocationDate is None
-        - environment is valid (Sandbox or Production)
+        - environment is valid (Sandbox or Production; required outside test mode)
         - sandbox transactions must adhere to explicit server setting
         """
         expected_bundle_id = get_expected_bundle_id()
@@ -272,12 +292,15 @@ class AppleIAPService:
             )
 
         env = payload.get('environment')
-        if env and env not in ('Production', 'Sandbox'):
+        test_mode = bool(getattr(settings, 'APPLE_IAP_TEST_MODE', False))
+        if not env:
+            if not test_mode:
+                raise AppleVerificationError("Transaction payload missing required 'environment' claim.")
+        elif env not in (Purchase.AppleEnvironment.PRODUCTION, Purchase.AppleEnvironment.SANDBOX):
             raise AppleVerificationError(f"Invalid Apple StoreKit environment: '{env}'")
 
         # Explicit environment setting check for Sandbox
-        allow_sandbox = getattr(settings, 'APPLE_IAP_ALLOW_SANDBOX', False) or getattr(settings, 'APPLE_IAP_TEST_MODE', False)
-        if env == 'Sandbox' and not allow_sandbox:
+        if env == Purchase.AppleEnvironment.SANDBOX and not is_apple_sandbox_allowed():
             raise AppleVerificationError("Sandbox transaction received, but Sandbox environment is not allowed by server configuration.")
 
     @classmethod
@@ -416,7 +439,15 @@ class AppleIAPService:
                 Enrollment.objects.get_or_create(user=user, course=existing_purchase.course)
                 return existing_purchase, False
 
-            is_sandbox = (verified_payload.get('environment') == 'Sandbox')
+            raw_env = verified_payload.get('environment')
+            if raw_env in (Purchase.AppleEnvironment.PRODUCTION, Purchase.AppleEnvironment.SANDBOX):
+                apple_env = raw_env
+            elif getattr(settings, 'APPLE_IAP_TEST_MODE', False):
+                apple_env = Purchase.AppleEnvironment.PRODUCTION
+            else:
+                raise AppleVerificationError("Verified transaction payload missing valid Apple StoreKit environment.")
+
+            is_sandbox = (apple_env == Purchase.AppleEnvironment.SANDBOX)
             purchase_amount = Decimal('0.00') if is_sandbox else course.price
 
             # Create new Purchase record with savepoint to handle concurrent race conditions
@@ -431,6 +462,7 @@ class AppleIAPService:
                         apple_transaction_id=transaction_id,
                         apple_original_transaction_id=original_transaction_id,
                         apple_product_id=verified_product_id,
+                        apple_environment=apple_env,
                     )
             except IntegrityError:
                 logger.warning(

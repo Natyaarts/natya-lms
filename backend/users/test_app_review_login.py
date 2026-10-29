@@ -405,4 +405,146 @@ class AppReviewLoginTests(APITestCase):
         self.assertEqual(user.email, expected_email)
         self.assertIsNone(user.phone_number)
 
+    # -------------------------------------------------------------------------
+    # Account Deletion OTP Reviewer Handling Tests
+    # -------------------------------------------------------------------------
+
+    @override_settings(
+        APP_REVIEW_ENABLED=True,
+        APP_REVIEW_PHONE_NUMBER="+919999900001",
+        APP_REVIEW_STATIC_OTP="839201"
+    )
+    def test_reviewer_account_deletion_otp_skips_interakt_and_completes_deletion(self):
+        """
+        Designated review account can request an ACCOUNT_DELETION OTP without
+        external WhatsApp/Interakt dispatch and complete in-app account deletion
+        using the configured static review OTP.
+        """
+        # 1. Authenticate as the review account via standard reviewer login flow
+        with patch('users.views.requests.post'):
+            self.client.post(self.send_url, {'identifier': self.test_review_phone}, format='json')
+        login_res = self.client.post(
+            self.verify_url,
+            {'identifier': self.test_review_phone, 'otp': self.test_review_otp},
+            format='json'
+        )
+        self.assertEqual(login_res.status_code, status.HTTP_200_OK)
+        access_token = login_res.data['tokens']['access']
+        review_user = User.objects.get(id=login_res.data['user_id'])
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+
+        # 2. Request account deletion OTP (with omitted identifier -> uses review_user.phone_number)
+        del_req_url = reverse('delete-account-request-otp')
+        del_verify_url = reverse('delete-account-verify-otp')
+        with patch('users.views.requests.post') as mock_post:
+            del_otp_res = self.client.post(del_req_url, {}, format='json')
+
+        self.assertEqual(del_otp_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(del_otp_res.data, {"message": "Account deletion OTP sent successfully"})
+        mock_post.assert_not_called()
+        self.assertNotIn(self.test_review_otp, str(del_otp_res.data))
+
+        record = OTPVerification.objects.filter(
+            identifier=self.test_review_phone,
+            purpose=OTPVerification.Purpose.ACCOUNT_DELETION
+        ).order_by('-created_at').first()
+        self.assertIsNotNone(record)
+        self.assertEqual(record.otp, self.test_review_otp)
+        self.assertFalse(record.is_verified)
+
+        # 3. Verify deletion OTP using the configured static review OTP
+        verify_del_res = self.client.post(
+            del_verify_url,
+            {'otp': self.test_review_otp, 'reason': 'App Review deletion verification'},
+            format='json'
+        )
+        self.assertEqual(verify_del_res.status_code, status.HTTP_201_CREATED)
+        review_user.refresh_from_db()
+        self.assertFalse(review_user.is_active)
+
+    @override_settings(
+        APP_REVIEW_ENABLED=True,
+        APP_REVIEW_PHONE_NUMBER="+919999900001",
+        APP_REVIEW_STATIC_OTP="839201"
+    )
+    def test_normal_account_deletion_otp_security_preserved(self):
+        """
+        Normal users must still receive randomly generated OTPs via external dispatch,
+        cannot request deletion OTPs for the review identifier, and cannot delete their
+        account using the static review OTP.
+        """
+        normal_phone = "+919876543210"
+        student = User.objects.create_user(
+            username="normal_del_student",
+            phone_number=normal_phone,
+            is_student=True
+        )
+        self.client.force_authenticate(user=student)
+        del_req_url = reverse('delete-account-request-otp')
+        del_verify_url = reverse('delete-account-verify-otp')
+
+        # 1. Attempting to supply the review phone number on a normal user session is rejected
+        mismatch_res = self.client.post(
+            del_req_url,
+            {'identifier': self.test_review_phone},
+            format='json'
+        )
+        self.assertEqual(mismatch_res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(mismatch_res.data, {"error": "Provided identifier does not match your account."})
+
+        # 2. Requesting deletion OTP for own account dispatches dynamic random OTP via Interakt
+        with patch('users.views.requests.post') as mock_post:
+            mock_post.return_value.status_code = 200
+            mock_post.return_value.json.return_value = {}
+            req_res = self.client.post(del_req_url, {}, format='json')
+
+        self.assertEqual(req_res.status_code, status.HTTP_200_OK)
+        mock_post.assert_called_once()
+
+        record = OTPVerification.objects.filter(
+            identifier=normal_phone,
+            purpose=OTPVerification.Purpose.ACCOUNT_DELETION
+        ).order_by('-created_at').first()
+        self.assertIsNotNone(record)
+        self.assertNotEqual(record.otp, self.test_review_otp)
+
+        # 3. Attempting to verify deletion with the static review OTP fails
+        bad_verify = self.client.post(
+            del_verify_url,
+            {'otp': self.test_review_otp},
+            format='json'
+        )
+        self.assertEqual(bad_verify.status_code, status.HTTP_400_BAD_REQUEST)
+        student.refresh_from_db()
+        self.assertTrue(student.is_active)
+
+    @override_settings(
+        APP_REVIEW_ENABLED=False,
+        APP_REVIEW_PHONE_NUMBER="+919999900001",
+        APP_REVIEW_STATIC_OTP="839201"
+    )
+    def test_reviewer_account_deletion_skipped_when_app_review_disabled(self):
+        """When APP_REVIEW_ENABLED=False, deletion OTP uses normal dispatch even for the review phone."""
+        review_user = User.objects.create_user(
+            username="disabled_review_user",
+            phone_number=self.test_review_phone,
+            is_student=True
+        )
+        self.client.force_authenticate(user=review_user)
+        del_req_url = reverse('delete-account-request-otp')
+
+        with patch('users.views.requests.post') as mock_post:
+            mock_post.return_value.status_code = 200
+            mock_post.return_value.json.return_value = {}
+            res = self.client.post(del_req_url, {}, format='json')
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        mock_post.assert_called_once()
+        record = OTPVerification.objects.filter(
+            identifier=self.test_review_phone,
+            purpose=OTPVerification.Purpose.ACCOUNT_DELETION
+        ).order_by('-created_at').first()
+        self.assertIsNotNone(record)
+        self.assertNotEqual(record.otp, self.test_review_otp)
+
 

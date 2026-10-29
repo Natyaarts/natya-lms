@@ -35,6 +35,10 @@ class Purchase(models.Model):
         RAZORPAY = 'RAZORPAY', 'Razorpay'
         APPLE_IAP = 'APPLE_IAP', 'Apple In-App Purchase'
 
+    class AppleEnvironment(models.TextChoices):
+        PRODUCTION = 'Production', 'Production'
+        SANDBOX = 'Sandbox', 'Sandbox'
+
     user = models.ForeignKey(User, related_name='purchases', on_delete=models.CASCADE)
     course = models.ForeignKey(Course, related_name='purchases', on_delete=models.CASCADE)
     payment_provider = models.CharField(
@@ -67,10 +71,25 @@ class Purchase(models.Model):
         null=True,
         help_text="Apple App Store Connect In-App Purchase Product ID"
     )
+    apple_environment = models.CharField(
+        max_length=20,
+        choices=AppleEnvironment.choices,
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text="Apple StoreKit environment ('Production' or 'Sandbox') from the verified JWS payload"
+    )
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=50, choices=Status.choices, default=Status.PENDING)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    @property
+    def is_apple_sandbox(self) -> bool:
+        return (
+            self.payment_provider == self.PaymentProvider.APPLE_IAP
+            and self.apple_environment == self.AppleEnvironment.SANDBOX
+        )
 
     def __str__(self):
         return f"{self.user.username} - {self.course.title} - {self.status}"

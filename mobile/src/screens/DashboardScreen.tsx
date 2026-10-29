@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, Image, ActivityIndicator, RefreshControl, ScrollView } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, Image, ActivityIndicator, RefreshControl, ScrollView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import client, { resolveMediaUrl } from '../api/client';
+import { fetchAppleProducts, getCourseAppleSku, Product } from '../api/appleIap';
 import { registerForPushNotificationsAsync, unregisterForPushNotificationsAsync } from '../api/pushNotifications';
 import Icon from '../components/Icon';
 import CourseCard from '../components/CourseCard';
@@ -39,6 +40,7 @@ export default function DashboardScreen({ navigation }: any) {
   const [enrolledCourses, setEnrolledCourses] = useState<any[]>([]);
   const [liveClasses, setLiveClasses] = useState<any[]>([]);
   const [exploreCourses, setExploreCourses] = useState<any[]>([]);
+  const [iapProducts, setIapProducts] = useState<Record<string, Product>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -96,6 +98,20 @@ export default function DashboardScreen({ navigation }: any) {
     const enrolledIds = new Set(enrolledCourses.map((c) => c.id));
     return exploreCourses.filter((c) => !enrolledIds.has(c.id)).slice(0, 10);
   }, [enrolledCourses, exploreCourses]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios' || exploreList.length === 0) return;
+    let isCancelled = false;
+    const skus = exploreList.map((c) => getCourseAppleSku(c)).filter(Boolean);
+    fetchAppleProducts(skus).then((map) => {
+      if (!isCancelled) {
+        setIapProducts(map);
+      }
+    });
+    return () => {
+      isCancelled = true;
+    };
+  }, [exploreList]);
 
   const goToCourse = (course: any) => navigation.navigate('Learn', { courseId: course.id || course.course_id, isEnrolled: true });
 
@@ -257,6 +273,7 @@ export default function DashboardScreen({ navigation }: any) {
                       thumbnail={item.thumbnail}
                       moduleCount={item.modules?.length}
                       price={item.price}
+                      localizedPrice={iapProducts[getCourseAppleSku(item)]?.localizedPrice}
                       onPress={() => navigation.navigate('CourseDetails', { courseId: item.id })}
                     />
                   )}

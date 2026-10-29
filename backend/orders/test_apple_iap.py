@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
+from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -838,3 +839,176 @@ class AppleIAPTests(TestCase):
                 )
             self.assertIn("already associated with another course", str(ctx.exception))
             self.assertFalse(Enrollment.objects.filter(user=self.user, course=course2).exists())
+
+    def test_missing_environment_claim_rejected_outside_test_mode(self):
+        """
+        In production verification mode (APPLE_IAP_TEST_MODE=False), a JWS payload
+        missing the 'environment' claim must be rejected rather than falling through as Production.
+        """
+        with override_settings(APPLE_IAP_TEST_MODE=False, APPLE_IAP_ALLOW_SANDBOX=False):
+            tx_payload = {
+                "bundleId": "com.natyaarts.academy",
+                "transactionId": "999888444",
+                "productId": f"com.natyaarts.academy.course.{self.course.id}",
+            }
+            with self.assertRaises(AppleVerificationError) as ctx1:
+                AppleIAPService._validate_transaction_claims(tx_payload)
+            self.assertIn("missing required 'environment' claim", str(ctx1.exception))
+
+            notif_payload = {
+                "notificationType": "REFUND",
+                "data": {"bundleId": "com.natyaarts.academy"},
+            }
+            with self.assertRaises(AppleVerificationError) as ctx2:
+                AppleIAPService._validate_notification_claims(notif_payload)
+            self.assertIn("missing required 'environment' claim", str(ctx2.exception))
+
+    @patch.object(AppleIAPService, 'verify_jws_token')
+    def test_sandbox_environment_identified_and_excluded_from_revenue_fulfillment_and_reconciliation(self, mock_verify):
+        """
+        Verifies end-to-end Sandbox isolation:
+        1. Purchase.apple_environment is persisted as 'Sandbox' (is_apple_sandbox=True) vs 'Production'.
+        2. Direct calls to fulfill_purchase() (without skip_accounting), create_earning_entry_for_purchase(),
+           and create_invoice_for_purchase() still refuse to create LedgerEntry or Invoice rows for Sandbox.
+        3. AdminStatsView excludes Sandbox transactions from real-money revenue, payment counts,
+           paid enrollment counts, and recent payments, while counting Production transactions normally.
+        4. Finance run_reconciliation() does not flag Sandbox purchases for missing LedgerEntry/Invoice.
+        """
+        from courses.models import CourseInstructor
+        from finance.models import Invoice, LedgerEntry
+        from finance.reconciliation import run_reconciliation
+        from finance.services import create_earning_entry_for_purchase, create_invoice_for_purchase
+        from orders.services import fulfill_purchase
+
+        instructor_user = User.objects.create_user(
+            username="apple_rev_teacher",
+            email="teacher_apple_rev@example.com",
+            is_teacher=True,
+        )
+        CourseInstructor.objects.create(
+            course=self.course,
+            user=instructor_user,
+            is_primary=True,
+            commission_rate=Decimal("25.00"),
+        )
+
+        # 1. Verify a Sandbox transaction
+        sandbox_tx = f"sbx_iso_{uuid.uuid4().hex[:10]}"
+        mock_verify.return_value = {
+            "bundleId": "com.natyaarts.academy",
+            "transactionId": sandbox_tx,
+            "originalTransactionId": sandbox_tx,
+            "productId": f"com.natyaarts.academy.course.{self.course.id}",
+            "environment": "Sandbox",
+        }
+        self.client.force_authenticate(user=self.user)
+        with self.settings(APPLE_IAP_ALLOW_SANDBOX=True):
+            sbx_res = self.client.post(
+                self.verify_url,
+                {"signed_transaction_info": "mock_sandbox_jws"},
+                format="json",
+            )
+        self.assertEqual(sbx_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(sbx_res.data["environment"], "Sandbox")
+
+        sbx_purchase = Purchase.objects.get(apple_transaction_id=sandbox_tx)
+        self.assertEqual(sbx_purchase.apple_environment, Purchase.AppleEnvironment.SANDBOX)
+        self.assertTrue(sbx_purchase.is_apple_sandbox)
+        self.assertEqual(sbx_purchase.amount, Decimal("0.00"))
+
+        # 2. Defense-in-depth: re-running fulfill_purchase WITHOUT skip_accounting=True
+        # (simulating CheckPaymentStatusView) or calling finance hooks directly creates nothing
+        fulfill_purchase(sbx_purchase, Purchase.Status.PENDING)
+        create_earning_entry_for_purchase(sbx_purchase)
+        create_invoice_for_purchase(sbx_purchase)
+        self.assertFalse(LedgerEntry.objects.filter(purchase=sbx_purchase).exists())
+        self.assertFalse(Invoice.objects.filter(purchase=sbx_purchase).exists())
+
+        # Even if amount were ever tampered non-zero in DB, AdminStatsView excludes Sandbox rows
+        Purchase.objects.filter(id=sbx_purchase.id).update(amount=Decimal("1499.00"))
+
+        # 3. Verify a real Production Apple transaction for user2
+        prod_tx = f"prd_iso_{uuid.uuid4().hex[:10]}"
+        mock_verify.return_value = {
+            "bundleId": "com.natyaarts.academy",
+            "transactionId": prod_tx,
+            "originalTransactionId": prod_tx,
+            "productId": f"com.natyaarts.academy.course.{self.course.id}",
+            "environment": "Production",
+        }
+        self.client.force_authenticate(user=self.user2)
+        prd_res = self.client.post(
+            self.verify_url,
+            {"signed_transaction_info": "mock_prod_jws"},
+            format="json",
+        )
+        self.assertEqual(prd_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(prd_res.data["environment"], "Production")
+
+        prd_purchase = Purchase.objects.get(apple_transaction_id=prod_tx)
+        self.assertEqual(prd_purchase.apple_environment, Purchase.AppleEnvironment.PRODUCTION)
+        self.assertFalse(prd_purchase.is_apple_sandbox)
+        self.assertEqual(prd_purchase.amount, Decimal("1499.00"))
+        self.assertTrue(LedgerEntry.objects.filter(purchase=prd_purchase).exists())
+        self.assertTrue(Invoice.objects.filter(purchase=prd_purchase).exists())
+
+        # Reset sbx_purchase.amount back after testing revenue query with tampered amount
+        admin_user = User.objects.create_superuser(
+            username="stats_superadmin",
+            email="stats_superadmin@example.com",
+            password="pass",
+        )
+        self.client.force_authenticate(user=admin_user)
+        stats_res = self.client.get(reverse("admin-stats"))
+        self.assertEqual(stats_res.status_code, status.HTTP_200_OK)
+        # Only the 1 Production purchase (1499.00) is counted; Sandbox is completely excluded!
+        self.assertEqual(Decimal(str(stats_res.data["total_revenue"])), Decimal("1499.00"))
+        self.assertEqual(Decimal(str(stats_res.data["current_month_revenue"])), Decimal("1499.00"))
+        self.assertEqual(stats_res.data["success_payments"], 1)
+        self.assertEqual(stats_res.data["paid_enrollments_count"], 1)
+        recent_ids = [p["id"] for p in stats_res.data["recent_payments"]]
+        self.assertIn(prd_purchase.id, recent_ids)
+        self.assertNotIn(sbx_purchase.id, recent_ids)
+
+        Purchase.objects.filter(id=sbx_purchase.id).update(amount=Decimal("0.00"))
+
+        # 4. Finance reconciliation ignores Sandbox purchases and reports 0 issues
+        recon_report = run_reconciliation()
+        sbx_issues = [
+            issue for issue in recon_report.issues
+            if issue.source_type == "PURCHASE" and issue.source_id == sbx_purchase.id
+        ]
+        self.assertEqual(sbx_issues, [])
+
+
+class AppleIAPDefaultSettingsTests(TestCase):
+    """Verifies real core.settings defaults without class-level override_settings."""
+
+    def test_sandbox_setting_defaults_strictly_to_false_and_parses_safely(self):
+        """
+        APPLE_IAP_ALLOW_SANDBOX in core.settings must default strictly to False (never silently True),
+        and is_apple_sandbox_allowed() must safely evaluate string/bool overrides.
+        """
+        import os
+        from django.conf import settings as django_settings
+        from orders.apple_service import is_apple_sandbox_allowed
+
+        if 'APPLE_IAP_ALLOW_SANDBOX' not in os.environ:
+            self.assertIs(django_settings.APPLE_IAP_ALLOW_SANDBOX, False)
+            self.assertIs(django_settings.APPLE_IAP_TEST_MODE, False)
+            self.assertFalse(is_apple_sandbox_allowed())
+
+        with override_settings(APPLE_IAP_TEST_MODE=False, APPLE_IAP_ALLOW_SANDBOX=False):
+            self.assertFalse(is_apple_sandbox_allowed())
+
+        # String "False" or "0" must never evaluate truthy
+        with override_settings(APPLE_IAP_TEST_MODE=False, APPLE_IAP_ALLOW_SANDBOX="False"):
+            self.assertFalse(is_apple_sandbox_allowed())
+        with override_settings(APPLE_IAP_TEST_MODE=False, APPLE_IAP_ALLOW_SANDBOX="0"):
+            self.assertFalse(is_apple_sandbox_allowed())
+
+        # Explicit True / "true" / "1" enables Sandbox verification
+        with override_settings(APPLE_IAP_TEST_MODE=False, APPLE_IAP_ALLOW_SANDBOX=True):
+            self.assertTrue(is_apple_sandbox_allowed())
+        with override_settings(APPLE_IAP_TEST_MODE=False, APPLE_IAP_ALLOW_SANDBOX="true"):
+            self.assertTrue(is_apple_sandbox_allowed())

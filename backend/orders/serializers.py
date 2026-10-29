@@ -16,6 +16,9 @@ class AdminPurchaseSerializer(serializers.ModelSerializer):
             'course_title',
             'amount',
             'status',
+            'payment_provider',
+            'apple_environment',
+            'apple_transaction_id',
             'razorpay_order_id',
             'razorpay_payment_id',
             'created_at'

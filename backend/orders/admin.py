@@ -3,9 +3,9 @@ from .models import Purchase, WebhookEvent, Order, OrderItem, SubscriptionPlan, 
 
 @admin.register(Purchase)
 class PurchaseAdmin(admin.ModelAdmin):
-    list_display = ('user', 'course', 'amount', 'status', 'created_at')
-    list_filter = ('status', 'created_at')
-    search_fields = ('user__username', 'course__title', 'razorpay_order_id')
+    list_display = ('user', 'course', 'amount', 'status', 'payment_provider', 'apple_environment', 'created_at')
+    list_filter = ('status', 'payment_provider', 'apple_environment', 'created_at')
+    search_fields = ('user__username', 'course__title', 'razorpay_order_id', 'apple_transaction_id')
 
 
 @admin.register(WebhookEvent)

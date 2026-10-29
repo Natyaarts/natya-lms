@@ -58,6 +58,12 @@ def fulfill_purchase(purchase, previous_status, skip_accounting=False):
 
     _grant_course_access(purchase.user, purchase.course)
 
+    # Defense-in-depth: Apple StoreKit Sandbox transactions are non-billable test
+    # purchases and must never produce notifications, ledger revenue, or tax invoices,
+    # even if a caller invokes fulfill_purchase() without passing skip_accounting=True.
+    if getattr(purchase, 'is_apple_sandbox', False) or getattr(purchase, 'apple_environment', None) == 'Sandbox':
+        skip_accounting = True
+
     if skip_accounting:
         logger.info(
             "fulfill_purchase: skipping notifications, ledger earnings, and invoice for non-billable / sandbox purchase #%s",
