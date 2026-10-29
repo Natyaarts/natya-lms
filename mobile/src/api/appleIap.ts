@@ -14,9 +14,37 @@ export type { Product };
  */
 
 let RNIapModule: typeof import('react-native-iap') | null = null;
+let isStoreKit2Configured = false;
 
 export function isIapSupported(): boolean {
   return Platform.OS === 'ios';
+}
+
+/**
+ * Explicitly activates StoreKit 2 mode in react-native-iap before any
+ * NativeEventEmitter listener registration or StoreKit connection call.
+ *
+ * react-native-iap v12.16.4 defaults to STOREKIT1_MODE (RNIapIos), which only
+ * emits legacy PKCS#7 ASN.1 transactionReceipt blobs and omits StoreKit 2 JWS
+ * tokens (verificationResultIOS). Activating STOREKIT2_MODE binds RNIapIosSk2
+ * so purchases and restored entitlements emit Apple-signed StoreKit 2 JWS data.
+ */
+export function ensureStoreKit2Configured(
+  iapModule: typeof import('react-native-iap') | null = RNIapModule
+): boolean {
+  if (!isIapSupported() || !iapModule) return false;
+  if (!isStoreKit2Configured) {
+    try {
+      if (typeof iapModule.setup === 'function') {
+        iapModule.setup({ storekitMode: 'STOREKIT2_MODE' });
+      }
+      isStoreKit2Configured = true;
+    } catch (err) {
+      console.warn('[AppleIAP] Failed to configure STOREKIT2_MODE:', err);
+      return false;
+    }
+  }
+  return true;
 }
 
 export function getRNIap() {
@@ -24,10 +52,13 @@ export function getRNIap() {
   if (!RNIapModule) {
     try {
       RNIapModule = require('react-native-iap');
+      ensureStoreKit2Configured(RNIapModule);
     } catch (e) {
       console.warn('[AppleIAP] react-native-iap unavailable in current runtime:', e);
       return null;
     }
+  } else {
+    ensureStoreKit2Configured(RNIapModule);
   }
   return RNIapModule;
 }
@@ -39,13 +70,21 @@ let isConnected = false;
 export async function initIapConnection(): Promise<boolean> {
   const RNIap = getRNIap();
   if (!RNIap) return false;
-  if (isConnected) return true;
+  ensureStoreKit2Configured(RNIap);
+  if (isConnected) {
+    ensureNativeListeners();
+    return true;
+  }
   if (connectionPromise) return connectionPromise;
 
   connectionPromise = (async () => {
     try {
+      ensureStoreKit2Configured(RNIap);
       const ok = await RNIap.initConnection();
       isConnected = ok ?? true;
+      if (isConnected) {
+        ensureNativeListeners();
+      }
       return isConnected;
     } catch (err) {
       console.warn('[AppleIAP] initConnection error:', err);
@@ -91,6 +130,62 @@ export function extractSignedTransaction(purchase: any): string | null {
   return null;
 }
 
+/**
+ * Decodes the unverified JSON payload segment of a 3-part JWS string solely for
+ * client-side StoreKit inventory filtering (e.g. skipping historically refunded
+ * entries in StoreKit 2 Transaction.all). Never used to grant entitlements;
+ * authoritative cryptographic x5c/ES256 verification always occurs on the backend.
+ */
+function decodeJwsPayloadUnverified(jws: string): Record<string, any> | null {
+  try {
+    const parts = jws.split('.');
+    if (parts.length !== 3 || !parts[1]) return null;
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const bytes: number[] = [];
+    for (let i = 0; i < padded.length; i += 4) {
+      const c1 = chars.indexOf(padded[i]);
+      const c2 = chars.indexOf(padded[i + 1]);
+      const c3 = padded[i + 2] === '=' ? -1 : chars.indexOf(padded[i + 2]);
+      const c4 = padded[i + 3] === '=' ? -1 : chars.indexOf(padded[i + 3]);
+      if (c1 < 0 || c2 < 0) return null;
+      const triplet = (c1 << 18) | (c2 << 12) | ((c3 < 0 ? 0 : c3) << 6) | (c4 < 0 ? 0 : c4);
+      bytes.push((triplet >> 16) & 0xff);
+      if (c3 >= 0) bytes.push((triplet >> 8) & 0xff);
+      if (c4 >= 0) bytes.push(triplet & 0xff);
+    }
+    let jsonStr = '';
+    if (typeof TextDecoder !== 'undefined') {
+      jsonStr = new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+    } else {
+      jsonStr = decodeURIComponent(
+        bytes.map((b) => '%' + ('00' + b.toString(16)).slice(-2)).join('')
+      );
+    }
+    const parsed = JSON.parse(jsonStr);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Checks whether a StoreKit 2 transaction from Transaction.all carries an explicit
+ * Apple revocationDate (refunded/revoked historical transaction) so restore/recovery
+ * scans skip inactive historical entries without failing active course restores.
+ */
+export function isRevokedStoreKitTransaction(purchase: any): boolean {
+  if (!purchase) return false;
+  if (purchase.revocationDate || purchase.revocationDateIOS) {
+    return true;
+  }
+  const signedTx = extractSignedTransaction(purchase);
+  if (!signedTx) return false;
+  const payload = decodeJwsPayloadUnverified(signedTx);
+  return Boolean(payload && payload.revocationDate);
+}
+
 export function getTransactionKey(purchase: any): string {
   return (
     purchase?.transactionId ||
@@ -102,6 +197,27 @@ export function getTransactionKey(purchase: any): string {
 
 // In-flight transaction keys currently being processed (prevents concurrent duplicate execution)
 const inFlightTransactions = new Set<string>();
+
+// Device/process-level StoreKit 2 transaction IDs known to be held in RNIapIosSk2's
+// native `transactions` map (populated only via buyProduct and Transaction.updates).
+// RNIapIosSk2.getAvailableItems() does NOT populate native `transactions`, so calling
+// RNIap.finishTransaction() on historical restored entitlements rejects with
+// E_DEVELOPER_ERROR ("Invalid transaction Id").
+const nativePendingTransactionIds = new Set<string>();
+
+export function markNativePendingTransaction(purchase: any): void {
+  const txId = purchase?.transactionId ? String(purchase.transactionId) : '';
+  if (txId) {
+    nativePendingTransactionIds.add(txId);
+  }
+}
+
+export function isUnknownNativeTransactionError(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || '');
+  const msg = String(err.message || '');
+  return code === 'E_DEVELOPER_ERROR' && /invalid transaction id/i.test(msg);
+}
 
 // Current session token associated with cached transaction states
 let activeSessionToken: string | null = null;
@@ -127,7 +243,6 @@ export async function syncSessionToken(): Promise<string | null> {
       activeSessionToken = token;
       sessionBackendVerifiedTransactions.clear();
       sessionFinishedStoreKitTransactions.clear();
-      inFlightTransactions.clear();
     }
     return token;
   } catch {
@@ -162,30 +277,28 @@ export interface VerifyResult {
   error?: string;
 }
 
+export interface VerifyTransactionOptions {
+  isRestored?: boolean;
+}
+
 /**
- * Verifies a transaction with the backend and finishes it in StoreKit.
+ * Verifies a transaction with the backend and finishes it in StoreKit when required.
  *
  * Explicitly separates:
  * 1. Backend verification and entitlement granting (authoritative server check).
- * 2. StoreKit finishing (client-side acknowledgment to Apple).
+ * 2. StoreKit finishing (client-side acknowledgment to Apple for live/unfinished transactions).
  *
- * If finishing fails, the transaction is retained for retry without duplicate enrollment.
- * If the user switched accounts, the session cache is automatically invalidated.
+ * For historical restored transactions returned by StoreKit 2 getAvailablePurchases(),
+ * RNIapIosSk2 does not register the transaction in its native `transactions` map unless
+ * it was also delivered as an unfinished transaction via Transaction.updates / buyProduct.
+ * Calling finishTransaction on an unknown native transaction ID is avoided while still
+ * finishing any genuinely pending native transaction.
  */
 export async function verifyAndFinishAppleTransaction(
   purchase: any,
-  fallbackProductId?: string
+  fallbackProductId?: string,
+  options?: VerifyTransactionOptions
 ): Promise<VerifyResult> {
-  const token = await syncSessionToken();
-  if (!token) {
-    return {
-      success: false,
-      backendVerified: false,
-      finished: false,
-      error: 'Authentication required. Please sign in to verify course purchases.',
-    };
-  }
-
   const txKey = getTransactionKey(purchase);
 
   if (inFlightTransactions.has(txKey)) {
@@ -196,18 +309,28 @@ export async function verifyAndFinishAppleTransaction(
     };
   }
 
-  if (sessionFinishedStoreKitTransactions.has(txKey)) {
-    return {
-      success: true,
-      backendVerified: true,
-      finished: true,
-      alreadyFinished: true,
-    };
-  }
-
   inFlightTransactions.add(txKey);
 
   try {
+    const token = await syncSessionToken();
+    if (!token) {
+      return {
+        success: false,
+        backendVerified: false,
+        finished: false,
+        error: 'Authentication required. Please sign in to verify course purchases.',
+      };
+    }
+
+    if (sessionFinishedStoreKitTransactions.has(txKey)) {
+      return {
+        success: true,
+        backendVerified: true,
+        finished: true,
+        alreadyFinished: true,
+      };
+    }
+
     let backendData: any = null;
     let isNewEnrollment = false;
 
@@ -252,25 +375,55 @@ export async function verifyAndFinishAppleTransaction(
     }
 
     // Step 2: StoreKit Transaction Finishing
+    const txId = purchase?.transactionId ? String(purchase.transactionId) : '';
+    const isRestored = Boolean(options?.isRestored);
+    const shouldFinishInNativeStoreKit =
+      !isRestored || (Boolean(txId) && nativePendingTransactionIds.has(txId));
+
+    if (!shouldFinishInNativeStoreKit) {
+      // Historical StoreKit 2 entitlement recovered via getAvailablePurchases() that
+      // is not queued in RNIapIosSk2's native unfinished `transactions` dictionary.
+      sessionFinishedStoreKitTransactions.add(txKey);
+      return {
+        success: true,
+        backendVerified: true,
+        finished: true,
+        isNewEnrollment,
+        previouslyVerifiedFinished: !isNewEnrollment,
+        data: backendData,
+      };
+    }
+
     const connected = await initIapConnection();
     const RNIap = getRNIap();
 
     if (RNIap && connected) {
       try {
         await RNIap.finishTransaction({ purchase, isConsumable: false });
+        if (txId) {
+          nativePendingTransactionIds.delete(txId);
+        }
         sessionFinishedStoreKitTransactions.add(txKey);
       } catch (finishErr: any) {
-        console.warn(`[AppleIAP] finishTransaction failed for ${txKey}:`, finishErr);
-        // Backend verification succeeded, but StoreKit finish failed.
-        // Do NOT add to sessionFinishedStoreKitTransactions, allowing safe retry.
-        return {
-          success: false,
-          backendVerified: true,
-          finished: false,
-          isNewEnrollment,
-          data: backendData,
-          error: `Course enrollment confirmed on server, but StoreKit finishTransaction failed (${finishErr?.message || 'StoreKit error'}). Transaction retained for retry.`,
-        };
+        if (isRestored && isUnknownNativeTransactionError(finishErr)) {
+          // Native RNIapIosSk2 already finished/cleared this transaction ID.
+          if (txId) {
+            nativePendingTransactionIds.delete(txId);
+          }
+          sessionFinishedStoreKitTransactions.add(txKey);
+        } else {
+          console.warn(`[AppleIAP] finishTransaction failed for ${txKey}:`, finishErr);
+          // Backend verification succeeded, but StoreKit finish failed.
+          // Do NOT add to sessionFinishedStoreKitTransactions, allowing safe retry.
+          return {
+            success: false,
+            backendVerified: true,
+            finished: false,
+            isNewEnrollment,
+            data: backendData,
+            error: `Course enrollment confirmed on server, but StoreKit finishTransaction failed (${finishErr?.message || 'StoreKit error'}). Transaction retained for retry.`,
+          };
+        }
       }
     } else {
       return {
@@ -319,37 +472,45 @@ const subscribers = new Set<IapSubscriber>();
 let purchaseUpdateSubscription: any = null;
 let purchaseErrorSubscription: any = null;
 
+async function handleNativePurchaseEvent(purchase: Purchase, fallbackSku?: string): Promise<void> {
+  if (!purchase) return;
+  markNativePendingTransaction(purchase);
+
+  const txKey = getTransactionKey(purchase);
+  if (inFlightTransactions.has(txKey) || sessionFinishedStoreKitTransactions.has(txKey)) {
+    return;
+  }
+
+  const result = await verifyAndFinishAppleTransaction(purchase, fallbackSku);
+  if (result.success && !result.alreadyFinished) {
+    subscribers.forEach((sub) => {
+      try {
+        sub.onSuccess?.(purchase, result.data);
+      } catch (cbErr) {
+        console.error('[AppleIAP] subscriber onSuccess callback error:', cbErr);
+      }
+    });
+  } else if (!result.success && !result.alreadyInFlight) {
+    subscribers.forEach((sub) => {
+      try {
+        sub.onError?.(new Error(result.error || 'Failed to verify Apple purchase.'));
+      } catch (cbErr) {
+        console.error('[AppleIAP] subscriber onError callback error:', cbErr);
+      }
+    });
+  }
+}
+
 function ensureNativeListeners() {
   const RNIap = getRNIap();
   if (!RNIap) return;
+  ensureStoreKit2Configured(RNIap);
 
   if (!purchaseUpdateSubscription) {
     purchaseUpdateSubscription = RNIap.purchaseUpdatedListener(
       async (purchase: Purchase) => {
         try {
-          const txKey = getTransactionKey(purchase);
-          if (inFlightTransactions.has(txKey) || sessionFinishedStoreKitTransactions.has(txKey)) {
-            return;
-          }
-
-          const result = await verifyAndFinishAppleTransaction(purchase);
-          if (result.success && !result.alreadyFinished) {
-            subscribers.forEach((sub) => {
-              try {
-                sub.onSuccess?.(purchase, result.data);
-              } catch (cbErr) {
-                console.error('[AppleIAP] subscriber onSuccess callback error:', cbErr);
-              }
-            });
-          } else if (!result.success && !result.alreadyInFlight) {
-            subscribers.forEach((sub) => {
-              try {
-                sub.onError?.(new Error(result.error || 'Failed to verify Apple purchase.'));
-              } catch (cbErr) {
-                console.error('[AppleIAP] subscriber onError callback error:', cbErr);
-              }
-            });
-          }
+          await handleNativePurchaseEvent(purchase);
         } catch (listenerErr) {
           console.error('[AppleIAP] purchaseUpdatedListener caught error:', listenerErr);
           subscribers.forEach((sub) => {
@@ -416,7 +577,8 @@ export function isUserCancellation(err: any): boolean {
 
 /**
  * Requests an Apple In-App Purchase for a given SKU.
- * Checks connection before requesting. Completion is delivered via purchaseUpdatedListener.
+ * Checks connection before requesting. Completion is delivered via purchaseUpdatedListener,
+ * with fallback handling if StoreKit 2 resolves directly without an event callback.
  */
 export async function requestApplePurchase(sku: string): Promise<void> {
   const token = await syncSessionToken();
@@ -436,10 +598,19 @@ export async function requestApplePurchase(sku: string): Promise<void> {
 
   ensureNativeListeners();
 
-  await RNIap.requestPurchase({
+  const purchaseResult = await RNIap.requestPurchase({
     sku,
     andDangerouslyFinishTransactionAutomaticallyIOS: false,
   });
+
+  if (purchaseResult) {
+    const items = Array.isArray(purchaseResult) ? purchaseResult : [purchaseResult];
+    for (const item of items) {
+      if (item) {
+        await handleNativePurchaseEvent(item, sku);
+      }
+    }
+  }
 }
 
 /**
@@ -513,7 +684,71 @@ export async function fetchAppleProducts(skus: string[]): Promise<Record<string,
 }
 
 /**
- * Recovers and finishes any unfinished transactions delivered by StoreKit.
+ * Queries StoreKit 2 purchase inventory without requiring products to be pre-loaded
+ * into RNIapIosSk2's in-memory `productStore`.
+ *
+ * In react-native-iap v12.16.4 (`RNIapIosSk2.swift`), `getAvailablePurchases()` defaults
+ * `onlyIncludeActiveItems` to `true`, which filters `.nonConsumable` entitlements against
+ * `productStore.getProduct(productID:) != nil` and returns `[]` whenever products have not
+ * been fetched yet. Passing `onlyIncludeActiveItems: false` reads verified StoreKit 2
+ * transactions (with full JWS signatures) directly, and client-side filtering skips any
+ * historically refunded (`revocationDate`) entries while backend verification remains authoritative.
+ */
+async function fetchRecoverableStoreKitPurchases(
+  RNIap: typeof import('react-native-iap'),
+  options?: { allowAppStoreSync?: boolean }
+): Promise<Purchase[]> {
+  const filterAndDedupe = (rawList: Purchase[] | null | undefined): Purchase[] => {
+    if (!Array.isArray(rawList) || rawList.length === 0) return [];
+    const seen = new Set<string>();
+    const active: Purchase[] = [];
+    for (const item of rawList) {
+      if (!item || isRevokedStoreKitTransaction(item)) {
+        continue;
+      }
+      const key = getTransactionKey(item);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      active.push(item);
+    }
+    return active;
+  };
+
+  let purchases = filterAndDedupe(
+    await RNIap.getAvailablePurchases({
+      automaticallyFinishRestoredTransactions: false,
+      onlyIncludeActiveItems: false,
+    })
+  );
+
+  if (
+    purchases.length === 0 &&
+    options?.allowAppStoreSync &&
+    typeof RNIap.IapIosSk2?.sync === 'function'
+  ) {
+    try {
+      await RNIap.IapIosSk2.sync();
+      purchases = filterAndDedupe(
+        await RNIap.getAvailablePurchases({
+          automaticallyFinishRestoredTransactions: false,
+          onlyIncludeActiveItems: false,
+        })
+      );
+    } catch (syncErr: any) {
+      if (!isUserCancellation(syncErr)) {
+        console.warn('[AppleIAP] AppStore.sync() failed during restore:', syncErr);
+      }
+    }
+  }
+
+  return purchases;
+}
+
+/**
+ * Recovers previously purchased or unfinished StoreKit 2 non-consumable transactions,
+ * even when course products have not been loaded into StoreKit's productStore yet.
  */
 export async function recoverUnfinishedTransactions(): Promise<{
   recovered: number;
@@ -534,10 +769,10 @@ export async function recoverUnfinishedTransactions(): Promise<{
   }
 
   try {
-    const purchases = await RNIap.getAvailablePurchases({
-      automaticallyFinishRestoredTransactions: false,
+    const purchases = await fetchRecoverableStoreKitPurchases(RNIap, {
+      allowAppStoreSync: false,
     });
-    if (!purchases || purchases.length === 0) {
+    if (purchases.length === 0) {
       return { recovered: 0, failed: 0 };
     }
 
@@ -550,7 +785,9 @@ export async function recoverUnfinishedTransactions(): Promise<{
         continue;
       }
 
-      const result = await verifyAndFinishAppleTransaction(purchase);
+      const result = await verifyAndFinishAppleTransaction(purchase, undefined, {
+        isRestored: true,
+      });
       if (result.success && !result.alreadyFinished) {
         recovered++;
       } else if (!result.success && !result.alreadyInFlight) {
@@ -568,8 +805,8 @@ export async function recoverUnfinishedTransactions(): Promise<{
 export interface RestoreResult {
   totalFound: number;
   newlyRestoredCount: number; // Newly verified and enrolled on backend (status: SUCCESS)
-  previouslyVerifiedFinishedCount: number; // Existed in backend DB and was now finished in StoreKit
-  alreadyFinishedCount: number; // Was already finished earlier in session
+  previouslyVerifiedFinishedCount: number; // Existed in backend DB and confirmed
+  alreadyFinishedCount: number; // Was already verified/finished earlier in session
   inFlightCount: number; // Currently processing
   failedCount: number; // Verification or finish failure
   errors: string[];
@@ -578,7 +815,8 @@ export interface RestoreResult {
 /**
  * Restores previous purchases for the current Apple ID and verifies each with the backend.
  *
- * Accurately tracks newly restored, previously verified finished, already active, in-flight, and failed transactions.
+ * Works even when course products have not been loaded first, and avoids calling
+ * finishTransaction on historical transactions unknown to RNIapIosSk2's native pending map.
  */
 export async function restorePurchases(): Promise<RestoreResult> {
   const token = await syncSessionToken();
@@ -596,11 +834,11 @@ export async function restorePurchases(): Promise<RestoreResult> {
     throw new Error('Could not connect to the Apple App Store. Please verify your internet connection and try again.');
   }
 
-  const purchases = await RNIap.getAvailablePurchases({
-    automaticallyFinishRestoredTransactions: false,
+  const purchases = await fetchRecoverableStoreKitPurchases(RNIap, {
+    allowAppStoreSync: true,
   });
 
-  if (!purchases || purchases.length === 0) {
+  if (purchases.length === 0) {
     return {
       totalFound: 0,
       newlyRestoredCount: 0,
@@ -626,7 +864,9 @@ export async function restorePurchases(): Promise<RestoreResult> {
       continue;
     }
 
-    const result = await verifyAndFinishAppleTransaction(p);
+    const result = await verifyAndFinishAppleTransaction(p, undefined, {
+      isRestored: true,
+    });
 
     if (result.success) {
       if (result.alreadyFinished) {

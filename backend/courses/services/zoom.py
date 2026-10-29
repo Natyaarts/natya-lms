@@ -3,6 +3,7 @@ import logging
 import requests
 import base64
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +15,14 @@ class ZoomService:
 
     @classmethod
     def get_credentials(cls):
-        account_id = getattr(settings, 'ZOOM_ACCOUNT_ID', None) or os.environ.get('ZOOM_ACCOUNT_ID', 'btl6dp5ATMCqve1PVjtUbQ')
-        client_id = getattr(settings, 'ZOOM_CLIENT_ID', None) or os.environ.get('ZOOM_CLIENT_ID', 'ESC0pUcUSnSJXTsZS7xRgQ')
-        client_secret = getattr(settings, 'ZOOM_CLIENT_SECRET', None) or os.environ.get('ZOOM_CLIENT_SECRET', 'FWiwOex9oFrzDQe5taK24SegAA9uvi77')
-        return account_id.strip(), client_id.strip(), client_secret.strip()
+        account_id = (getattr(settings, 'ZOOM_ACCOUNT_ID', '') or os.environ.get('ZOOM_ACCOUNT_ID', '')).strip()
+        client_id = (getattr(settings, 'ZOOM_CLIENT_ID', '') or os.environ.get('ZOOM_CLIENT_ID', '')).strip()
+        client_secret = (getattr(settings, 'ZOOM_CLIENT_SECRET', '') or os.environ.get('ZOOM_CLIENT_SECRET', '')).strip()
+        if not (account_id and client_id and client_secret):
+            raise ImproperlyConfigured(
+                "Zoom credentials (ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET) must be explicitly configured in the environment."
+            )
+        return account_id, client_id, client_secret
 
     @classmethod
     def get_access_token(cls):

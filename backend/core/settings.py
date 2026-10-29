@@ -929,9 +929,9 @@ if SENTRY_DSN:
 # strictly via server-side environment variables. Disabled by default.
 # Reviewer access must never be active without both a designated phone number
 # and a static OTP configured in the environment.
-APP_REVIEW_ENABLED = os.environ.get('APP_REVIEW_ENABLED', 'True').lower() in ('true', '1')
-APP_REVIEW_PHONE_NUMBER = os.environ.get('APP_REVIEW_PHONE_NUMBER', '+919999900001').strip()
-APP_REVIEW_STATIC_OTP = os.environ.get('APP_REVIEW_STATIC_OTP', '839201').strip()
+APP_REVIEW_ENABLED = os.environ.get('APP_REVIEW_ENABLED', 'False').strip().lower() in ('true', '1')
+APP_REVIEW_PHONE_NUMBER = os.environ.get('APP_REVIEW_PHONE_NUMBER', '').strip()
+APP_REVIEW_STATIC_OTP = os.environ.get('APP_REVIEW_STATIC_OTP', '').strip()
 
 # ---------------------------------------------------------------------------
 # Apple In-App Purchase (StoreKit 2) Configuration
@@ -952,9 +952,9 @@ APPLE_IAP_TEST_MODE = False
 # ---------------------------------------------------------------------------
 # Zoom Server-to-Server OAuth Credentials
 # ---------------------------------------------------------------------------
-ZOOM_ACCOUNT_ID = os.environ.get('ZOOM_ACCOUNT_ID', 'btl6dp5ATMCqve1PVjtUbQ').strip()
-ZOOM_CLIENT_ID = os.environ.get('ZOOM_CLIENT_ID', 'ESC0pUcUSnSJXTsZS7xRgQ').strip()
-ZOOM_CLIENT_SECRET = os.environ.get('ZOOM_CLIENT_SECRET', 'FWiwOex9oFrzDQe5taK24SegAA9uvi77').strip()
+ZOOM_ACCOUNT_ID = os.environ.get('ZOOM_ACCOUNT_ID', '').strip()
+ZOOM_CLIENT_ID = os.environ.get('ZOOM_CLIENT_ID', '').strip()
+ZOOM_CLIENT_SECRET = os.environ.get('ZOOM_CLIENT_SECRET', '').strip()
 
 # ---------------------------------------------------------------------------
 # Academy Billing & Receipt Tax Metadata (Configuration-Driven)

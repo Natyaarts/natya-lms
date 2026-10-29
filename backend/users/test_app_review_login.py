@@ -547,4 +547,59 @@ class AppReviewLoginTests(APITestCase):
         self.assertIsNotNone(record)
         self.assertNotEqual(record.otp, self.test_review_otp)
 
+    # -------------------------------------------------------------------------
+    # Safe Defaults & Secret-Free Fallback Tests
+    # -------------------------------------------------------------------------
+
+    def test_app_review_settings_default_to_disabled_and_empty(self):
+        """
+        Without explicit environment configuration, APP_REVIEW_ENABLED must default
+        to False and APP_REVIEW_PHONE_NUMBER / APP_REVIEW_STATIC_OTP must be empty.
+        """
+        from django.conf import settings as django_settings
+        from .views import _is_reviewer_request
+
+        self.assertFalse(django_settings.APP_REVIEW_ENABLED)
+        self.assertEqual(django_settings.APP_REVIEW_PHONE_NUMBER, "")
+        self.assertEqual(django_settings.APP_REVIEW_STATIC_OTP, "")
+        self.assertFalse(_is_reviewer_request(self.test_review_phone))
+
+    def test_zoom_settings_and_service_require_explicit_env_configuration(self):
+        """
+        ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, and ZOOM_CLIENT_SECRET must default to empty
+        strings without hardcoded credentials, and ZoomService must raise ImproperlyConfigured
+        when invoked without explicit configuration.
+        """
+        import os
+        from django.conf import settings as django_settings
+        from django.core.exceptions import ImproperlyConfigured
+        from courses.services.zoom import ZoomService
+        from courses.services.recording import ZoomRecordingService
+
+        self.assertEqual(django_settings.ZOOM_ACCOUNT_ID, "")
+        self.assertEqual(django_settings.ZOOM_CLIENT_ID, "")
+        self.assertEqual(django_settings.ZOOM_CLIENT_SECRET, "")
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('ZOOM_ACCOUNT_ID', None)
+            os.environ.pop('ZOOM_CLIENT_ID', None)
+            os.environ.pop('ZOOM_CLIENT_SECRET', None)
+            os.environ.pop('ZOOM_WEBHOOK_SECRET_TOKEN', None)
+            with override_settings(ZOOM_ACCOUNT_ID="", ZOOM_CLIENT_ID="", ZOOM_CLIENT_SECRET=""):
+                with self.assertRaises(ImproperlyConfigured):
+                    ZoomService.get_credentials()
+                with self.assertRaises(ImproperlyConfigured):
+                    ZoomRecordingService.validate_zoom_webhook_challenge("test_plain_token")
+
+        with override_settings(
+            ZOOM_ACCOUNT_ID="cfg_acc_id",
+            ZOOM_CLIENT_ID="cfg_client_id",
+            ZOOM_CLIENT_SECRET="cfg_client_secret",
+        ):
+            self.assertEqual(
+                ZoomService.get_credentials(),
+                ("cfg_acc_id", "cfg_client_id", "cfg_client_secret"),
+            )
+
+
 

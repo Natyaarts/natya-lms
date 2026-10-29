@@ -2921,8 +2921,12 @@ class ZoomWebhookView(APIView):
 
         # 1. URL validation challenge from Zoom
         if event == 'endpoint.url_validation':
+            from django.core.exceptions import ImproperlyConfigured
             plain_token = request.data.get('payload', {}).get('plainToken', '')
-            response_data = ZoomRecordingService.validate_zoom_webhook_challenge(plain_token)
+            try:
+                response_data = ZoomRecordingService.validate_zoom_webhook_challenge(plain_token)
+            except ImproperlyConfigured as e:
+                return Response({"error": str(e)}, status=drf_status.HTTP_503_SERVICE_UNAVAILABLE)
             return Response(response_data, status=drf_status.HTTP_200_OK)
 
         # 2. Recording completed event
