@@ -37,3 +37,5 @@ BundleLogs-*/
 BundleLogs-*.zip
 Newlog/
 log/
+
+*.xlsx

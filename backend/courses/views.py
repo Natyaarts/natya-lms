@@ -1,3 +1,8 @@
+import logging
+from django.views.decorators.csrf import csrf_exempt
+
+logger = logging.getLogger(__name__)
+from django.utils.decorators import method_decorator
 from django.conf import settings
 from rest_framework import viewsets, permissions, status as drf_status
 from rest_framework.views import APIView
@@ -2907,41 +2912,291 @@ class AdminZoomMeetingCreateView(APIView):
             return Response({"error": f"Zoom API Error: {str(e)}"}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ZoomWebhookView(APIView):
     """
-    Public webhook receiver for Zoom events:
+    Server-to-server webhook receiver for Zoom events:
     - endpoint.url_validation (HMAC SHA-256 challenge response)
-    - recording.completed (automatically download Zoom recording & stream into AWS S3)
+    - recording.completed (authenticates signature, persists event, and queues Celery transfer)
+    - meeting.participant_joined / meeting.participant_left (attendance logging)
     """
+    authentication_classes = []
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
         from courses.services.recording import ZoomRecordingService
-        event = request.data.get('event')
+        from courses.models import ZoomWebhookEvent
+        from django.db import transaction, IntegrityError, OperationalError, connection
+        from django.utils import timezone
+        import json
 
-        # 1. URL validation challenge from Zoom
+        # Access raw_body FIRST before reading any data streams
+        raw_body = request.body
+        try:
+            body_data = json.loads(raw_body.decode('utf-8')) if raw_body else {}
+        except Exception:
+            body_data = {}
+
+        event = body_data.get('event')
+
+        # 1. URL validation challenge from Zoom (during initial webhook endpoint verification)
         if event == 'endpoint.url_validation':
             from django.core.exceptions import ImproperlyConfigured
-            plain_token = request.data.get('payload', {}).get('plainToken', '')
+            plain_token = body_data.get('payload', {}).get('plainToken', '')
             try:
                 response_data = ZoomRecordingService.validate_zoom_webhook_challenge(plain_token)
             except ImproperlyConfigured as e:
                 return Response({"error": str(e)}, status=drf_status.HTTP_503_SERVICE_UNAVAILABLE)
             return Response(response_data, status=drf_status.HTTP_200_OK)
 
-        # 2. Recording completed event
+        # 2. Signature verification on all actual webhook deliveries
+        signature_header = (
+            request.headers.get('x-zm-signature')
+            or request.META.get('HTTP_X_ZM_SIGNATURE', '')
+        )
+        timestamp_header = (
+            request.headers.get('x-zm-request-timestamp')
+            or request.META.get('HTTP_X_ZM_REQUEST_TIMESTAMP', '')
+        )
+
+        is_valid = ZoomRecordingService.verify_webhook_signature(
+            raw_body_bytes=raw_body,
+            signature_header=signature_header,
+            timestamp_header=timestamp_header
+        )
+        if not is_valid:
+            logger.warning("[ZoomWebhook] Signature verification failed or timestamp expired.")
+            return Response({"error": "Invalid signature or expired timestamp"}, status=drf_status.HTTP_401_UNAUTHORIZED)
+
+        # 3. Extract payload details & generate deduplication key
+        payload = body_data.get('payload', {})
+        object_data = payload.get('object', {})
+        meeting_uuid = object_data.get('uuid', '')
+        meeting_id = str(object_data.get('id') or '')
+        event_ts = body_data.get('event_ts', '')
+
+        # Canonical idempotency key
+        event_id = f"zoom:{event}:{meeting_uuid or meeting_id}:{event_ts}"
+
+        # Find matching LiveClass if present
+        live_class = ZoomRecordingService.find_live_class_for_zoom_meeting(meeting_id, meeting_uuid)
+
+        # 4. Durable persistence inside atomic transaction savepoint
+        is_redelivery = False
+        try:
+            with transaction.atomic():
+                webhook_event = ZoomWebhookEvent.objects.create(
+                    event_id=event_id,
+                    event_type=event or 'unknown',
+                    payload=body_data,
+                    live_class=live_class,
+                    status=ZoomWebhookEvent.Status.RECEIVED
+                )
+        except (IntegrityError, OperationalError):
+            is_redelivery = True
+            webhook_event = None
+            for _ in range(10):
+                try:
+                    webhook_event = ZoomWebhookEvent.objects.filter(event_id=event_id).first()
+                    if webhook_event:
+                        break
+                except OperationalError:
+                    pass
+                import time
+                time.sleep(0.05)
+
+            if not webhook_event:
+                logger.error(f"[ZoomWebhook] Database conflict or table lock; event not found: {event_id}")
+                return Response({"error": "Database concurrency conflict"}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            # If already processed or actively processing, safely ignore duplicate
+            if webhook_event.status in (ZoomWebhookEvent.Status.PROCESSED, ZoomWebhookEvent.Status.PROCESSING):
+                logger.info(f"[ZoomWebhook] Duplicate webhook event already {webhook_event.status}: {event_id}")
+                return Response(
+                    {"status": "duplicate_ignored", "event_id": event_id},
+                    status=drf_status.HTTP_200_OK
+                )
+
+            # If terminal failure, safely ignore duplicate redelivery (do NOT reopen)
+            ev_payload = dict(webhook_event.payload) if isinstance(webhook_event.payload, dict) else {}
+            if webhook_event.status == ZoomWebhookEvent.Status.FAILED and ev_payload.get('_terminal_failure') is True:
+                logger.info(
+                    f"[ZoomWebhook] Redelivery duplicate for terminal failed event: {event_id} "
+                    f"({ev_payload.get('_failure_reason', webhook_event.error_message)}). Skipping dispatch."
+                )
+                return Response(
+                    {
+                        "status": "terminal_failure_ignored",
+                        "event_id": event_id,
+                        "reason": ev_payload.get('_failure_reason', '')
+                    },
+                    status=drf_status.HTTP_200_OK
+                )
+
+            # Recoverable event (status=RECEIVED or FAILED with _retryable): retry task dispatch on redelivery
+            logger.info(f"[ZoomWebhook] Recoverable webhook redelivery for event {event_id} (status={webhook_event.status}). Retrying dispatch.")
+
+        # 5. Handle recording.completed: atomic claim and dispatch Celery task
         if event == 'recording.completed':
-            payload = request.data.get('payload', {})
-            success = ZoomRecordingService.handle_recording_completed_webhook(payload)
-            return Response({"status": "received", "handled": success}, status=drf_status.HTTP_200_OK)
+            from courses.tasks import process_zoom_recording_completed
 
-        # 3. Participant joined / left events
+            # Concurrency-safe event claim:
+            # Only one request/thread may transition the event from RECEIVED (or retryable FAILED on redelivery)
+            # to PROCESSING. The transaction is committed and closed BEFORE the network call (.delay()).
+            claimed = False
+            current_status = ''
+            try:
+                import datetime
+                now_time = timezone.now()
+                initial_lease = (now_time + datetime.timedelta(seconds=900)).isoformat()
+
+                if connection.vendor != 'sqlite':
+                    # Engine supports true row-level locking (PostgreSQL in production/RDS)
+                    with transaction.atomic():
+                        locked_event = ZoomWebhookEvent.objects.select_for_update().filter(id=webhook_event.id).first()
+                        if not locked_event:
+                            return Response({"error": "Event not found"}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+                        payload_meta = dict(locked_event.payload) if isinstance(locked_event.payload, dict) else {}
+
+                        # Guard: Never reopen terminal failures on redelivery
+                        if locked_event.status == ZoomWebhookEvent.Status.FAILED and payload_meta.get('_terminal_failure') is True:
+                            logger.info(
+                                f"[ZoomWebhook] Locked event #{locked_event.id} ({event_id}) is marked terminal failure "
+                                f"({payload_meta.get('_failure_reason', locked_event.error_message)}). Skipping dispatch."
+                            )
+                            return Response(
+                                {
+                                    "status": "terminal_failure_ignored",
+                                    "event_id": event_id,
+                                    "reason": payload_meta.get('_failure_reason', '')
+                                },
+                                status=drf_status.HTTP_200_OK
+                            )
+
+                        can_claim = (
+                            locked_event.status == ZoomWebhookEvent.Status.RECEIVED
+                            or (
+                                is_redelivery
+                                and locked_event.status == ZoomWebhookEvent.Status.FAILED
+                                and payload_meta.get('_terminal_failure') is not True
+                                and payload_meta.get('_retryable') is True
+                            )
+                        )
+
+                        if can_claim:
+                            payload_meta['_dispatched_at'] = now_time.isoformat()
+                            payload_meta['_last_heartbeat_at'] = now_time.isoformat()
+                            payload_meta['_worker_lease_expires_at'] = initial_lease
+                            payload_meta['_heartbeat_stage'] = 'dispatched_to_broker'
+                            locked_event.payload = payload_meta
+                            locked_event.status = ZoomWebhookEvent.Status.PROCESSING
+                            locked_event.error_message = ''
+                            locked_event.save(update_fields=['status', 'error_message', 'payload'])
+                            claimed = True
+                        else:
+                            claimed = False
+                            current_status = locked_event.status
+                else:
+                    # SQLite (local dev/tests) lacks row locks; single-statement atomic UPDATE
+                    # guarantees safe concurrency without table-level upgrade deadlocks.
+                    refreshed = ZoomWebhookEvent.objects.filter(id=webhook_event.id).first()
+                    payload_meta = dict(refreshed.payload) if (refreshed and isinstance(refreshed.payload, dict)) else {}
+
+                    # Guard: Never reopen terminal failures on redelivery
+                    if refreshed and refreshed.status == ZoomWebhookEvent.Status.FAILED and payload_meta.get('_terminal_failure') is True:
+                        logger.info(
+                            f"[ZoomWebhook] Refreshed event #{refreshed.id} ({event_id}) is marked terminal failure "
+                            f"({payload_meta.get('_failure_reason', refreshed.error_message)}). Skipping dispatch."
+                        )
+                        return Response(
+                            {
+                                "status": "terminal_failure_ignored",
+                                "event_id": event_id,
+                                "reason": payload_meta.get('_failure_reason', '')
+                            },
+                            status=drf_status.HTTP_200_OK
+                        )
+
+                    payload_meta['_dispatched_at'] = now_time.isoformat()
+                    payload_meta['_last_heartbeat_at'] = now_time.isoformat()
+                    payload_meta['_worker_lease_expires_at'] = initial_lease
+                    payload_meta['_heartbeat_stage'] = 'dispatched_to_broker'
+
+                    allowed_statuses = [ZoomWebhookEvent.Status.RECEIVED]
+                    if is_redelivery and payload_meta.get('_terminal_failure') is not True and payload_meta.get('_retryable') is True:
+                        allowed_statuses.append(ZoomWebhookEvent.Status.FAILED)
+                    rows_updated = ZoomWebhookEvent.objects.filter(
+                        id=webhook_event.id,
+                        status__in=allowed_statuses
+                    ).update(status=ZoomWebhookEvent.Status.PROCESSING, error_message='', payload=payload_meta)
+                    claimed = (rows_updated > 0)
+                    if not claimed:
+                        refreshed = ZoomWebhookEvent.objects.filter(id=webhook_event.id).first()
+                        current_status = refreshed.status if refreshed else ''
+            except OperationalError as op_err:
+                logger.warning(f"[ZoomWebhook] DB lock contention on {event_id}: {op_err}. Another thread claimed event.")
+                claimed = False
+                current_status = 'claimed_by_concurrent_worker'
+
+            if not claimed:
+                logger.info(
+                    f"[ZoomWebhook] Concurrent/duplicate webhook delivery for event {event_id} "
+                    f"already claimed with status={current_status}. Skipping dispatch."
+                )
+                return Response(
+                    {"status": "duplicate_ignored", "event_id": event_id},
+                    status=drf_status.HTTP_200_OK
+                )
+
+            # Network dispatch occurs OUTSIDE the database transaction
+            try:
+                process_zoom_recording_completed.delay(webhook_event.id)
+            except Exception as dispatch_err:
+                logger.error(
+                    f"[ZoomWebhook] Celery task dispatch failed for event {event_id}: {dispatch_err}",
+                    exc_info=True
+                )
+                # Revert status back to RECEIVED so Zoom can retry delivery
+                try:
+                    with transaction.atomic():
+                        revert_event = ZoomWebhookEvent.objects.select_for_update().filter(id=webhook_event.id).first()
+                        if revert_event and revert_event.status == ZoomWebhookEvent.Status.PROCESSING:
+                            revert_payload = dict(revert_event.payload) if isinstance(revert_event.payload, dict) else {}
+                            revert_payload['_worker_lease_expires_at'] = None
+                            revert_payload['_heartbeat_stage'] = 'dispatch_failed'
+                            revert_event.payload = revert_payload
+                            revert_event.status = ZoomWebhookEvent.Status.RECEIVED
+                            revert_event.error_message = f"Task dispatch failed: {str(dispatch_err)}"
+                            revert_event.save(update_fields=['status', 'error_message', 'payload'])
+                except Exception as revert_err:
+                    logger.error(f"[ZoomWebhook] Failed to revert event {event_id} status: {revert_err}")
+
+                return Response(
+                    {"error": "Task queue temporarily unavailable. Please retry.", "event_id": event_id},
+                    status=drf_status.HTTP_503_SERVICE_UNAVAILABLE
+                )
+
+            return Response(
+                {"status": "queued", "event_id": event_id, "is_redelivery": is_redelivery},
+                status=drf_status.HTTP_200_OK
+            )
+
+        # 6. Participant joined / left events
         if event in ('meeting.participant_joined', 'meeting.participant_left'):
-            payload = request.data.get('payload', {})
             success = ZoomRecordingService.handle_participant_webhook(payload, event)
-            return Response({"status": "received", "handled": success}, status=drf_status.HTTP_200_OK)
+            webhook_event.status = ZoomWebhookEvent.Status.PROCESSED if success else ZoomWebhookEvent.Status.FAILED
+            webhook_event.processed_at = timezone.now()
+            webhook_event.save(update_fields=['status', 'processed_at'])
+            return Response(
+                {"status": "received", "handled": success, "event_id": event_id},
+                status=drf_status.HTTP_200_OK
+            )
 
-        return Response({"status": "ignored"}, status=drf_status.HTTP_200_OK)
+        # 7. Unhandled/ignored events
+        webhook_event.status = ZoomWebhookEvent.Status.IGNORED
+        webhook_event.save(update_fields=['status'])
+        return Response({"status": "ignored", "event_id": event_id}, status=drf_status.HTTP_200_OK)
 
 
 class VideoProtectionSettingView(APIView):

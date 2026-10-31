@@ -632,6 +632,13 @@ if CELERY_BROKER_URL.startswith('rediss://'):
 if CELERY_RESULT_BACKEND.startswith('rediss://'):
     CELERY_REDIS_BACKEND_USE_SSL = {'ssl_cert_reqs': ssl.CERT_REQUIRED}
 
+# Visibility timeout for Redis broker: 25,200 seconds (7 hours).
+# Must safely exceed the 21,600-second (6-hour) task hard time limit for Zoom-to-S3 transfers
+# to prevent Redis from redelivering unacknowledged long-running tasks while they are executing.
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'visibility_timeout': 25200,
+}
+
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
@@ -642,14 +649,16 @@ from celery.schedules import crontab
 # Staging safety guard: disable scheduled automated billing by default so staging
 # never executes recurring invoice generation or overdue status modifications on
 # imported or test users, unless explicitly enabled for testing via ENABLE_STAGING_BILLING_AUTOMATION.
-if IS_STAGING and not (os.environ.get('ENABLE_STAGING_BILLING_AUTOMATION', 'False').lower() in ('true', '1', 'yes')):
-    CELERY_BEAT_SCHEDULE = {}
-else:
-    CELERY_BEAT_SCHEDULE = {
-        'billing-daily-automation': {
-            'task': 'billing.tasks.billing_daily_automation',
-            'schedule': crontab(hour=1, minute=0),  # Runs daily at 01:00 AM IST
-        },
+CELERY_BEAT_SCHEDULE = {
+    'recover-stale-zoom-recordings': {
+        'task': 'courses.tasks.recover_stale_zoom_recordings',
+        'schedule': crontab(minute='*/30'),  # Run every 30 minutes
+    },
+}
+if not (IS_STAGING and not (os.environ.get('ENABLE_STAGING_BILLING_AUTOMATION', 'False').lower() in ('true', '1', 'yes'))):
+    CELERY_BEAT_SCHEDULE['billing-daily-automation'] = {
+        'task': 'billing.tasks.billing_daily_automation',
+        'schedule': crontab(hour=1, minute=0),  # Runs daily at 01:00 AM IST
     }
 
 # Email Backend Configuration
@@ -971,4 +980,4 @@ ACADEMY_BILLING_METADATA = {
     "EMAIL": os.environ.get("ACADEMY_BILLING_EMAIL", os.environ.get("DEFAULT_FROM_EMAIL", "support@natyaarts.com")),
     "PHONE": os.environ.get("ACADEMY_BILLING_PHONE", ""),
     "WEBSITE": os.environ.get("ACADEMY_WEBSITE", "https://academy.natyaarts.com"),
-}
+}

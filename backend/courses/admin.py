@@ -1,7 +1,7 @@
 from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 from django.forms import BaseInlineFormSet
-from .models import Course, Module, VideoLesson, TranslatedAudio, LiveClass, LiveBatch, LiveBatchStudent, LiveClassReport, CourseInstructor, RecurrenceRule, TeacherAvailability, Attendance, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswer, VideoProtectionSetting
+from .models import Course, Module, VideoLesson, TranslatedAudio, LiveClass, LiveBatch, LiveBatchStudent, LiveClassReport, CourseInstructor, RecurrenceRule, TeacherAvailability, Attendance, Assessment, Question, QuestionOption, AssessmentAttempt, AssessmentAnswer, VideoProtectionSetting, LiveClassRecording, LiveClassRecordingFile, ZoomWebhookEvent
 
 class VideoLessonInline(admin.TabularInline):
     model = VideoLesson
@@ -97,6 +97,20 @@ class LessonProgressAdmin(admin.ModelAdmin):
     search_fields = ('user__username', 'user__first_name', 'user__last_name', 'lesson__title')
 
 
+class LiveClassRecordingFileInline(admin.TabularInline):
+    model = LiveClassRecordingFile
+    extra = 0
+    readonly_fields = ('zoom_file_id', 'file_type', 'recording_type', 'file_size_bytes', 's3_bucket', 's3_key', 'is_verified', 'verification_method', 'verified_at', 'status')
+    can_delete = False
+
+
+class LiveClassRecordingInline(admin.TabularInline):
+    model = LiveClassRecording
+    extra = 0
+    readonly_fields = ('zoom_uuid', 'zoom_meeting_id', 'session_index', 'status', 'total_size_bytes', 'file_count', 'created_at', 'completed_at')
+    can_delete = False
+
+
 @admin.register(LiveClass)
 class LiveClassAdmin(admin.ModelAdmin):
     list_display = (
@@ -106,16 +120,21 @@ class LiveClassAdmin(admin.ModelAdmin):
         'scheduled_start',
         'duration_minutes',
         'status',
-        'meeting_provider'
+        'recording_status',
+        'meeting_provider',
+        'recording_uploaded_at',
     )
-    list_filter = ('status', 'meeting_provider', 'course')
+    list_filter = ('status', 'recording_status', 'meeting_provider', 'course')
     search_fields = (
         'title',
         'description',
+        'zoom_meeting_id',
+        'zoom_uuid',
         'course__title',
         'instructor__username',
-        'instructor__email'
+        'instructor__email',
     )
+    inlines = [LiveClassRecordingInline, LiveClassRecordingFileInline]
 
 
 @admin.register(LiveBatch)
@@ -414,4 +433,94 @@ class VideoProtectionSettingAdmin(admin.ModelAdmin):
     def save_model(self, request, obj, form, change):
         obj.updated_by = request.user
         super().save_model(request, obj, form, change)
+
+
+@admin.register(LiveClassRecording)
+class LiveClassRecordingAdmin(admin.ModelAdmin):
+    list_display = (
+        'live_class',
+        'session_index',
+        'status',
+        'zoom_uuid',
+        'zoom_meeting_id',
+        'file_count',
+        'total_size_bytes',
+        'created_at',
+        'completed_at',
+    )
+    list_filter = ('status', 'created_at')
+    search_fields = (
+        'live_class__title',
+        'zoom_uuid',
+        'zoom_meeting_id',
+    )
+    readonly_fields = (
+        'live_class',
+        'zoom_uuid',
+        'zoom_meeting_id',
+        'session_index',
+        'created_at',
+        'updated_at',
+    )
+    inlines = [LiveClassRecordingFileInline]
+
+
+@admin.register(LiveClassRecordingFile)
+class LiveClassRecordingFileAdmin(admin.ModelAdmin):
+    list_display = (
+        'live_class',
+        'recording',
+        'file_type',
+        'recording_type',
+        'is_verified',
+        'file_size_bytes',
+        's3_bucket',
+        's3_key',
+        'status',
+        'created_at',
+    )
+    list_filter = ('status', 'is_verified', 'file_type')
+    search_fields = (
+        'live_class__title',
+        'zoom_file_id',
+        's3_key',
+    )
+    readonly_fields = (
+        'live_class',
+        'recording',
+        'zoom_file_id',
+        'file_type',
+        'recording_type',
+        'file_size_bytes',
+        's3_bucket',
+        's3_key',
+        'is_verified',
+        'verification_method',
+        'verified_at',
+        'created_at',
+        'updated_at',
+    )
+
+
+@admin.register(ZoomWebhookEvent)
+class ZoomWebhookEventAdmin(admin.ModelAdmin):
+    list_display = (
+        'event_type',
+        'event_id',
+        'status',
+        'live_class',
+        'received_at',
+        'processed_at',
+    )
+    list_filter = ('status', 'event_type')
+    search_fields = (
+        'event_id',
+        'live_class__title',
+    )
+    readonly_fields = (
+        'event_id',
+        'event_type',
+        'payload',
+        'received_at',
+    )
 

@@ -5,6 +5,7 @@ from django.db import models
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator, MinValueValidator, MaxValueValidator
+from django.utils import timezone
 from users.models import User
 
 from .validators import ALLOWED_SUBMISSION_FILE_EXTENSIONS, validate_submission_file_size
@@ -298,6 +299,13 @@ class LiveClass(models.Model):
         COMPLETED = "COMPLETED", "Completed"
         CANCELLED = "CANCELLED", "Cancelled"
 
+    class RecordingStatus(models.TextChoices):
+        NONE = "NONE", "No Recording"
+        PENDING = "PENDING", "Pending / Processing in Zoom"
+        TRANSFERRING = "TRANSFERRING", "Transferring to S3"
+        COMPLETED = "COMPLETED", "Completed & Verified"
+        FAILED = "FAILED", "Failed"
+
     course = models.ForeignKey(
         Course,
         on_delete=models.CASCADE,
@@ -340,6 +348,27 @@ class LiveClass(models.Model):
     cancellation_reason = models.TextField(blank=True)
     recording_url = models.URLField(max_length=1000, blank=True)
     recording_uploaded_at = models.DateTimeField(null=True, blank=True)
+    zoom_meeting_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        db_index=True,
+        help_text="Zoom numeric meeting ID for direct indexed lookup."
+    )
+    zoom_uuid = models.CharField(
+        max_length=128,
+        blank=True,
+        default='',
+        db_index=True,
+        help_text="Latest Zoom meeting instance UUID."
+    )
+    recording_status = models.CharField(
+        max_length=20,
+        choices=RecordingStatus.choices,
+        default=RecordingStatus.NONE,
+        db_index=True,
+        help_text="Current state of Zoom-to-S3 recording transfer."
+    )
     recurrence_rule = models.ForeignKey(
         RecurrenceRule, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='occurrences',
@@ -1277,3 +1306,200 @@ class LiveClassReport(models.Model):
         return f"Report for {self.live_class.title} (Shared: {self.is_visible_to_students})"
 
 
+
+
+class LiveClassRecording(models.Model):
+    """
+    Represents a specific Zoom Cloud recording session for a LiveClass.
+    Supports multiple recording sessions if a meeting is restarted, split, or re-conducted.
+    """
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        PROCESSING = "PROCESSING", "Processing in Zoom"
+        TRANSFERRING = "TRANSFERRING", "Transferring to S3"
+        COMPLETED = "COMPLETED", "Completed & Verified"
+        PARTIAL = "PARTIAL", "Partially Transferred"
+        FAILED = "FAILED", "Failed"
+
+    live_class = models.ForeignKey(
+        LiveClass,
+        on_delete=models.CASCADE,
+        related_name="recording_sessions",
+        db_index=True
+    )
+    zoom_uuid = models.CharField(
+        max_length=128,
+        db_index=True,
+        help_text="Zoom meeting instance UUID for this recording session."
+    )
+    zoom_meeting_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        db_index=True,
+        help_text="Zoom numeric meeting ID."
+    )
+    session_index = models.PositiveIntegerField(
+        default=1,
+        help_text="Sequential index of recording session for this class (1, 2, ...)."
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True
+    )
+    start_time = models.DateTimeField(null=True, blank=True, help_text="Session recording start time from Zoom.")
+    end_time = models.DateTimeField(null=True, blank=True, help_text="Session recording end time from Zoom.")
+    duration_seconds = models.PositiveIntegerField(default=0)
+    total_size_bytes = models.BigIntegerField(default=0)
+    file_count = models.PositiveIntegerField(default=0)
+    error_message = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["live_class", "session_index", "created_at"]
+        unique_together = [("live_class", "zoom_uuid")]
+        verbose_name = "Live Class Recording Session"
+        verbose_name_plural = "Live Class Recording Sessions"
+
+    def __str__(self):
+        return f"{self.live_class.title} - Session {self.session_index} ({self.status})"
+
+
+class LiveClassRecordingFile(models.Model):
+    """
+    Represents an individual recording file produced by Zoom (MP4 video, M4A audio,
+    VTT transcript, chat TXT) and transferred to AWS S3.
+    """
+    class FileType(models.TextChoices):
+        MP4 = "MP4", "MP4 Video"
+        M4A = "M4A", "M4A Audio"
+        TXT = "TXT", "Chat Log (TXT)"
+        VTT = "VTT", "Transcript (VTT)"
+        JSON = "JSON", "Metadata (JSON)"
+        OTHER = "OTHER", "Other"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        TRANSFERRING = "TRANSFERRING", "Transferring"
+        VERIFIED = "VERIFIED", "Verified in S3"
+        FAILED = "FAILED", "Failed"
+
+    recording = models.ForeignKey(
+        LiveClassRecording,
+        on_delete=models.CASCADE,
+        related_name="files",
+        db_index=True
+    )
+    live_class = models.ForeignKey(
+        LiveClass,
+        on_delete=models.CASCADE,
+        related_name="recording_files",
+        db_index=True
+    )
+    zoom_file_id = models.CharField(
+        max_length=128,
+        unique=True,
+        db_index=True,
+        help_text="Zoom's globally unique recording file GUID."
+    )
+    file_type = models.CharField(
+        max_length=10,
+        choices=FileType.choices,
+        default=FileType.MP4,
+        db_index=True
+    )
+    recording_type = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        help_text="Zoom recording type e.g. shared_screen_with_speaker_view, audio_only, timeline."
+    )
+    file_extension = models.CharField(max_length=10, blank=True, default='')
+    file_size_bytes = models.BigIntegerField(default=0, help_text="File size in bytes reported by Zoom.")
+    s3_bucket = models.CharField(max_length=255, blank=True, default='')
+    s3_key = models.CharField(max_length=1024, blank=True, default='', db_index=True)
+    is_verified = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="True if S3 head_object confirms presence and matching ContentLength."
+    )
+    verification_method = models.CharField(max_length=50, default='HEAD_OBJECT_SIZE')
+    verified_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True
+    )
+    error_message = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["live_class", "recording", "file_type", "created_at"]
+        verbose_name = "Live Class Recording File"
+        verbose_name_plural = "Live Class Recording Files"
+
+    def __str__(self):
+        return f"{self.live_class.title} - {self.file_type} ({self.zoom_file_id[:8]}) [{self.status}]"
+
+    def get_presigned_url(self, expires_in=3600):
+        if not self.s3_bucket or not self.s3_key or not self.is_verified:
+            return None
+        import boto3
+        s3 = boto3.client('s3')
+        return s3.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': self.s3_bucket, 'Key': self.s3_key},
+            ExpiresIn=expires_in
+        )
+
+
+class ZoomWebhookEvent(models.Model):
+    """
+    Tracks inbound Zoom webhook deliveries for idempotency, replay protection,
+    and auditability. Follows the established orders.WebhookEvent architectural pattern.
+    """
+    class Status(models.TextChoices):
+        RECEIVED = "RECEIVED", "Received"
+        PROCESSING = "PROCESSING", "Processing"
+        PROCESSED = "PROCESSED", "Processed"
+        FAILED = "FAILED", "Failed"
+        IGNORED = "IGNORED", "Ignored"
+
+    event_id = models.CharField(
+        max_length=255,
+        unique=True,
+        db_index=True,
+        help_text="Unique event deduplication key (e.g. zoom:recording.completed:uuid:event_ts)"
+    )
+    event_type = models.CharField(max_length=100, db_index=True)
+    payload = models.JSONField(help_text="Full raw JSON payload from Zoom")
+    live_class = models.ForeignKey(
+        LiveClass,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="zoom_webhook_events"
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.RECEIVED,
+        db_index=True
+    )
+    error_message = models.TextField(blank=True, default='')
+    received_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-received_at"]
+        verbose_name = "Zoom Webhook Event"
+        verbose_name_plural = "Zoom Webhook Events"
+
+    def __str__(self):
+        return f"{self.event_type} ({self.event_id}) - {self.status}"
