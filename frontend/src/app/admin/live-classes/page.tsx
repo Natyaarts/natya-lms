@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { 
   Video, 
+  ChevronDown,
+  ChevronUp,
+  AlertCircle,
   Plus, 
   X, 
   Repeat, 
@@ -668,6 +671,142 @@ export default function LiveClassesPage() {
   const [attendanceRoster, setAttendanceRoster] = useState<any[]>([]);
   const [attendanceRecords, setAttendanceRecords] = useState<Record<number, string>>({});
   const [attendanceDurations, setAttendanceDurations] = useState<Record<number, number>>({});
+  const [attendanceLiveData, setAttendanceLiveData] = useState<any>(null);
+  const [liveAttendanceLoading, setLiveAttendanceLoading] = useState(false);
+  const [liveAttendanceError, setLiveAttendanceError] = useState<string | null>(null);
+  const [expandedSessions, setExpandedSessions] = useState<Record<number, boolean>>({});
+  const [selectedStudentForLink, setSelectedStudentForLink] = useState<Record<number, number>>({});
+  const [linkingParticipantId, setLinkingParticipantId] = useState<number | null>(null);
+  const [isReconciling, setIsReconciling] = useState(false);
+  const [manualDurationEdits, setManualDurationEdits] = useState<Record<number, number>>({});
+  const [editingDurationForStudent, setEditingDurationForStudent] = useState<number | null>(null);
+  const [isSavingAttendance, setIsSavingAttendance] = useState(false);
+  const isPollingRef = useRef(false);
+
+  const fetchLiveAttendance = async (classId: number) => {
+    if (isPollingRef.current) return;
+    isPollingRef.current = true;
+    try {
+      const res = await authedFetch(`/api/courses/live-classes/${classId}/attendance/live/`);
+      if (res.ok) {
+        const data = await res.json();
+        setAttendanceLiveData(data);
+        setLiveAttendanceError(null);
+
+        // Synchronize default statuses for newly discovered students without destroying manual selections
+        setAttendanceRecords((prev) => {
+          const next = { ...prev };
+          for (const s of data.students || []) {
+            if (!next[s.student_id]) {
+              next[s.student_id] = s.status;
+            }
+          }
+          return next;
+        });
+
+        // Update live Zoom duration without destroying intentional admin manual duration edits
+        setAttendanceDurations((prev) => {
+          const next = { ...prev };
+          for (const s of data.students || []) {
+            // If the admin has not explicitly edited this student's duration, keep live Zoom duration fresh
+            setManualDurationEdits((mPrev) => {
+              if (mPrev[s.student_id] === undefined) {
+                next[s.student_id] = s.total_duration_minutes;
+              }
+              return mPrev;
+            });
+          }
+          return next;
+        });
+      } else {
+        setLiveAttendanceError("Could not refresh live attendance data.");
+      }
+    } catch {
+      setLiveAttendanceError("Network error polling live attendance.");
+    } finally {
+      isPollingRef.current = false;
+      setLiveAttendanceLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!attendanceTarget) {
+      setAttendanceLiveData(null);
+      setLiveAttendanceError(null);
+      setExpandedSessions({});
+      setSelectedStudentForLink({});
+      setManualDurationEdits({});
+      setEditingDurationForStudent(null);
+      return;
+    }
+
+    setManualDurationEdits({});
+    setEditingDurationForStudent(null);
+    setLiveAttendanceLoading(true);
+    fetchLiveAttendance(attendanceTarget.id);
+
+    const isLiveClass = attendanceTarget.status === "LIVE" || attendanceTarget.status === "SCHEDULED";
+    let intervalId: any = null;
+    if (isLiveClass) {
+      intervalId = setInterval(() => {
+        fetchLiveAttendance(attendanceTarget.id);
+      }, 5000);
+    }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [attendanceTarget]);
+
+  const handleLinkUnmatched = async (unmatchedId: number) => {
+    const studentId = selectedStudentForLink[unmatchedId];
+    if (!studentId || !attendanceTarget) return;
+    setLinkingParticipantId(unmatchedId);
+    try {
+      const res = await authedFetch(`/api/courses/live-classes/${attendanceTarget.id}/attendance/link-unmatched/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ unmatched_id: unmatchedId, student_id: studentId }),
+      });
+      if (res.ok) {
+        setBanner("✓ Participant successfully linked!");
+        await fetchLiveAttendance(attendanceTarget.id);
+      } else {
+        const errData = await res.json();
+        setBanner(errData.error || "Failed to link participant.");
+      }
+    } catch {
+      setBanner("Network error while linking participant.");
+    } finally {
+      setLinkingParticipantId(null);
+    }
+  };
+
+  const handleReconcileZoomReport = async () => {
+    if (!attendanceTarget) return;
+    setIsReconciling(true);
+    try {
+      const res = await authedFetch(`/api/courses/live-classes/${attendanceTarget.id}/attendance/reconcile/`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (res.ok) {
+        if (data.status === "not_ready") {
+          setBanner("ℹ Zoom report not ready yet. Please wait a few minutes after the meeting ends.");
+        } else {
+          setBanner(`✓ Zoom report reconciled (${data.reconciled || 0} matched, ${data.unmatched || 0} unmatched).`);
+          await fetchLiveAttendance(attendanceTarget.id);
+        }
+      } else {
+        setBanner(data.error || "Failed to reconcile Zoom report.");
+      }
+    } catch {
+      setBanner("Network error while reconciling Zoom report.");
+    } finally {
+      setIsReconciling(false);
+    }
+  };
+
   const openAttendance = async (lc: any) => {
     setAttendanceTarget(lc);
     setAttendanceRecords({});
@@ -710,21 +849,36 @@ export default function LiveClassesPage() {
   };
   const submitAttendance = async () => {
     if (!attendanceTarget) return;
-    const records = attendanceRoster.map((s) => ({
-      student: s.student,
-      status: attendanceRecords[s.student] || "ABSENT",
-      duration_minutes: Number(attendanceDurations[s.student] || 0),
-    }));
-    const res = await authedFetch(`/api/courses/live-classes/${attendanceTarget.id}/attendance/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(records),
-    });
-    if (res.ok) {
-      setBanner("✓ Attendance updated successfully!");
-      fetchClasses();
+    setIsSavingAttendance(true);
+    try {
+      const records = attendanceRoster.map((s) => {
+        const isManual = manualDurationEdits[s.student] !== undefined;
+        const dur = isManual ? manualDurationEdits[s.student] : (attendanceDurations[s.student] || 0);
+        return {
+          student: s.student,
+          status: attendanceRecords[s.student] || "ABSENT",
+          duration_minutes: Number(dur),
+          is_duration_manual: isManual,
+        };
+      });
+      const res = await authedFetch(`/api/courses/live-classes/${attendanceTarget.id}/attendance/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(records),
+      });
+      if (res.ok) {
+        setBanner("✓ Attendance updated successfully!");
+        fetchClasses();
+        setAttendanceTarget(null);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setBanner(errData.detail || "Failed to update attendance.");
+      }
+    } catch {
+      setBanner("Network error while saving attendance.");
+    } finally {
+      setIsSavingAttendance(false);
     }
-    setAttendanceTarget(null);
   };
 
   const [recordingTarget, setRecordingTarget] = useState<any>(null);
@@ -1677,145 +1831,355 @@ export default function LiveClassesPage() {
         {attendanceTarget && (
           <Modal title={`Attendance -- ${attendanceTarget.title}`} onClose={() => setAttendanceTarget(null)} wide>
             <div className="space-y-4">
-              {attendanceRoster.length > 0 && (
-                <div className="flex items-center justify-between pb-3 border-b border-white/5 flex-wrap gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-zinc-400">
-                      {attendanceRoster.length} Student{attendanceRoster.length !== 1 ? "s" : ""}
+              {/* Header metrics & Live indicator */}
+              <div className="flex items-center justify-between pb-3 border-b border-white/5 flex-wrap gap-2">
+                <div className="flex items-center gap-3 flex-wrap">
+                  {(attendanceTarget.status === "LIVE" || (attendanceLiveData?.currently_connected_count ?? 0) > 0) && (
+                    <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold animate-pulse">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                      LIVE NOW
                     </span>
-                    <span className="text-zinc-600">·</span>
-                    <span className="text-xs text-zinc-400 flex items-center gap-1">
-                      <Clock className="w-3 h-3 text-yellow-400" />
-                      Class Duration: {attendanceTarget.duration_minutes || 60} min
+                  )}
+                  <span className="text-xs text-zinc-300 font-medium">
+                    <span className="text-emerald-400 font-bold font-mono">{attendanceLiveData?.currently_connected_count ?? 0}</span> Connected
+                  </span>
+                  <span className="text-zinc-600">·</span>
+                  <span className="text-xs text-zinc-400">
+                    {attendanceRoster.length} Enrolled
+                  </span>
+                  <span className="text-zinc-600">·</span>
+                  <span className="text-xs text-zinc-400 flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-yellow-400" />
+                    Scheduled: {attendanceTarget.duration_minutes || 60} min
+                  </span>
+                  {liveAttendanceLoading && (
+                    <Loader2 className="w-3.5 h-3.5 text-zinc-500 animate-spin" />
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const all: Record<number, string> = {};
+                      for (const s of attendanceRoster) {
+                        all[s.student] = "PRESENT";
+                      }
+                      setAttendanceRecords(all);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 text-[10px] font-bold transition-colors"
+                  >
+                    Mark All Present
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const all: Record<number, string> = {};
+                      for (const s of attendanceRoster) {
+                        all[s.student] = "ABSENT";
+                      }
+                      setAttendanceRecords(all);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold transition-colors"
+                  >
+                    Mark All Absent
+                  </button>
+                  {attendanceTarget?.meeting_provider === "ZOOM" && (
+                    <button
+                      type="button"
+                      disabled={isReconciling}
+                      onClick={handleReconcileZoomReport}
+                      className="px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 text-[10px] font-bold transition-colors flex items-center gap-1.5"
+                    >
+                      {isReconciling ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-3 h-3" />
+                      )}
+                      Sync Zoom Report
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {liveAttendanceError && (
+                <div className="px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-300 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-yellow-400 flex-shrink-0" />
+                  <span>{liveAttendanceError}</span>
+                </div>
+              )}
+
+              {/* Unmatched Zoom Participants Section */}
+              {attendanceLiveData?.unmatched_participants && attendanceLiveData.unmatched_participants.length > 0 && (
+                <div className="p-3.5 rounded-xl bg-amber-500/5 border border-amber-500/20 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 text-amber-400" />
+                      <span className="text-xs font-bold text-amber-300">
+                        Unmatched Zoom Attendees ({attendanceLiveData.unmatched_participants.length})
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-zinc-400">
+                      Identify and link to enrolled student
                     </span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const all: Record<number, string> = {};
-                        const allDur: Record<number, number> = {};
-                        const defDur = attendanceTarget.duration_minutes || 60;
-                        for (const s of attendanceRoster) {
-                          all[s.student] = "PRESENT";
-                          allDur[s.student] = defDur;
-                        }
-                        setAttendanceRecords(all);
-                        setAttendanceDurations(allDur);
-                      }}
-                      className="px-2.5 py-1 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 hover:bg-green-500/20 text-[10px] font-bold transition-colors"
-                    >
-                      Mark All Present
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const all: Record<number, string> = {};
-                        const allDur: Record<number, number> = {};
-                        for (const s of attendanceRoster) {
-                          all[s.student] = "ABSENT";
-                          allDur[s.student] = 0;
-                        }
-                        setAttendanceRecords(all);
-                        setAttendanceDurations(allDur);
-                      }}
-                      className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold transition-colors"
-                    >
-                      Mark All Absent
-                    </button>
+
+                  <div className="space-y-2">
+                    {attendanceLiveData.unmatched_participants.map((u: any) => (
+                      <div
+                        key={u.id}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-black/60 border border-amber-500/20 rounded-lg p-2.5 text-xs"
+                      >
+                        <div className="space-y-0.5">
+                          <span className="font-semibold text-white block">
+                            {u.participant_name || u.zoom_participant_uuid || "Anonymous Attendee"}
+                          </span>
+                          <div className="text-[11px] text-zinc-400 flex items-center gap-2">
+                            <span>Duration: <strong className="text-white">{u.formatted_duration || "0m"}</strong></span>
+                            {u.is_active && (
+                              <span className="text-emerald-400 font-medium">· Active now</span>
+                            )}
+                          </div>
+                          {u.suggested_student_id && (
+                            <div className="flex items-center gap-1 text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded px-2 py-0.5 mt-1">
+                              <span>💡 Suggested:</span>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedStudentForLink((prev) => ({ ...prev, [u.id]: u.suggested_student_id }))}
+                                className="underline font-bold hover:text-white"
+                              >
+                                {attendanceRoster.find((s: any) => s.student === u.suggested_student_id)?.student_username || `Student #${u.suggested_student_id}`} ({u.suggested_reason})
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <select
+                            value={selectedStudentForLink[u.id] || ""}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              setSelectedStudentForLink((prev) => ({ ...prev, [u.id]: val }));
+                            }}
+                            className="bg-zinc-900 border border-white/10 text-white text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-amber-400"
+                          >
+                            <option value="">Select Enrolled Student...</option>
+                            {attendanceRoster.map((s: any) => (
+                              <option key={s.student} value={s.student}>
+                                {s.student_username || `Student #${s.student}`}
+                              </option>
+                            ))}
+                          </select>
+
+                          <button
+                            type="button"
+                            disabled={!selectedStudentForLink[u.id] || linkingParticipantId === u.id}
+                            onClick={() => handleLinkUnmatched(u.id)}
+                            className="px-3 py-1.5 rounded-lg bg-amber-500 text-black font-bold text-xs hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+                          >
+                            {linkingParticipantId === u.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              "Link"
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
+
+              {/* Students Roster & Evidence */}
               {attendanceRoster.length === 0 ? (
                 <p className="text-zinc-500 text-sm py-4 text-center">No students assigned to this batch.</p>
               ) : (
-                <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
+                <div className="space-y-2.5 max-h-[60vh] overflow-y-auto pr-1">
                   {attendanceRoster.map((s: any) => {
                     const currentStatus = attendanceRecords[s.student] || "ABSENT";
-                    const isPresent = currentStatus === "PRESENT" || currentStatus === "LATE";
+                    const liveStudent = (attendanceLiveData?.students || []).find(
+                      (ls: any) => ls.student_id === s.student
+                    );
+                    const isConnected = liveStudent?.is_currently_connected;
+                    const formattedDur = liveStudent?.formatted_duration || `${attendanceDurations[s.student] ?? 0}m`;
+                    const hasSessions = liveStudent?.sessions && liveStudent.sessions.length > 0;
+                    const isExpanded = !!expandedSessions[s.student];
+
                     return (
                       <div
                         key={s.id || s.student}
-                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-black border border-white/10 rounded-xl p-3.5 hover:border-white/20 transition-colors"
+                        className="bg-black border border-white/10 rounded-xl p-3.5 hover:border-white/20 transition-colors space-y-2.5"
                       >
-                        <div>
-                          <span className="text-sm font-medium text-white block">{s.student_username}</span>
-                          <span className="text-[11px] text-zinc-500">
-                            {isPresent ? (
-                              <span className="text-emerald-400 font-medium">Attended session</span>
-                            ) : (
-                              <span className="text-zinc-500">Not attended (Absent)</span>
-                            )}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-3 flex-wrap">
-                          {/* Duration input */}
-                          <div className="flex items-center gap-1.5 bg-zinc-900 border border-white/10 rounded-lg px-2.5 py-1" title="Duration student spent in class">
-                            <Clock className="w-3.5 h-3.5 text-zinc-400" />
-                            <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">Duration:</span>
-                            <input
-                              type="number"
-                              min="0"
-                              max="600"
-                              value={attendanceDurations[s.student] ?? 0}
-                              onChange={(e) => {
-                                const val = Math.max(0, parseInt(e.target.value) || 0);
-                                setAttendanceDurations((d) => ({ ...d, [s.student]: val }));
-                                if (val > 0 && currentStatus === "ABSENT") {
-                                  setAttendanceRecords((r) => ({ ...r, [s.student]: "PRESENT" }));
-                                } else if (val === 0 && currentStatus === "PRESENT") {
-                                  setAttendanceRecords((r) => ({ ...r, [s.student]: "ABSENT" }));
-                                }
-                              }}
-                              className="w-12 bg-transparent text-xs text-white text-right focus:outline-none font-mono"
-                            />
-                            <span className="text-[11px] text-zinc-400">min</span>
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium text-white">{s.student_username}</span>
+                              {isConnected ? (
+                                <span className="px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-semibold flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                                  Connected
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-zinc-500">Disconnected</span>
+                              )}
+                              {liveStudent?.reconnect_count > 0 && (
+                                <span className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded font-mono">
+                                  {liveStudent.reconnect_count} reconnect{liveStudent.reconnect_count > 1 ? "s" : ""}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-zinc-400 mt-0.5 flex items-center gap-2 flex-wrap">
+                              <span>Phone: {liveStudent?.phone_number || "N/A"}</span>
+                              {liveStudent?.first_joined_at && (
+                                <span>· First: {new Date(liveStudent.first_joined_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                              )}
+                              {liveStudent?.last_left_at && (
+                                <span>· Left: {new Date(liveStudent.last_left_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                              )}
+                            </div>
                           </div>
 
-                          {/* Status Buttons */}
-                          <div className="flex gap-1">
-                            {["PRESENT", "LATE", "ABSENT", "EXCUSED"].map((st) => (
-                              <button
-                                key={st}
-                                type="button"
-                                onClick={() => {
-                                  setAttendanceRecords((r) => ({ ...r, [s.student]: st }));
-                                  if (st === "PRESENT" || st === "LATE") {
-                                    if (!attendanceDurations[s.student] || attendanceDurations[s.student] === 0) {
-                                      setAttendanceDurations((d) => ({
-                                        ...d,
-                                        [s.student]: attendanceTarget.duration_minutes || 60,
-                                      }));
-                                    }
-                                  } else if (st === "ABSENT") {
-                                    setAttendanceDurations((d) => ({ ...d, [s.student]: 0 }));
-                                  }
-                                }}
-                                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors ${
-                                  attendanceRecords[s.student] === st
-                                    ? st === "PRESENT"
-                                      ? "bg-green-500 text-black shadow-sm"
-                                      : st === "LATE"
-                                      ? "bg-yellow-400 text-black shadow-sm"
-                                      : st === "ABSENT"
-                                      ? "bg-red-500 text-white shadow-sm"
-                                      : "bg-blue-500 text-white shadow-sm"
-                                    : "bg-zinc-950 border border-white/10 text-zinc-400 hover:text-white"
-                                }`}
-                              >
-                                {st}
-                              </button>
-                            ))}
+                          <div className="flex items-center gap-3 flex-wrap">
+                            {/* Duration badge / input */}
+                            <div className="flex items-center gap-1.5 bg-zinc-900 border border-white/10 rounded-lg px-2.5 py-1" title="Actual Zoom duration / manual override">
+                              <Clock className="w-3.5 h-3.5 text-yellow-400" />
+                              <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">Duration:</span>
+                              {editingDurationForStudent === s.student ? (
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    max="360"
+                                    value={manualDurationEdits[s.student] !== undefined ? manualDurationEdits[s.student] : (attendanceDurations[s.student] ?? 0)}
+                                    onChange={(e) => {
+                                      const val = Math.max(0, parseInt(e.target.value) || 0);
+                                      setManualDurationEdits((prev) => ({ ...prev, [s.student]: val }));
+                                    }}
+                                    className="w-14 px-1 py-0.5 bg-black border border-amber-400 text-amber-300 rounded text-xs font-mono text-center focus:outline-none"
+                                  />
+                                  <span className="text-[10px] text-zinc-400">m</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingDurationForStudent(null)}
+                                    className="px-1.5 py-0.5 bg-amber-500 text-black text-[9px] font-bold rounded hover:bg-amber-400"
+                                  >
+                                    Done
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-1">
+                                  <span className="text-xs font-mono font-bold text-white min-w-[32px] text-right">
+                                    {manualDurationEdits[s.student] !== undefined ? `${manualDurationEdits[s.student]}m` : formattedDur}
+                                  </span>
+                                  {(manualDurationEdits[s.student] !== undefined || liveStudent?.is_duration_manual_override) && (
+                                    <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1 py-0.2 rounded font-medium">manual</span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingDurationForStudent(s.student)}
+                                    className="text-[10px] text-zinc-400 hover:text-amber-400 underline ml-0.5"
+                                    title="Edit duration manually"
+                                  >
+                                    Edit
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Status Buttons */}
+                            <div className="flex gap-1">
+                              {["PRESENT", "LATE", "ABSENT", "EXCUSED"].map((st) => (
+                                <button
+                                  key={st}
+                                  type="button"
+                                  onClick={() => {
+                                    setAttendanceRecords((r) => ({ ...r, [s.student]: st }));
+                                  }}
+                                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors ${
+                                    currentStatus === st
+                                      ? st === "PRESENT"
+                                        ? "bg-green-500 text-black shadow-sm"
+                                        : st === "LATE"
+                                        ? "bg-yellow-400 text-black shadow-sm"
+                                        : st === "ABSENT"
+                                        ? "bg-red-500 text-white shadow-sm"
+                                        : "bg-blue-500 text-white shadow-sm"
+                                      : "bg-zinc-950 border border-white/10 text-zinc-400 hover:text-white"
+                                  }`}
+                                >
+                                  {st}
+                                </button>
+                              ))}
+                            </div>
                           </div>
                         </div>
+
+                        {/* Expandable Session Breakdown */}
+                        {hasSessions && (
+                          <div className="border-t border-white/5 pt-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setExpandedSessions((prev) => ({
+                                  ...prev,
+                                  [s.student]: !prev[s.student],
+                                }));
+                              }}
+                              className="text-[11px] text-zinc-400 hover:text-white flex items-center gap-1 transition-colors"
+                            >
+                              {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                              <span>{liveStudent.sessions.length} Connection Session{liveStudent.sessions.length > 1 ? "s" : ""}</span>
+                            </button>
+
+                            {isExpanded && (
+                              <div className="mt-2 space-y-1.5 pl-2 border-l border-zinc-800">
+                                {liveStudent.sessions.map((sess: any, idx: number) => {
+                                  const sessMin = Math.round(sess.duration_seconds / 60);
+                                  return (
+                                    <div
+                                      key={sess.id || idx}
+                                      className="flex items-center justify-between text-[11px] text-zinc-400 py-0.5"
+                                    >
+                                      <span>
+                                        Session #{idx + 1}:{" "}
+                                        {sess.join_time
+                                          ? new Date(sess.join_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                          : "--"}
+                                        {" - "}
+                                        {sess.is_active
+                                          ? <span className="text-emerald-400 font-semibold">Active now</span>
+                                          : sess.leave_time
+                                          ? new Date(sess.leave_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                          : "--"}
+                                      </span>
+                                      <span className="font-mono text-zinc-300">
+                                        {sessMin}m ({sess.source})
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
                 </div>
               )}
+
               <div className="flex justify-end gap-3 pt-3 border-t border-white/5">
                 <button onClick={() => setAttendanceTarget(null)} className={btnGhost}>Close</button>
-                {attendanceRoster.length > 0 && <button onClick={submitAttendance} className={btnPrimary}>Save Attendance</button>}
+                {attendanceRoster.length > 0 && (
+                  <button
+                    onClick={submitAttendance}
+                    disabled={isSavingAttendance}
+                    className={`${btnPrimary} flex items-center gap-1.5`}
+                  >
+                    {isSavingAttendance && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    {isSavingAttendance ? "Saving..." : "Save Attendance"}
+                  </button>
+                )}
               </div>
             </div>
           </Modal>

@@ -964,6 +964,8 @@ APPLE_IAP_TEST_MODE = False
 ZOOM_ACCOUNT_ID = os.environ.get('ZOOM_ACCOUNT_ID', '').strip()
 ZOOM_CLIENT_ID = os.environ.get('ZOOM_CLIENT_ID', '').strip()
 ZOOM_CLIENT_SECRET = os.environ.get('ZOOM_CLIENT_SECRET', '').strip()
+ZOOM_WEBHOOK_SECRET_TOKEN = os.environ.get('ZOOM_WEBHOOK_SECRET_TOKEN', '').strip()
+ENABLE_ZOOM_ATTENDANCE_V2 = os.environ.get('ENABLE_ZOOM_ATTENDANCE_V2', 'False').strip().lower() in ('true', '1', 'yes')
 
 # ---------------------------------------------------------------------------
 # Academy Billing & Receipt Tax Metadata (Configuration-Driven)

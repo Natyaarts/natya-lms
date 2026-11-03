@@ -1485,6 +1485,15 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 lc.status = LiveClass.ClassStatus.COMPLETED
                 lc.save(update_fields=['status'])
                 self._auto_populate_attendance(lc)
+                if getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False) and lc.meeting_provider == LiveClass.MeetingProvider.ZOOM and (lc.zoom_uuid or lc.zoom_meeting_id):
+                    already_reconciled = lc.attendance_records.filter(reconciliation_status='RECONCILED').exists()
+                    if not already_reconciled:
+                        try:
+                            from courses.tasks import reconcile_zoom_attendance_task
+                            reconcile_zoom_attendance_task.apply_async(args=[lc.id], countdown=900)
+                            logger.info(f"[AutoCompleteClass] Scheduled reconciliation for LiveClass #{lc.id}")
+                        except Exception as task_err:
+                            logger.warning(f"[AutoCompleteClass] Could not schedule reconciliation for LiveClass #{lc.id}: {task_err}")
                 if lc.meeting_provider == LiveClass.MeetingProvider.ZOOM and not lc.recording_url:
                     try:
                         from courses.services.recording import ZoomRecordingService
@@ -2002,17 +2011,292 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             serializer = AttendanceSerializer(data=rec, context={'live_class': live_class})
             serializer.is_valid(raise_exception=True)
             student = serializer.validated_data['student']
-            obj, _ = Attendance.objects.update_or_create(
+            is_duration_manual_raw = rec.get('is_duration_manual')
+            if is_duration_manual_raw is None:
+                is_duration_manual = bool('duration_minutes' in rec and rec['duration_minutes'] is not None)
+            else:
+                is_duration_manual = bool(is_duration_manual_raw)
+
+            new_status = serializer.validated_data.get('status', Attendance.Status.ABSENT)
+            notes = serializer.validated_data.get('notes', '')
+
+            obj, created = Attendance.objects.get_or_create(
                 live_class=live_class, student=student,
                 defaults={
-                    'status': serializer.validated_data.get('status', Attendance.Status.ABSENT),
+                    'status': new_status,
                     'duration_minutes': serializer.validated_data.get('duration_minutes', 0),
                     'marked_by': user,
-                    'notes': serializer.validated_data.get('notes', ''),
+                    'notes': notes,
+                    'is_manual_override': True,
+                    'is_duration_manual_override': is_duration_manual,
                 }
             )
+            if not created:
+                obj.status = new_status
+                obj.is_manual_override = True
+                obj.marked_by = user
+                if notes:
+                    obj.notes = notes
+                if is_duration_manual:
+                    obj.duration_minutes = serializer.validated_data.get('duration_minutes', obj.duration_minutes)
+                    obj.is_duration_manual_override = True
+                obj.save()
             results.append(AttendanceSerializer(obj).data)
         return Response(results, status=drf_status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get'], url_path='attendance/live')
+    def live_attendance(self, request, pk=None):
+        """
+        Real-time attendance view for live class admin panel.
+        Calculates dynamic duration of active sessions based on server clock.
+        Provides multi-session breakdown and unmatched attendees for admin resolution.
+        """
+        live_class = self.get_object()
+        user = request.user
+        is_manager = bool(
+            user.is_superuser
+            or user.is_staff
+            or (live_class.batch and live_class.batch.instructor == user)
+            or live_class.instructor == user
+        )
+        if not is_manager:
+            return Response(
+                {"detail": "Only the instructor or admin can view live attendance."},
+                status=drf_status.HTTP_403_FORBIDDEN
+            )
+
+        self._auto_populate_attendance(live_class)
+        now = timezone.now()
+
+        from courses.models import Attendance, AttendanceSession, UnmatchedZoomParticipant
+
+        qs = (
+            Attendance.objects.filter(live_class=live_class)
+            .select_related('student')
+            .prefetch_related('sessions')
+        )
+
+        total_enrolled = qs.count()
+        currently_connected = 0
+        total_joined = 0
+        students_data = []
+
+        for att in qs:
+            student = att.student
+            sessions_qs = att.sessions.all().order_by('join_time')
+            session_list = []
+            calculated_total_sec = 0
+
+            has_active_session = False
+            for s in sessions_qs:
+                dur = s.calculate_duration(now)
+                calculated_total_sec += dur
+                if s.is_active:
+                    has_active_session = True
+                session_list.append({
+                    "id": s.id,
+                    "session_id": s.session_id,
+                    "join_time": s.join_time.isoformat() if s.join_time else None,
+                    "leave_time": s.leave_time.isoformat() if s.leave_time else None,
+                    "duration_seconds": dur,
+                    "is_active": s.is_active,
+                    "source": s.source
+                })
+
+            if has_active_session or att.is_currently_in_class:
+                currently_connected += 1
+            if att.first_joined_at or att.joined_at or len(session_list) > 0:
+                total_joined += 1
+
+            raw_zoom_min = int(calculated_total_sec // 60)
+            total_min = raw_zoom_min
+            is_dur_manual = getattr(att, 'is_duration_manual_override', False)
+            if is_dur_manual:
+                total_min = att.duration_minutes
+                calculated_total_sec = max(calculated_total_sec, total_min * 60)
+
+            hours = total_min // 60
+            mins = total_min % 60
+            formatted_duration = f"{hours}h {mins}m" if hours > 0 else f"{mins}m"
+
+            phone = getattr(student, 'phone_number', None) or getattr(student, 'phone', None) or student.username
+            student_code = getattr(student, 'student_code', None) or f"NATYA-{student.id:04d}"
+            full_name = f"{student.first_name} {student.last_name}".strip() or student.username
+
+            students_data.append({
+                "student_id": student.id,
+                "student_name": full_name,
+                "student_code": student_code,
+                "phone_number": phone,
+                "status": att.status,
+                "is_currently_connected": has_active_session or att.is_currently_in_class,
+                "first_joined_at": att.first_joined_at.isoformat() if att.first_joined_at else (att.joined_at.isoformat() if att.joined_at else None),
+                "last_left_at": att.last_left_at.isoformat() if att.last_left_at else (att.left_at.isoformat() if att.left_at else None),
+                "total_duration_seconds": calculated_total_sec,
+                "total_duration_minutes": total_min,
+                "zoom_duration_minutes": raw_zoom_min,
+                "formatted_duration": formatted_duration,
+                "reconnect_count": max(0, len(session_list) - 1),
+                "is_manual_override": att.is_manual_override,
+                "is_duration_manual_override": is_dur_manual,
+                "reconciliation_status": att.reconciliation_status,
+                "sessions": session_list
+            })
+
+        unmatched_qs = UnmatchedZoomParticipant.objects.filter(
+            live_class=live_class,
+            status=UnmatchedZoomParticipant.Status.PENDING
+        ).order_by('-created_at')
+
+        unmatched_data = []
+        for u in unmatched_qs:
+            dur = u.duration_seconds
+            if u.is_active and u.join_time:
+                dur = max(dur, int((now - u.join_time).total_seconds()))
+            u_hours = (dur // 60) // 60
+            u_mins = (dur // 60) % 60
+            u_formatted = f"{u_hours}h {u_mins}m" if u_hours > 0 else f"{u_mins}m"
+
+            # Identify suggested enrolled student for admin convenience (without auto-linking)
+            suggested_id = None
+            suggested_reason = None
+            if u.join_time:
+                from datetime import timedelta
+                from courses.models import LiveClassJoinIntent
+                intent = LiveClassJoinIntent.objects.filter(
+                    live_class=live_class,
+                    created_at__gte=u.join_time - timedelta(minutes=15),
+                    created_at__lte=u.join_time + timedelta(minutes=15)
+                ).select_related('student').first()
+                if intent:
+                    suggested_id = intent.student.id
+                    suggested_reason = f"Clicked 'Join Class' at {intent.created_at.strftime('%H:%M')}"
+
+            if not suggested_id and u.participant_name:
+                u_clean = u.participant_name.strip().lower()
+                for s_item in students_data:
+                    s_name = s_item["student_name"].lower()
+                    if s_name and (s_name in u_clean or u_clean in s_name):
+                        suggested_id = s_item["student_id"]
+                        suggested_reason = f"Name match with {s_item['student_name']}"
+                        break
+
+            unmatched_data.append({
+                "id": u.id,
+                "zoom_participant_uuid": u.zoom_participant_uuid,
+                "participant_name": u.participant_name,
+                "participant_email": u.participant_email,
+                "join_time": u.join_time.isoformat() if u.join_time else None,
+                "leave_time": u.leave_time.isoformat() if u.leave_time else None,
+                "duration_seconds": dur,
+                "formatted_duration": u_formatted,
+                "is_active": u.is_active,
+                "suggested_student_id": suggested_id,
+                "suggested_reason": suggested_reason
+            })
+
+        return Response({
+            "live_class": {
+                "id": live_class.id,
+                "title": live_class.title,
+                "scheduled_start": live_class.scheduled_start.isoformat() if live_class.scheduled_start else None,
+                "duration_minutes": live_class.duration_minutes or 60,
+                "status": live_class.status
+            },
+            "class_status": live_class.status,
+            "scheduled_duration": live_class.duration_minutes or 60,
+            "server_timestamp": now.isoformat(),
+            "total_enrolled": total_enrolled,
+            "currently_connected_count": currently_connected,
+            "total_joined_count": total_joined,
+            "unmatched_count": len(unmatched_data),
+            "students": students_data,
+            "unmatched_participants": unmatched_data
+        }, status=drf_status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='attendance/link-unmatched')
+    def link_unmatched(self, request, pk=None):
+        """
+        Manually link an UnmatchedZoomParticipant to an enrolled student.
+        """
+        from courses.services.zoom_attendance import ZoomAttendanceService
+        from courses.models import UnmatchedZoomParticipant
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+
+        live_class = self.get_object()
+        user = request.user
+        is_manager = bool(
+            user.is_superuser
+            or user.is_staff
+            or (live_class.batch and live_class.batch.instructor == user)
+            or live_class.instructor == user
+        )
+        if not is_manager:
+            return Response(
+                {"detail": "Only the instructor or admin can link unmatched participants."},
+                status=drf_status.HTTP_403_FORBIDDEN
+            )
+
+        unmatched_id = request.data.get('unmatched_id')
+        student_id = request.data.get('student_id')
+
+        if not unmatched_id or not student_id:
+            return Response(
+                {"error": "Both unmatched_id and student_id are required."},
+                status=drf_status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            att, unmatched = ZoomAttendanceService.link_unmatched_participant(
+                unmatched_id=unmatched_id,
+                student_id=student_id,
+                admin_user=user
+            )
+            return Response({
+                "status": "success",
+                "message": f"Successfully linked {unmatched.participant_name or unmatched.zoom_participant_uuid} to {att.student.username}",
+                "attendance_id": att.id,
+                "duration_minutes": att.duration_minutes
+            }, status=drf_status.HTTP_200_OK)
+        except UnmatchedZoomParticipant.DoesNotExist:
+            return Response({"error": "Unmatched participant not found."}, status=drf_status.HTTP_404_NOT_FOUND)
+        except User.DoesNotExist:
+            return Response({"error": "Student not found."}, status=drf_status.HTTP_404_NOT_FOUND)
+        except ValueError as val_err:
+            return Response({"error": str(val_err)}, status=drf_status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"[LinkUnmatched] Error linking participant #{unmatched_id}: {e}", exc_info=True)
+            return Response({"error": "Failed to link participant."}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path='attendance/reconcile')
+    def reconcile_attendance(self, request, pk=None):
+        """
+        Manually trigger Zoom Past Meeting Participants Report reconciliation.
+        """
+        from courses.services.zoom_attendance import ZoomAttendanceService
+        live_class = self.get_object()
+        user = request.user
+        is_manager = bool(
+            user.is_superuser
+            or user.is_staff
+            or (live_class.batch and live_class.batch.instructor == user)
+            or live_class.instructor == user
+        )
+        if not is_manager:
+            return Response(
+                {"detail": "Only the instructor or admin can trigger attendance reconciliation."},
+                status=drf_status.HTTP_403_FORBIDDEN
+            )
+
+        if not getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False):
+            return Response(
+                {"status": "disabled", "message": "Zoom Attendance V2 is currently disabled in production via ENABLE_ZOOM_ATTENDANCE_V2 feature flag."},
+                status=drf_status.HTTP_200_OK
+            )
+
+        result = ZoomAttendanceService.reconcile_meeting_participants(live_class)
+        return Response(result, status=drf_status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='recording')
     def recording(self, request, pk=None):
@@ -2191,39 +2475,62 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             return Response({"detail": "You are not enrolled in this live class."}, status=drf_status.HTTP_403_FORBIDDEN)
 
         now = timezone.now()
-        is_late = False
-        if live_class.scheduled_start and now > live_class.scheduled_start + timezone.timedelta(minutes=15):
-            is_late = True
+        from courses.services.zoom_attendance import ZoomAttendanceService
 
-        status_val = Attendance.Status.LATE if is_late else Attendance.Status.PRESENT
+        # Path A: Register with Zoom if valid email and feature flag enabled
+        registrant = None
+        if getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False) and user.email and '@' in user.email:
+            try:
+                registrant = ZoomAttendanceService.register_student_for_meeting(live_class, user)
+            except Exception as reg_err:
+                logger.warning(f"[JoinClass] Error registering student #{user.id} with Zoom: {reg_err}")
+
+        # Path B: Create secure short-lived JoinIntent
+        ip_addr = request.META.get('HTTP_X_FORWARDED_FOR', '').split(',')[0].strip() or request.META.get('REMOTE_ADDR')
+        user_agent = request.META.get('HTTP_USER_AGENT', '')
+        intent = ZoomAttendanceService.create_join_intent(live_class, user, ip_address=ip_addr, user_agent=user_agent)
+
+        effective_meeting_url = (registrant.join_url if registrant and registrant.join_url else None) or live_class.meeting_url
+
         instructor = live_class.instructor or (live_class.batch.instructor if live_class.batch else None)
 
+        # Do NOT automatically mark student PRESENT or LATE.
+        # Attendance status is strictly an administrative authority decision.
         att, created = Attendance.objects.get_or_create(
             live_class=live_class,
             student=user,
             defaults={
-                'status': status_val,
+                'status': Attendance.Status.ABSENT,
                 'joined_at': now,
+                'first_joined_at': now,
                 'duration_minutes': 1,
-                'notes': f"Joined session at {now.strftime('%H:%M')}",
+                'is_currently_in_class': True,
+                'notes': f"Joined session link at {now.strftime('%H:%M')}",
                 'marked_by': instructor
             }
         )
         if not created:
+            update_fields = ['is_currently_in_class']
             if not att.joined_at:
                 att.joined_at = now
-            if att.status == Attendance.Status.ABSENT:
-                att.status = status_val
-            if att.duration_minutes == 0:
+                update_fields.append('joined_at')
+            if not att.first_joined_at:
+                att.first_joined_at = now
+                update_fields.append('first_joined_at')
+            att.is_currently_in_class = True
+            if not getattr(att, 'is_duration_manual_override', False) and not att.is_manual_override and att.duration_minutes == 0:
                 att.duration_minutes = 1
-            att.save(update_fields=['joined_at', 'status', 'duration_minutes'])
+                update_fields.append('duration_minutes')
+            att.save(update_fields=update_fields)
 
         return Response({
             "status": "joined",
             "attendance_status": att.status,
             "duration_minutes": att.duration_minutes,
             "joined_at": att.joined_at,
-            "meeting_url": live_class.meeting_url
+            "meeting_url": effective_meeting_url,
+            "join_intent_token": intent.token,
+            "registrant_id": registrant.registrant_id if registrant else None
         }, status=drf_status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='heartbeat')
@@ -2231,6 +2538,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         """
         Called periodically (e.g. every 60s) by student client while attending the live class.
         Increments attended duration_minutes and updates left_at.
+        CRITICAL: Never automatically modifies admin-controlled attendance status.
         """
         live_class = self.get_object()
         user = request.user
@@ -2241,12 +2549,18 @@ class LiveClassViewSet(viewsets.ModelViewSet):
 
         now = timezone.now()
         att.left_at = now
-        max_allowed_duration = (live_class.duration_minutes or 60) + 30
-        if att.duration_minutes < max_allowed_duration:
-            att.duration_minutes += 1
-        if att.status == Attendance.Status.ABSENT:
-            att.status = Attendance.Status.PRESENT
-        att.save(update_fields=['duration_minutes', 'left_at', 'status'])
+        att.is_currently_in_class = True
+        update_fields = ['left_at', 'is_currently_in_class']
+
+        # Increment duration only if duration is not manually overridden by admin
+        if not getattr(att, 'is_duration_manual_override', False) and not att.is_manual_override:
+            max_allowed_duration = (live_class.duration_minutes or 60) + 30
+            if att.duration_minutes < max_allowed_duration:
+                att.duration_minutes += 1
+                update_fields.append('duration_minutes')
+
+        # Status is intentionally NEVER altered here to protect admin authority
+        att.save(update_fields=update_fields)
 
         return Response({
             "status": "active",
@@ -2262,11 +2576,16 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             att = Attendance.objects.get(live_class=live_class, student=user)
             now = timezone.now()
             att.left_at = now
-            if att.joined_at:
+            att.is_currently_in_class = False
+            update_fields = ['left_at', 'is_currently_in_class']
+
+            if not getattr(att, 'is_duration_manual_override', False) and not att.is_manual_override and att.joined_at:
                 elapsed = int((now - att.joined_at).total_seconds() / 60)
                 planned_duration = (live_class.duration_minutes or 60) + 15
                 att.duration_minutes = min(max(elapsed, 1), planned_duration)
-            att.save(update_fields=['left_at', 'duration_minutes'])
+                update_fields.append('duration_minutes')
+
+            att.save(update_fields=update_fields)
             return Response({"status": "left", "duration_minutes": att.duration_minutes})
         except Attendance.DoesNotExist:
             return Response({"status": "not_joined"}, status=drf_status.HTTP_404_NOT_FOUND)
@@ -2975,8 +3294,37 @@ class ZoomWebhookView(APIView):
         meeting_id = str(object_data.get('id') or '')
         event_ts = body_data.get('event_ts', '')
 
+        # Extract participant identifier for participant events to prevent deduplication collisions
+        # Zoom standard nests participant inside payload.object.participant; fallback to payload.participant
+        participant_data = {}
+        if isinstance(object_data, dict) and 'participant' in object_data:
+            participant_data = object_data.get('participant', {})
+        elif isinstance(payload, dict) and 'participant' in payload:
+            participant_data = payload.get('participant', {})
+        if not isinstance(participant_data, dict):
+            participant_data = {}
+
+        p_id = str(
+            participant_data.get('participant_uuid')
+            or participant_data.get('user_id')
+            or participant_data.get('id')
+            or participant_data.get('registrant_id')
+            or ''
+        ).strip()
+
+        if not p_id and participant_data:
+            uname = str(participant_data.get('user_name') or '').strip()
+            if uname:
+                p_id = uname
+            else:
+                import hashlib
+                p_id = hashlib.md5(json.dumps(participant_data, sort_keys=True).encode('utf-8')).hexdigest()[:12]
+
         # Canonical idempotency key
-        event_id = f"zoom:{event}:{meeting_uuid or meeting_id}:{event_ts}"
+        if event in ('meeting.participant_joined', 'meeting.participant_left'):
+            event_id = f"zoom:{event}:{meeting_uuid or meeting_id}:{p_id}:{event_ts}"
+        else:
+            event_id = f"zoom:{event}:{meeting_uuid or meeting_id}:{event_ts}"
 
         # Find matching LiveClass if present
         live_class = ZoomRecordingService.find_live_class_for_zoom_meeting(meeting_id, meeting_uuid)
@@ -2990,20 +3338,18 @@ class ZoomWebhookView(APIView):
                     event_type=event or 'unknown',
                     payload=body_data,
                     live_class=live_class,
+                    meeting_uuid=meeting_uuid,
+                    participant_uuid=str(p_id),
+                    event_ts=int(event_ts) if str(event_ts).isdigit() else None,
                     status=ZoomWebhookEvent.Status.RECEIVED
                 )
         except (IntegrityError, OperationalError):
             is_redelivery = True
-            webhook_event = None
-            for _ in range(10):
-                try:
-                    webhook_event = ZoomWebhookEvent.objects.filter(event_id=event_id).first()
-                    if webhook_event:
-                        break
-                except OperationalError:
-                    pass
+            webhook_event = ZoomWebhookEvent.objects.filter(event_id=event_id).first()
+            if not webhook_event:
                 import time
                 time.sleep(0.05)
+                webhook_event = ZoomWebhookEvent.objects.filter(event_id=event_id).first()
 
             if not webhook_event:
                 logger.error(f"[ZoomWebhook] Database conflict or table lock; event not found: {event_id}")
@@ -3184,7 +3530,19 @@ class ZoomWebhookView(APIView):
 
         # 6. Participant joined / left events
         if event in ('meeting.participant_joined', 'meeting.participant_left'):
-            success = ZoomRecordingService.handle_participant_webhook(payload, event)
+            from django.conf import settings
+            if not getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False):
+                logger.info(f"[ZoomWebhook] Zoom Attendance V2 is disabled by feature flag. Recording {event} as IGNORED.")
+                webhook_event.status = ZoomWebhookEvent.Status.IGNORED
+                webhook_event.save(update_fields=['status'])
+                return Response({"status": "disabled", "event_id": event_id}, status=drf_status.HTTP_200_OK)
+
+            from courses.services.zoom_attendance import ZoomAttendanceService
+            if event == 'meeting.participant_joined':
+                success = ZoomAttendanceService.handle_participant_joined(payload)
+            else:
+                success = ZoomAttendanceService.handle_participant_left(payload)
+
             webhook_event.status = ZoomWebhookEvent.Status.PROCESSED if success else ZoomWebhookEvent.Status.FAILED
             webhook_event.processed_at = timezone.now()
             webhook_event.save(update_fields=['status', 'processed_at'])
@@ -3192,6 +3550,22 @@ class ZoomWebhookView(APIView):
                 {"status": "received", "handled": success, "event_id": event_id},
                 status=drf_status.HTTP_200_OK
             )
+
+        # 6b. Meeting ended event -> trigger report reconciliation
+        if event == 'meeting.ended':
+            from django.conf import settings
+            if live_class and getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False):
+                from courses.tasks import reconcile_zoom_attendance_task
+                try:
+                    reconcile_zoom_attendance_task.apply_async(args=[live_class.id], countdown=900)
+                    logger.info(f"[ZoomWebhook] Scheduled reconciliation for LiveClass #{live_class.id} on meeting.ended.")
+                except Exception as task_err:
+                    logger.warning(f"[ZoomWebhook] Failed to dispatch reconcile task on meeting.ended: {task_err}")
+
+            webhook_event.status = ZoomWebhookEvent.Status.PROCESSED
+            webhook_event.processed_at = timezone.now()
+            webhook_event.save(update_fields=['status', 'processed_at'])
+            return Response({"status": "received", "event_id": event_id}, status=drf_status.HTTP_200_OK)
 
         # 7. Unhandled/ignored events
         webhook_event.status = ZoomWebhookEvent.Status.IGNORED

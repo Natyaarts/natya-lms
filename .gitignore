@@ -39,3 +39,5 @@ Newlog/
 log/
 
 *.xlsx
+backend/run_postgres_validation.py
+

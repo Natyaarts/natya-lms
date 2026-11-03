@@ -576,6 +576,26 @@ class Attendance(models.Model):
     marked_at = models.DateTimeField(auto_now=True)
     notes = models.TextField(blank=True)
 
+    # Zoom participation evidence & reconciliation audit fields
+    first_joined_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when student first joined any session")
+    last_left_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when student last left a session")
+    is_currently_in_class = models.BooleanField(default=False, db_index=True, help_text="True if student has an active connection")
+    zoom_reported_duration_seconds = models.PositiveIntegerField(default=0, help_text="Total seconds reported by Zoom participant report")
+    is_manual_override = models.BooleanField(default=False, help_text="True if admin manually decided status")
+    is_duration_manual_override = models.BooleanField(default=False, help_text="True if admin explicitly edited duration")
+    reconciliation_status = models.CharField(
+        max_length=20,
+        default='PENDING',
+        choices=[
+            ('PENDING', 'Pending'),
+            ('RECONCILED', 'Reconciled'),
+            ('FAILED', 'Failed'),
+            ('MANUAL', 'Manual'),
+        ]
+    )
+    last_webhook_at = models.DateTimeField(null=True, blank=True)
+    reconciled_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         unique_together = ('live_class', 'student')
         ordering = ['-marked_at']
@@ -583,6 +603,195 @@ class Attendance(models.Model):
 
     def __str__(self):
         return f"{self.student.username} - {self.live_class.title} ({self.status} - {self.duration_minutes}m)"
+
+    def calculate_total_duration_seconds(self, current_time=None):
+        """
+        Calculates total duration across all AttendanceSession records without double counting.
+        """
+        from django.utils import timezone
+        now = current_time or timezone.now()
+        total = 0
+        for s in self.sessions.all():
+            total += s.calculate_duration(now)
+        return total
+
+
+class AttendanceSession(models.Model):
+    """
+    Tracks an individual connection session for a student in a LiveClass.
+    Supports students joining, leaving, and reconnecting multiple times.
+    """
+    class Source(models.TextChoices):
+        WEBHOOK = "WEBHOOK", "Webhook"
+        REPORT = "REPORT", "Report"
+        MANUAL = "MANUAL", "Manual"
+
+    attendance = models.ForeignKey(
+        Attendance,
+        related_name="sessions",
+        on_delete=models.CASCADE,
+        db_index=True
+    )
+    session_id = models.CharField(
+        max_length=255,
+        unique=True,
+        db_index=True,
+        help_text="Unique session key (e.g. {live_class_id}:{student_id}:{participant_uuid_or_idx}:{join_ts})"
+    )
+    zoom_participant_uuid = models.CharField(max_length=128, blank=True, db_index=True)
+    zoom_user_id = models.CharField(max_length=128, blank=True)
+    zoom_registrant_id = models.CharField(max_length=128, blank=True)
+    join_time = models.DateTimeField(db_index=True)
+    leave_time = models.DateTimeField(null=True, blank=True)
+    duration_seconds = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True, db_index=True)
+    source = models.CharField(max_length=20, choices=Source.choices, default=Source.WEBHOOK)
+    raw_evidence = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["join_time"]
+        verbose_name = "Attendance Session"
+        verbose_name_plural = "Attendance Sessions"
+
+    def __str__(self):
+        return f"{self.attendance.student.username} session ({self.join_time.isoformat()} - {self.duration_seconds}s)"
+
+    def calculate_duration(self, current_time=None):
+        """Calculates current duration in seconds without mutating if leave_time is None."""
+        from django.utils import timezone
+        if self.leave_time and self.join_time:
+            return max(0, int((self.leave_time - self.join_time).total_seconds()))
+        elif self.join_time and self.is_active:
+            now = current_time or timezone.now()
+            return max(0, int((now - self.join_time).total_seconds()))
+        return self.duration_seconds
+
+
+class UnmatchedZoomParticipant(models.Model):
+    """
+    Stores Zoom participants whose identity could not be automatically resolved.
+    Held for manual admin review and linking with row locking.
+    """
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        RESOLVED = "RESOLVED", "Resolved"
+        IGNORED = "IGNORED", "Ignored"
+
+    live_class = models.ForeignKey(
+        LiveClass,
+        related_name="unmatched_participants",
+        on_delete=models.CASCADE,
+        db_index=True
+    )
+    zoom_participant_uuid = models.CharField(max_length=128, blank=True, db_index=True)
+    zoom_user_id = models.CharField(max_length=128, blank=True)
+    participant_name = models.CharField(max_length=255, blank=True)
+    participant_email = models.CharField(max_length=255, blank=True)
+    join_time = models.DateTimeField(null=True, blank=True)
+    leave_time = models.DateTimeField(null=True, blank=True)
+    duration_seconds = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True
+    )
+    linked_student = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="linked_zoom_participants"
+    )
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="resolved_zoom_participants"
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    raw_evidence = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Unmatched Zoom Participant"
+        verbose_name_plural = "Unmatched Zoom Participants"
+
+    def __str__(self):
+        return f"{self.participant_name or self.zoom_participant_uuid} ({self.status}) for {self.live_class.title}"
+
+
+class LiveClassJoinIntent(models.Model):
+    """
+    Secure, short-lived token generated when a student clicks 'Join Class' in the LMS.
+    Used to correlate anonymous or phone-only attendees joining Zoom without email.
+    """
+    student = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="live_class_join_intents",
+        db_index=True
+    )
+    live_class = models.ForeignKey(
+        LiveClass,
+        on_delete=models.CASCADE,
+        related_name="join_intents",
+        db_index=True
+    )
+    token = models.CharField(max_length=64, unique=True, db_index=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    is_used = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"JoinIntent: {self.student.username} -> {self.live_class.title}"
+
+    @property
+    def is_valid(self):
+        from django.utils import timezone
+        return not self.is_used and timezone.now() < self.expires_at
+
+
+class LiveClassRegistrant(models.Model):
+    """
+    Stores Zoom Meeting registrant records for students with valid emails.
+    """
+    live_class = models.ForeignKey(
+        LiveClass,
+        on_delete=models.CASCADE,
+        related_name="zoom_registrants",
+        db_index=True
+    )
+    student = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="zoom_registrations",
+        db_index=True
+    )
+    registrant_id = models.CharField(max_length=128, db_index=True)
+    join_url = models.URLField(max_length=1000, blank=True)
+    email = models.EmailField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('live_class', 'student')
+        verbose_name = "Live Class Registrant"
+        verbose_name_plural = "Live Class Registrants"
+
+    def __str__(self):
+        return f"{self.student.username} (reg_id={self.registrant_id}) for {self.live_class.title}"
 
 
 # =============================================================================
@@ -1493,6 +1702,10 @@ class ZoomWebhookEvent(models.Model):
         db_index=True
     )
     error_message = models.TextField(blank=True, default='')
+    meeting_uuid = models.CharField(max_length=128, blank=True, db_index=True)
+    participant_uuid = models.CharField(max_length=128, blank=True, db_index=True)
+    event_ts = models.BigIntegerField(null=True, blank=True)
+    retry_count = models.PositiveIntegerField(default=0)
     received_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
 
