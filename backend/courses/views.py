@@ -10,7 +10,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied as DRFPermissionDenied
 from .models import Course, Module, VideoLesson, Enrollment, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, LiveClassReport, TranslatedAudio, CourseInstructor, RecurrenceRule, TeacherAvailability, Attendance, VideoProtectionSetting
-from .serializers import CourseSerializer, ModuleSerializer, VideoLessonSerializer, LessonProgressSerializer, LiveClassSerializer, LiveClassReportSerializer, LiveBatchSerializer, LiveBatchStudentSerializer, TranslatedAudioSerializer, TranslatedAudioUploadSerializer, CourseInstructorSerializer, RecurrenceRuleSerializer, TeacherAvailabilitySerializer, AttendanceSerializer, VideoProtectionSettingSerializer
+from .serializers import CourseSerializer, ModuleSerializer, VideoLessonSerializer, LessonProgressSerializer, LiveClassSerializer, LiveClassReportSerializer, LiveBatchSerializer, LiveBatchStudentSerializer, TranslatedAudioSerializer, TranslatedAudioUploadSerializer, CourseInstructorSerializer, RecurrenceRuleSerializer, TeacherAvailabilitySerializer, AttendanceSerializer, VideoProtectionSettingSerializer, AttendanceConfigurationSerializer
 from users.permissions import IsSuperAdminOrTeacherOrReadOnly  # noqa: F401 -- retained for any other reuse; Course/Module/Lesson now use IsSuperAdminOrCourseInstructorOrReadOnly below
 
 
@@ -2113,7 +2113,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             is_dur_manual = getattr(att, 'is_duration_manual_override', False)
             if is_dur_manual:
                 total_min = att.duration_minutes
-                calculated_total_sec = max(calculated_total_sec, total_min * 60)
+                calculated_total_sec = (total_min or 0) * 60
 
             hours = total_min // 60
             mins = total_min % 60
@@ -2122,6 +2122,8 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             phone = getattr(student, 'phone_number', None) or getattr(student, 'phone', None) or student.username
             student_code = getattr(student, 'student_code', None) or f"NATYA-{student.id:04d}"
             full_name = f"{student.first_name} {student.last_name}".strip() or student.username
+
+            metrics = live_class.calculate_attendance_metrics(calculated_total_sec)
 
             students_data.append({
                 "student_id": student.id,
@@ -2140,7 +2142,9 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 "is_manual_override": att.is_manual_override,
                 "is_duration_manual_override": is_dur_manual,
                 "reconciliation_status": att.reconciliation_status,
-                "sessions": session_list
+                "sessions": session_list,
+                "attendance_percentage": metrics["attendance_percentage"],
+                "suggested_status": metrics["suggested_status"],
             })
 
         unmatched_qs = UnmatchedZoomParticipant.objects.filter(
@@ -2195,16 +2199,25 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 "suggested_reason": suggested_reason
             })
 
+        effective_threshold = live_class.get_effective_min_attendance_percentage()
+        from courses.models import AttendanceConfiguration
+        global_threshold = AttendanceConfiguration.get_default_percentage()
+
         return Response({
             "live_class": {
                 "id": live_class.id,
                 "title": live_class.title,
                 "scheduled_start": live_class.scheduled_start.isoformat() if live_class.scheduled_start else None,
                 "duration_minutes": live_class.duration_minutes or 60,
-                "status": live_class.status
+                "status": live_class.status,
+                "min_attendance_percentage": live_class.min_attendance_percentage,
+                "effective_min_attendance_percentage": effective_threshold,
             },
             "class_status": live_class.status,
             "scheduled_duration": live_class.duration_minutes or 60,
+            "effective_threshold": effective_threshold,
+            "global_default_threshold": global_threshold,
+            "is_threshold_overridden": live_class.min_attendance_percentage is not None,
             "server_timestamp": now.isoformat(),
             "total_enrolled": total_enrolled,
             "currently_connected_count": currently_connected,
@@ -2297,6 +2310,70 @@ class LiveClassViewSet(viewsets.ModelViewSet):
 
         result = ZoomAttendanceService.reconcile_meeting_participants(live_class)
         return Response(result, status=drf_status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get', 'post', 'patch'], url_path='attendance-threshold')
+    def attendance_threshold(self, request, pk=None):
+        """
+        GET: Returns current threshold settings for this live class (override and effective).
+        POST/PATCH: Sets or clears (if null/None) the per-class minimum attendance percentage.
+        Authorized for Admin, SuperUser, or Class Instructor.
+        """
+        live_class = self.get_object()
+        user = request.user
+        is_manager = bool(
+            user.is_superuser
+            or user.is_staff
+            or (live_class.batch and live_class.batch.instructor == user)
+            or live_class.instructor == user
+        )
+        if not is_manager:
+            return Response(
+                {"detail": "Only an administrator or the assigned instructor can view or edit attendance thresholds."},
+                status=drf_status.HTTP_403_FORBIDDEN
+            )
+
+        from courses.models import AttendanceConfiguration
+
+        if request.method == 'GET':
+            return Response({
+                "live_class_id": live_class.id,
+                "title": live_class.title,
+                "scheduled_duration_minutes": live_class.duration_minutes or 60,
+                "global_default_percentage": AttendanceConfiguration.get_default_percentage(),
+                "min_attendance_percentage": live_class.min_attendance_percentage,
+                "effective_min_attendance_percentage": live_class.get_effective_min_attendance_percentage(),
+                "is_override": live_class.min_attendance_percentage is not None
+            }, status=drf_status.HTTP_200_OK)
+
+        # POST / PATCH
+        val = request.data.get('min_attendance_percentage')
+        if val is None or val == "" or val == "null":
+            live_class.min_attendance_percentage = None
+        else:
+            try:
+                num = int(val)
+                if num < 1 or num > 100:
+                    return Response(
+                        {"min_attendance_percentage": ["Percentage must be between 1 and 100."]},
+                        status=drf_status.HTTP_400_BAD_REQUEST
+                    )
+                live_class.min_attendance_percentage = num
+            except (ValueError, TypeError):
+                return Response(
+                    {"min_attendance_percentage": ["Percentage must be a valid integer between 1 and 100."]},
+                    status=drf_status.HTTP_400_BAD_REQUEST
+                )
+
+        live_class.save(update_fields=['min_attendance_percentage', 'updated_at'])
+        return Response({
+            "live_class_id": live_class.id,
+            "title": live_class.title,
+            "scheduled_duration_minutes": live_class.duration_minutes or 60,
+            "global_default_percentage": AttendanceConfiguration.get_default_percentage(),
+            "min_attendance_percentage": live_class.min_attendance_percentage,
+            "effective_min_attendance_percentage": live_class.get_effective_min_attendance_percentage(),
+            "is_override": live_class.min_attendance_percentage is not None
+        }, status=drf_status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='recording')
     def recording(self, request, pk=None):
@@ -3601,3 +3678,30 @@ class VideoProtectionSettingView(APIView):
         return self.patch(request)
 
 
+
+
+class AttendanceConfigurationView(APIView):
+    """
+    Authenticated Admin-only API to manage the global attendance percentage configuration.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsSuperAdminOrAdmin]
+
+    def get(self, request):
+        from courses.models import AttendanceConfiguration
+        config = AttendanceConfiguration.get_solo()
+        serializer = AttendanceConfigurationSerializer(config)
+        return Response(serializer.data, status=drf_status.HTTP_200_OK)
+
+    def patch(self, request):
+        from courses.models import AttendanceConfiguration
+        config = AttendanceConfiguration.get_solo()
+        serializer = AttendanceConfigurationSerializer(config, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(updated_by=request.user)
+        return Response(serializer.data, status=drf_status.HTTP_200_OK)
+
+    def put(self, request):
+        return self.patch(request)
+
+    def post(self, request):
+        return self.patch(request)

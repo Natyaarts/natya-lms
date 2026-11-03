@@ -28,7 +28,11 @@ import {
   FileText,
   Eye,
   EyeOff,
-  MessageSquare
+  MessageSquare,
+  Sliders,
+  Percent,
+  Edit3,
+  Settings
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
@@ -101,7 +105,26 @@ const btnGhost = "px-4 py-2 text-zinc-400 hover:text-white text-sm";
 
 export default function LiveClassesPage() {
   const [currentUser, setCurrentUser] = useState<any>(null);
-  const [tab, setTab] = useState<"today" | "upcoming" | "history" | "cancelled" | "batches">("upcoming");
+  const [tab, setTab] = useState<"today" | "upcoming" | "history" | "cancelled" | "batches" | "settings">("upcoming");
+
+  // ---- Attendance Settings state ----
+  const [globalAttendanceConfig, setGlobalAttendanceConfig] = useState<{
+    id: number;
+    default_min_attendance_percentage: number;
+    updated_at?: string;
+    updated_by_name?: string;
+  } | null>(null);
+  const [globalAttendanceInput, setGlobalAttendanceInput] = useState<number | string>(75);
+  const [globalAttendanceLoading, setGlobalAttendanceLoading] = useState(false);
+  const [globalAttendanceSaving, setGlobalAttendanceSaving] = useState(false);
+  const [globalAttendanceMsg, setGlobalAttendanceMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // Per-class threshold editing
+  const [editingThresholdClass, setEditingThresholdClass] = useState<any | null>(null);
+  const [classThresholdInput, setClassThresholdInput] = useState<number | string>("");
+  const [classThresholdSaving, setClassThresholdSaving] = useState(false);
+  const [classThresholdError, setClassThresholdError] = useState("");
+  const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
   const [view, setView] = useState<"list" | "calendar">("list");
   const [classes, setClasses] = useState<any[]>([]);
   const [calendarClasses, setCalendarClasses] = useState<any[]>([]);
@@ -118,6 +141,7 @@ export default function LiveClassesPage() {
     authedFetch("/api/auth/user/").then(async (res) => {
       if (res.ok) setCurrentUser(await res.json());
     });
+    fetchGlobalAttendanceSettings();
   }, []);
 
   const fetchBatches = async () => {
@@ -156,6 +180,121 @@ export default function LiveClassesPage() {
       setError("Network error loading live classes.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // ---- Attendance Settings API handlers ----
+  const fetchGlobalAttendanceSettings = async () => {
+    setGlobalAttendanceLoading(true);
+    try {
+      const res = await authedFetch("/api/courses/attendance-settings/");
+      if (res.ok) {
+        const data = await res.json();
+        setGlobalAttendanceConfig(data);
+        setGlobalAttendanceInput(data.default_min_attendance_percentage);
+      }
+    } catch (e) {
+      console.error("Failed to load attendance settings", e);
+    } finally {
+      setGlobalAttendanceLoading(false);
+    }
+  };
+
+  const handleSaveGlobalAttendanceSettings = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const val = Number(globalAttendanceInput);
+    if (isNaN(val) || val < 1 || val > 100) {
+      setGlobalAttendanceMsg({ type: "error", text: "Percentage must be an integer between 1 and 100." });
+      return;
+    }
+    setGlobalAttendanceSaving(true);
+    setGlobalAttendanceMsg(null);
+    try {
+      const res = await authedFetch("/api/courses/attendance-settings/", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ default_min_attendance_percentage: val }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setGlobalAttendanceConfig(data);
+        setGlobalAttendanceInput(data.default_min_attendance_percentage);
+        setGlobalAttendanceMsg({ type: "success", text: "Global attendance threshold updated successfully." });
+        setTimeout(() => setGlobalAttendanceMsg(null), 4000);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setGlobalAttendanceMsg({ type: "error", text: err.detail || err.default_min_attendance_percentage?.[0] || "Failed to update global settings." });
+      }
+    } catch (err: any) {
+      setGlobalAttendanceMsg({ type: "error", text: err.message || "Network error while saving." });
+    } finally {
+      setGlobalAttendanceSaving(false);
+    }
+  };
+
+  const handleSaveClassThreshold = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!editingThresholdClass) return;
+    setClassThresholdSaving(true);
+    setClassThresholdError("");
+
+    let payloadValue: number | null = null;
+    if (classThresholdInput !== "" && classThresholdInput !== null) {
+      const val = Number(classThresholdInput);
+      if (isNaN(val) || val < 1 || val > 100) {
+        setClassThresholdError("Percentage must be an integer between 1 and 100.");
+        setClassThresholdSaving(false);
+        return;
+      }
+      payloadValue = val;
+    }
+
+    try {
+      const res = await authedFetch(`/api/courses/live-classes/${editingThresholdClass.id}/attendance-threshold/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ min_attendance_percentage: payloadValue }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        // Update class list state
+        setClasses((prev) =>
+          prev.map((c) =>
+            c.id === editingThresholdClass.id
+              ? {
+                  ...c,
+                  min_attendance_percentage: updated.min_attendance_percentage,
+                  effective_min_attendance_percentage: updated.effective_min_attendance_percentage,
+                }
+              : c
+          )
+        );
+        // If live attendance modal is currently open for this class, update live state
+        if (attendanceTarget && attendanceTarget.id === editingThresholdClass.id) {
+          setAttendanceTarget((prev: any) => ({
+            ...prev,
+            min_attendance_percentage: updated.min_attendance_percentage,
+            effective_min_attendance_percentage: updated.effective_min_attendance_percentage,
+          }));
+          if (attendanceLiveData) {
+            setAttendanceLiveData((prev: any) => ({
+              ...prev,
+              effective_threshold: updated.effective_min_attendance_percentage,
+              is_threshold_overridden: updated.is_override,
+            }));
+          }
+        }
+        setEditingThresholdClass(null);
+        setBanner("Class attendance threshold updated successfully.");
+        setTimeout(() => setBanner(""), 4000);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setClassThresholdError(err.min_attendance_percentage?.[0] || err.detail || "Failed to update threshold.");
+      }
+    } catch (err: any) {
+      setClassThresholdError(err.message || "Network error while saving.");
+    } finally {
+      setClassThresholdSaving(false);
     }
   };
 
@@ -1121,18 +1260,25 @@ export default function LiveClassesPage() {
 
       {/* Tabs and View Switcher */}
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
-        <div className="flex gap-1.5 p-1 bg-[#0e0e12] border border-white/10 rounded-xl w-max shadow-inner">
-          {(["today", "upcoming", "history", "cancelled", "batches"] as const).map((t) => (
+        <div className="flex gap-1.5 p-1 bg-[#0e0e12] border border-white/10 rounded-xl w-max shadow-inner flex-wrap">
+          {(["today", "upcoming", "history", "cancelled", "batches", "settings"] as const).map((t) => (
             <button
               key={t}
-              onClick={() => setTab(t)}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all capitalize ${
+              onClick={() => {
+                setTab(t);
+                if (t === "settings") {
+                  fetchGlobalAttendanceSettings();
+                  if (classes.length === 0) fetchClasses();
+                }
+              }}
+              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all capitalize flex items-center gap-1.5 ${
                 tab === t 
                   ? "bg-[#facc15] text-black shadow-sm" 
                   : "text-zinc-400 hover:text-white hover:bg-white/5"
               }`}
             >
-              {t === "batches" ? `Batches (${batches.length})` : t}
+              {t === "settings" && <Sliders className="w-3.5 h-3.5" />}
+              {t === "batches" ? `Batches (${batches.length})` : t === "settings" ? "Attendance Settings" : t}
             </button>
           ))}
         </div>
@@ -1223,6 +1369,200 @@ export default function LiveClassesPage() {
                 </tbody>
               </table>
             )
+          ) : tab === "settings" ? (
+            <div className="p-6 space-y-6">
+              {/* Header */}
+              <div className="flex items-center justify-between pb-4 border-b border-white/10">
+                <div>
+                  <h2 className="text-base font-bold text-white flex items-center gap-2">
+                    <Sliders className="w-5 h-5 text-[#facc15]" />
+                    Zoom Attendance Percentage Settings
+                  </h2>
+                  <p className="text-xs text-zinc-400 mt-1">
+                    Configure minimum attendance percentage thresholds. Thresholds calculate suggested attendance statuses (PRESENT, LATE, ABSENT) while preserving full administrator manual marking authority.
+                  </p>
+                </div>
+              </div>
+
+              {/* Card 1: Global Policy */}
+              <div className="bg-[#141419] border border-white/10 rounded-xl p-5 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Percent className="w-4 h-4 text-emerald-400" />
+                      Global Default Minimum Attendance Threshold
+                    </h3>
+                    <p className="text-xs text-zinc-400 mt-1 max-w-xl">
+                      Standard threshold applied to all live classes. A student whose aggregated Zoom attendance duration meets or exceeds this percentage of scheduled class duration is suggested as <strong className="text-green-400 font-semibold">PRESENT</strong>.
+                    </p>
+                    {globalAttendanceConfig?.updated_at && (
+                      <p className="text-[11px] text-zinc-500 mt-2 font-mono">
+                        Last updated: {new Date(globalAttendanceConfig.updated_at).toLocaleString()} {globalAttendanceConfig.updated_by_name ? `by ${globalAttendanceConfig.updated_by_name}` : ""}
+                      </p>
+                    )}
+                  </div>
+
+                  <form onSubmit={handleSaveGlobalAttendanceSettings} className="flex items-center gap-3">
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        value={globalAttendanceInput}
+                        onChange={(e) => setGlobalAttendanceInput(e.target.value)}
+                        className="w-24 px-3 py-2 bg-black border border-white/10 rounded-xl text-white font-mono font-bold text-sm text-center focus:outline-none focus:border-[#facc15]"
+                        placeholder="75"
+                        required
+                      />
+                      <span className="absolute right-3 top-2.5 text-zinc-500 text-xs font-bold">%</span>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={globalAttendanceSaving}
+                      className="px-4 py-2 bg-[#facc15] text-black font-bold text-xs rounded-xl hover:bg-yellow-400 transition-colors disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
+                    >
+                      {globalAttendanceSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                      Save Policy
+                    </button>
+                  </form>
+                </div>
+
+                {globalAttendanceMsg && (
+                  <div
+                    className={`p-3 rounded-lg text-xs flex items-center gap-2 ${
+                      globalAttendanceMsg.type === "success"
+                        ? "bg-green-500/10 border border-green-500/20 text-green-300"
+                        : "bg-red-500/10 border border-red-500/20 text-red-300"
+                    }`}
+                  >
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{globalAttendanceMsg.text}</span>
+                  </div>
+                )}
+
+                {/* Calculation Formula Reference */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-3 border-t border-white/5 text-[11px] text-zinc-400">
+                  <div className="p-3 bg-black/40 rounded-lg border border-white/5 space-y-1">
+                    <span className="font-semibold text-white block">Formula</span>
+                    <p className="font-mono text-zinc-300">(Aggregated Zoom Duration / Scheduled Duration) × 100</p>
+                  </div>
+                  <div className="p-3 bg-black/40 rounded-lg border border-white/5 space-y-1">
+                    <span className="font-semibold text-white block">Status Evaluation</span>
+                    <p className="text-zinc-300">
+                      <span className="text-green-400 font-semibold">≥ Threshold</span>: PRESENT · <span className="text-yellow-400 font-semibold">&gt; 0%</span>: LATE · <span className="text-red-400 font-semibold">0%</span>: ABSENT
+                    </p>
+                  </div>
+                  <div className="p-3 bg-black/40 rounded-lg border border-white/5 space-y-1">
+                    <span className="font-semibold text-white block">Authority Invariant</span>
+                    <p className="text-zinc-300">Suggestions are visual recommendations. Administrator maintains 100% final authority.</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 2: Class Overrides */}
+              <div className="bg-[#141419] border border-white/10 rounded-xl p-5 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Sliders className="w-4 h-4 text-yellow-400" />
+                      Class-Specific Threshold Overrides
+                    </h3>
+                    <p className="text-xs text-zinc-400 mt-0.5">
+                      Set a custom minimum attendance threshold for individual classes, or keep them inheriting the global default.
+                    </p>
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Search classes by title or course..."
+                    value={settingsSearchQuery}
+                    onChange={(e) => setSettingsSearchQuery(e.target.value)}
+                    className="px-3 py-1.5 bg-black border border-white/10 rounded-xl text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-[#facc15] w-full sm:w-64"
+                  />
+                </div>
+
+                <div className="overflow-x-auto rounded-lg border border-white/5">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-black/60 border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[11px]">
+                        <th className="p-3.5 font-semibold">Class Title & Course</th>
+                        <th className="p-3.5 font-semibold">Scheduled Start</th>
+                        <th className="p-3.5 font-semibold">Duration</th>
+                        <th className="p-3.5 font-semibold">Effective Threshold</th>
+                        <th className="p-3.5 font-semibold">Threshold Type</th>
+                        <th className="p-3.5 font-semibold text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/[0.06] text-zinc-300">
+                      {classes
+                        .filter((lc: any) => {
+                          if (!settingsSearchQuery.trim()) return true;
+                          const q = settingsSearchQuery.toLowerCase();
+                          return (
+                            lc.title?.toLowerCase().includes(q) ||
+                            lc.course_title?.toLowerCase().includes(q) ||
+                            lc.batch_name?.toLowerCase().includes(q)
+                          );
+                        })
+                        .map((lc: any) => {
+                          const hasOverride = lc.min_attendance_percentage !== null && lc.min_attendance_percentage !== undefined;
+                          const effectivePct = lc.effective_min_attendance_percentage ?? lc.min_attendance_percentage ?? globalAttendanceConfig?.default_min_attendance_percentage ?? 75;
+                          const sched = formatScheduledDate(lc.scheduled_start);
+
+                          return (
+                            <tr key={lc.id} className="hover:bg-white/[0.02] transition-colors">
+                              <td className="p-3.5">
+                                <span className="font-semibold text-white block truncate max-w-xs">{lc.title}</span>
+                                {(lc.course_title || lc.batch_name) && (
+                                  <span className="text-[11px] text-zinc-500 truncate block mt-0.5 max-w-xs">
+                                    {lc.course_title}{lc.course_title && lc.batch_name ? " · " : ""}{lc.batch_name}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-3.5 text-zinc-300 whitespace-nowrap">
+                                <div>{sched.datePart}</div>
+                                <div className="text-[10px] text-zinc-500 font-mono">{sched.timePart}</div>
+                              </td>
+                              <td className="p-3.5 font-mono text-zinc-300 whitespace-nowrap">
+                                {lc.duration_minutes || 60} min
+                              </td>
+                              <td className="p-3.5">
+                                <span className="font-mono font-bold text-sm text-white">
+                                  {effectivePct}%
+                                </span>
+                              </td>
+                              <td className="p-3.5 whitespace-nowrap">
+                                {hasOverride ? (
+                                  <span className="px-2 py-0.5 rounded-md bg-yellow-500/10 border border-yellow-500/20 text-yellow-300 text-[10px] font-semibold">
+                                    Class Override ({lc.min_attendance_percentage}%)
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-md bg-zinc-800 text-zinc-400 text-[10px] font-medium">
+                                    Inherited Global Default
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-3.5 text-right whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingThresholdClass(lc);
+                                    setClassThresholdInput(lc.min_attendance_percentage ?? "");
+                                    setClassThresholdError("");
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white border border-white/10 text-xs font-semibold transition-colors flex items-center gap-1.5 ml-auto"
+                                >
+                                  <Edit3 className="w-3 h-3 text-[#facc15]" />
+                                  Edit Threshold
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
           ) : loading ? (
             <div className="text-center py-20 text-zinc-500 text-sm">Loading live classes...</div>
           ) : error ? (
@@ -1857,7 +2197,24 @@ export default function LiveClassesPage() {
                   )}
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const all: Record<number, string> = { ...attendanceRecords };
+                      for (const ls of attendanceLiveData?.students || []) {
+                        if (ls.suggested_status) {
+                          all[ls.student_id] = ls.suggested_status;
+                        }
+                      }
+                      setAttendanceRecords(all);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-yellow-500/10 text-yellow-300 border border-yellow-500/20 hover:bg-yellow-500/20 text-[10px] font-bold transition-colors flex items-center gap-1"
+                    title="Pre-populate admin selection with suggested statuses based on threshold (requires Save Attendance to commit)"
+                  >
+                    <Sparkles className="w-3 h-3 text-yellow-400" />
+                    Apply Suggestions
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -1900,6 +2257,33 @@ export default function LiveClassesPage() {
                     </button>
                   )}
                 </div>
+              </div>
+
+              {/* Effective Attendance Threshold Info Banner */}
+              <div className="flex items-center justify-between p-3 rounded-xl bg-yellow-500/10 border border-yellow-500/20 text-xs flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <Sliders className="w-4 h-4 text-yellow-400 shrink-0" />
+                  <div>
+                    <span className="font-semibold text-yellow-300">Minimum Attendance Threshold: </span>
+                    <span className="font-bold text-white font-mono text-sm">
+                      {attendanceLiveData?.effective_threshold ?? attendanceTarget?.effective_min_attendance_percentage ?? globalAttendanceConfig?.default_min_attendance_percentage ?? 75}%
+                    </span>
+                    <span className="text-zinc-400 ml-1.5 text-[11px]">
+                      {attendanceLiveData?.is_threshold_overridden || attendanceTarget?.min_attendance_percentage ? "(Class Custom Override)" : "(Global Policy Default)"}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingThresholdClass(attendanceTarget);
+                    setClassThresholdInput(attendanceTarget.min_attendance_percentage ?? "");
+                    setClassThresholdError("");
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-yellow-400 text-black font-bold text-[11px] hover:bg-yellow-300 transition-colors shadow-sm flex items-center gap-1"
+                >
+                  <Edit3 className="w-3 h-3" /> Edit Class Threshold
+                </button>
               </div>
 
               {liveAttendanceError && (
@@ -2004,6 +2388,8 @@ export default function LiveClassesPage() {
                     const formattedDur = liveStudent?.formatted_duration || `${attendanceDurations[s.student] ?? 0}m`;
                     const hasSessions = liveStudent?.sessions && liveStudent.sessions.length > 0;
                     const isExpanded = !!expandedSessions[s.student];
+                    const pct = liveStudent?.attendance_percentage !== undefined ? liveStudent.attendance_percentage : null;
+                    const suggested = liveStudent?.suggested_status;
 
                     return (
                       <div
@@ -2040,6 +2426,38 @@ export default function LiveClassesPage() {
                           </div>
 
                           <div className="flex items-center gap-3 flex-wrap">
+                            {/* Attendance % & Suggested Status Badge */}
+                            {pct !== null && (
+                              <div className="flex items-center gap-1.5 bg-zinc-900 border border-white/10 rounded-lg px-2.5 py-1 text-xs">
+                                <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">Calculated:</span>
+                                <span className="font-mono font-bold text-white text-xs">{pct}%</span>
+                                {suggested && (
+                                  <span
+                                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                                      suggested === "PRESENT"
+                                        ? "bg-green-500/20 text-green-300 border border-green-500/30"
+                                        : suggested === "LATE"
+                                        ? "bg-yellow-500/20 text-yellow-300 border border-yellow-500/30"
+                                        : "bg-red-500/20 text-red-300 border border-red-500/30"
+                                    }`}
+                                    title={`Suggested status based on minimum threshold (${attendanceLiveData?.effective_threshold ?? 75}%). Administrator maintains final decision.`}
+                                  >
+                                    Suggested: {suggested}
+                                  </span>
+                                )}
+                                {suggested && currentStatus !== suggested && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setAttendanceRecords((r) => ({ ...r, [s.student]: suggested }))}
+                                    className="text-[10px] text-yellow-400 hover:text-white underline font-semibold ml-0.5"
+                                    title="Set admin selection to suggested status"
+                                  >
+                                    Use
+                                  </button>
+                                )}
+                              </div>
+                            )}
+
                             {/* Duration badge / input */}
                             <div className="flex items-center gap-1.5 bg-zinc-900 border border-white/10 rounded-lg px-2.5 py-1" title="Actual Zoom duration / manual override">
                               <Clock className="w-3.5 h-3.5 text-yellow-400" />
@@ -2449,6 +2867,85 @@ export default function LiveClassesPage() {
                   className="flex-1 py-2.5 bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-all text-xs disabled:opacity-50"
                 >
                   {batchCreating ? "Creating..." : "Create Batch"}
+                </button>
+              </div>
+            </form>
+          </Modal>
+        )}
+      </AnimatePresence>
+
+      {/* ---------------- Class Threshold Override Modal ---------------- */}
+      <AnimatePresence>
+        {editingThresholdClass && (
+          <Modal
+            title={`Attendance Threshold: ${editingThresholdClass.title}`}
+            onClose={() => setEditingThresholdClass(null)}
+          >
+            <form onSubmit={handleSaveClassThreshold} className="space-y-4">
+              <div className="p-3 rounded-xl bg-zinc-900/60 border border-white/10 text-xs text-zinc-300 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-400">Scheduled Class Duration:</span>
+                  <span className="font-mono font-bold text-white">{editingThresholdClass.duration_minutes || 60} minutes</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-400">Global Default Policy:</span>
+                  <span className="font-mono font-bold text-white">{globalAttendanceConfig?.default_min_attendance_percentage ?? 75}%</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
+                  Minimum Attendance Percentage Override (1-100)
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={classThresholdInput}
+                    onChange={(e) => setClassThresholdInput(e.target.value)}
+                    placeholder={`e.g. 80 (leave blank to inherit ${globalAttendanceConfig?.default_min_attendance_percentage ?? 75}%)`}
+                    className="w-full px-3 py-2 bg-black border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
+                  />
+                  <span className="absolute right-3 top-2.5 text-zinc-500 text-xs font-bold">%</span>
+                </div>
+                <p className="text-[11px] text-zinc-500 mt-1">
+                  Leave empty or click &quot;Reset to Global Default&quot; to remove the override.
+                </p>
+              </div>
+
+              {classThresholdError && (
+                <div className="px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{classThresholdError}</span>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2 pt-2 border-t border-white/10">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setClassThresholdInput("");
+                  }}
+                  className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-xl font-medium transition-colors"
+                >
+                  Clear (Use Global Default)
+                </button>
+                <div className="flex-1" />
+                <button
+                  type="button"
+                  onClick={() => setEditingThresholdClass(null)}
+                  className="px-4 py-2 bg-white/5 hover:bg-white/10 text-zinc-300 text-xs font-semibold rounded-xl transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={classThresholdSaving}
+                  className="px-4 py-2 bg-[#facc15] hover:bg-yellow-400 text-black text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  {classThresholdSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                  Save Threshold
                 </button>
               </div>
             </form>

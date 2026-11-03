@@ -8,6 +8,7 @@ from .views import (
     AdminZoomMeetingCreateView,
     ZoomWebhookView,
     VideoProtectionSettingView,
+    AttendanceConfigurationView,
 )
 
 router = DefaultRouter()
@@ -48,5 +49,7 @@ urlpatterns = [
     path('admin/certificates/', AdminCertificateListView.as_view(), name='admin-certificates'),
     path('admin/assignments/', AdminAssignmentListView.as_view(), name='admin-assignments'),
     path('video-protection-settings/', VideoProtectionSettingView.as_view(), name='video-protection-settings'),
+    path('attendance-settings/', AttendanceConfigurationView.as_view(), name='attendance-settings'),
+    path('admin/attendance-settings/', AttendanceConfigurationView.as_view(), name='admin-attendance-settings'),
     path('', include(router.urls)),
 ]

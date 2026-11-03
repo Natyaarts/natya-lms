@@ -504,6 +504,11 @@ class LiveClassReportSerializer(serializers.ModelSerializer):
 class LiveClassSerializer(serializers.ModelSerializer):
     course = serializers.PrimaryKeyRelatedField(queryset=Course.objects.all(), required=False)
     instructor = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False, allow_null=True)
+    min_attendance_percentage = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=100)
+    effective_min_attendance_percentage = serializers.SerializerMethodField(read_only=True)
+
+    def get_effective_min_attendance_percentage(self, obj):
+        return obj.get_effective_min_attendance_percentage()
 
     class Meta:
         model = LiveClass
@@ -524,6 +529,8 @@ class LiveClassSerializer(serializers.ModelSerializer):
             'recording_url',
             'recording_uploaded_at',
             'recurrence_rule',
+            'min_attendance_percentage',
+            'effective_min_attendance_percentage',
             'created_at',
             'updated_at'
         ]
@@ -748,6 +755,8 @@ class LiveClassSerializer(serializers.ModelSerializer):
         report = getattr(instance, 'report', None)
         ret['has_report'] = bool(report)
         ret['report_visible_to_students'] = bool(report and report.is_visible_to_students)
+        ret['min_attendance_percentage'] = instance.min_attendance_percentage
+        ret['effective_min_attendance_percentage'] = instance.get_effective_min_attendance_percentage()
         if report:
             can_see_report = False
             if request and request.user and request.user.is_authenticated:
@@ -849,7 +858,7 @@ class LiveBatchStudentSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 
-from .models import RecurrenceRule, TeacherAvailability, Attendance
+from .models import RecurrenceRule, TeacherAvailability, Attendance, AttendanceConfiguration
 
 
 class RecurrenceRuleSerializer(serializers.ModelSerializer):
@@ -892,13 +901,64 @@ class TeacherAvailabilitySerializer(serializers.ModelSerializer):
         return attrs
 
 
+class AttendanceConfigurationSerializer(serializers.ModelSerializer):
+    updated_by_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = AttendanceConfiguration
+        fields = [
+            'id',
+            'default_min_attendance_percentage',
+            'updated_at',
+            'updated_by',
+            'updated_by_name'
+        ]
+        read_only_fields = ['id', 'updated_at', 'updated_by', 'updated_by_name']
+
+    def get_updated_by_name(self, obj):
+        if obj.updated_by:
+            name = f"{obj.updated_by.first_name} {obj.updated_by.last_name}".strip()
+            return name or obj.updated_by.username
+        return None
+
+    def validate_default_min_attendance_percentage(self, value):
+        if value is None or value < 1 or value > 100:
+            raise serializers.ValidationError("Percentage must be an integer between 1 and 100.")
+        return value
+
+
 class AttendanceSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
+    attendance_percentage = serializers.SerializerMethodField()
+    suggested_status = serializers.SerializerMethodField()
 
     class Meta:
         model = Attendance
-        fields = ['id', 'live_class', 'student', 'student_name', 'status', 'duration_minutes', 'joined_at', 'left_at', 'marked_by', 'marked_at', 'notes']
-        read_only_fields = ['id', 'live_class', 'marked_by', 'marked_at', 'joined_at', 'left_at']
+        fields = [
+            'id', 'live_class', 'student', 'student_name', 'status',
+            'duration_minutes', 'joined_at', 'left_at', 'marked_by',
+            'marked_at', 'notes', 'attendance_percentage', 'suggested_status'
+        ]
+        read_only_fields = [
+            'id', 'live_class', 'marked_by', 'marked_at', 'joined_at',
+            'left_at', 'attendance_percentage', 'suggested_status'
+        ]
+
+    def _get_metrics(self, obj):
+        if not hasattr(obj, '_cached_metrics'):
+            dur_sec = obj.calculate_total_duration_seconds()
+            if getattr(obj, 'is_duration_manual_override', False):
+                dur_sec = (obj.duration_minutes or 0) * 60
+            elif dur_sec == 0 and (obj.duration_minutes or 0) > 0:
+                dur_sec = obj.duration_minutes * 60
+            obj._cached_metrics = obj.live_class.calculate_attendance_metrics(dur_sec)
+        return obj._cached_metrics
+
+    def get_attendance_percentage(self, obj):
+        return self._get_metrics(obj)["attendance_percentage"]
+
+    def get_suggested_status(self, obj):
+        return self._get_metrics(obj)["suggested_status"]
 
     def get_student_name(self, obj):
         name = f"{obj.student.first_name} {obj.student.last_name}".strip()

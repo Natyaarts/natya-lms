@@ -374,6 +374,12 @@ class LiveClass(models.Model):
         related_name='occurrences',
         help_text="Set when this class was generated as part of a recurring series."
     )
+    min_attendance_percentage = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(100)],
+        help_text="Optional attendance percentage threshold override (1-100) for this class. If null, inherits global default."
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -385,6 +391,9 @@ class LiveClass(models.Model):
         super().clean()
         if self.duration_minutes is not None and self.duration_minutes <= 0:
             raise ValidationError({"duration_minutes": "Duration must be greater than 0."})
+        if self.min_attendance_percentage is not None:
+            if self.min_attendance_percentage < 1 or self.min_attendance_percentage > 100:
+                raise ValidationError({"min_attendance_percentage": "Percentage must be between 1 and 100."})
         if self.batch:
             if self.course and self.course != self.batch.course:
                 raise ValidationError({"course": "LiveClass course must match batch course."})
@@ -397,6 +406,49 @@ class LiveClass(models.Model):
             self.instructor = self.batch.instructor
         self.full_clean()
         super().save(*args, **kwargs)
+
+    def get_effective_min_attendance_percentage(self):
+        """
+        Returns effective threshold: class override if set, else global default.
+        """
+        if self.min_attendance_percentage is not None:
+            return self.min_attendance_percentage
+        return AttendanceConfiguration.get_default_percentage()
+
+    def calculate_attendance_metrics(self, zoom_duration_seconds):
+        """
+        Calculates attendance percentage and suggested status based on:
+        - zoom_duration_seconds (aggregated across sessions)
+        - scheduled duration (self.duration_minutes * 60)
+        - effective threshold (self.get_effective_min_attendance_percentage())
+
+        Formula:
+          attendance_percentage = (aggregated Zoom attendance duration / configured class duration) * 100
+        Denominator is strictly scheduled class duration, NOT wall-clock elapsed time.
+        """
+        scheduled_seconds = max(1, (self.duration_minutes or 60) * 60)
+        zoom_sec = max(0, int(zoom_duration_seconds or 0))
+        raw_pct = (zoom_sec / scheduled_seconds) * 100.0
+        # Displayed percentage must not exceed 100% even if attended time exceeds scheduled class duration
+        percentage = min(100.0, round(raw_pct, 1))
+        effective_threshold = self.get_effective_min_attendance_percentage()
+
+        if zoom_sec <= 0:
+            suggested_status = "ABSENT"
+        elif percentage >= effective_threshold:
+            suggested_status = "PRESENT"
+        else:
+            suggested_status = "LATE"
+
+        return {
+            "attendance_percentage": percentage,
+            "suggested_status": suggested_status,
+            "effective_threshold": effective_threshold,
+            "is_override": self.min_attendance_percentage is not None,
+            "scheduled_duration_minutes": self.duration_minutes or 60,
+            "attended_duration_seconds": zoom_sec,
+            "attended_duration_minutes": int(zoom_sec // 60),
+        }
 
     def __str__(self):
         return f"{self.title} - {self.course.title} ({self.scheduled_start})"
@@ -554,6 +606,61 @@ class TeacherAvailability(models.Model):
         return f"{self.user.username} - {self.get_day_of_week_display()} {self.start_time}-{self.end_time}"
 
 
+class AttendanceConfiguration(models.Model):
+    """
+    Global attendance configuration singleton.
+    Stores the system-wide default minimum attendance percentage required for a student
+    to be suggested as PRESENT across all live classes.
+    """
+    default_min_attendance_percentage = models.PositiveSmallIntegerField(
+        default=75,
+        validators=[MinValueValidator(1), MaxValueValidator(100)],
+        help_text="Global default minimum attendance percentage (1-100) required to suggest PRESENT."
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_attendance_configurations"
+    )
+
+    class Meta:
+        verbose_name = "Attendance Configuration"
+        verbose_name_plural = "Attendance Configurations"
+
+    def __str__(self):
+        return f"Global Attendance Config (Default: {self.default_min_attendance_percentage}%)"
+
+    def clean(self):
+        super().clean()
+        if self.default_min_attendance_percentage is not None:
+            if self.default_min_attendance_percentage < 1 or self.default_min_attendance_percentage > 100:
+                raise ValidationError({"default_min_attendance_percentage": "Percentage must be between 1 and 100."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        if not self.pk and AttendanceConfiguration.objects.exists():
+            self.pk = AttendanceConfiguration.objects.first().pk
+        elif not self.pk:
+            self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get_default_percentage(cls):
+        config = cls.objects.filter(pk=1).first()
+        return config.default_min_attendance_percentage if config else 75
+
+    @classmethod
+    def get_solo(cls):
+        config, _ = cls.objects.get_or_create(
+            pk=1,
+            defaults={'default_min_attendance_percentage': 75}
+        )
+        return config
+
+
 class Attendance(models.Model):
     """
     Phase 2: per-student attendance for a LiveClass. Deliberately separate
@@ -607,13 +714,45 @@ class Attendance(models.Model):
     def calculate_total_duration_seconds(self, current_time=None):
         """
         Calculates total duration across all AttendanceSession records without double counting.
+        Computes the union of attended time intervals, preventing overlapping sessions
+        (e.g. multi-device logins or concurrent connections) from inflating the duration.
         """
         from django.utils import timezone
         now = current_time or timezone.now()
-        total = 0
+        intervals = []
         for s in self.sessions.all():
-            total += s.calculate_duration(now)
-        return total
+            start = s.join_time
+            if not start:
+                continue
+            if s.leave_time:
+                end = s.leave_time
+            elif s.is_active:
+                end = now
+            elif s.duration_seconds > 0:
+                end = start + timezone.timedelta(seconds=s.duration_seconds)
+            else:
+                end = start
+
+            if end > start:
+                intervals.append((start, end))
+
+        if not intervals:
+            return 0
+
+        # Sort intervals by start time ascending
+        intervals.sort(key=lambda x: x[0])
+
+        # Merge overlapping or contiguous intervals
+        merged = [intervals[0]]
+        for current_start, current_end in intervals[1:]:
+            prev_start, prev_end = merged[-1]
+            if current_start <= prev_end:
+                merged[-1] = (prev_start, max(prev_end, current_end))
+            else:
+                merged.append((current_start, current_end))
+
+        total_seconds = sum(int((end - start).total_seconds()) for start, end in merged)
+        return max(0, total_seconds)
 
 
 class AttendanceSession(models.Model):
