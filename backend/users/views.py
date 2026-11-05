@@ -652,37 +652,148 @@ from rest_framework.decorators import action
 from .serializers import AdminUserSerializer
 from .permissions import IsSuperAdminOrAdmin
 
+from rest_framework.pagination import PageNumberPagination
+
+class AdminUserPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
 class AdminUserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all().order_by('-date_joined')
     serializer_class = AdminUserSerializer
     permission_classes = [IsSuperAdminOrAdmin]
+    pagination_class = AdminUserPagination
+
+    def get_queryset(self):
+        qs = User.objects.all().order_by('-date_joined')
+        params = self.request.query_params
+
+        role = params.get('role')
+        if role == 'students':
+            qs = qs.filter(is_student=True, is_teacher=False, is_mentor=False)
+        elif role == 'teachers':
+            qs = qs.filter(is_teacher=True)
+        elif role == 'mentors':
+            qs = qs.filter(is_mentor=True)
+
+        status_param = params.get('status')
+        if status_param == 'active':
+            qs = qs.filter(is_active=True)
+        elif status_param == 'inactive':
+            qs = qs.filter(is_active=False)
+
+        track_param = params.get('student_type') or params.get('track')
+        if track_param in ('CAREER_ACADEMY', 'REGULAR'):
+            qs = qs.filter(student_type=track_param)
+
+        search = params.get('search') or params.get('q')
+        if search:
+            search = search.strip()
+            from django.db.models import Q
+            qs = qs.filter(
+                Q(username__icontains=search) |
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search) |
+                Q(email__icontains=search) |
+                Q(phone_number__icontains=search) |
+                Q(state__icontains=search) |
+                Q(district__icontains=search)
+            )
+
+        return qs
+
+    def _compute_batch_course_counts(self, user_ids):
+        if not user_ids:
+            return {}
+        from collections import defaultdict
+        from orders.models import Purchase
+        from courses.models import Enrollment, LiveBatchStudent, CourseInstructor
+
+        counts = defaultdict(set)
+        for uid, cid in Purchase.objects.filter(user_id__in=user_ids, status='SUCCESS').values_list('user_id', 'course_id'):
+            if cid: counts[uid].add(cid)
+        for uid, cid in Enrollment.objects.filter(user_id__in=user_ids).values_list('user_id', 'course_id'):
+            if cid: counts[uid].add(cid)
+        for uid, cid in LiveBatchStudent.objects.filter(student_id__in=user_ids).values_list('student_id', 'batch__course_id'):
+            if cid: counts[uid].add(cid)
+        for uid, cid in CourseInstructor.objects.filter(user_id__in=user_ids).values_list('user_id', 'course_id'):
+            if cid: counts[uid].add(cid)
+
+        return {uid: len(courses) for uid, courses in counts.items()}
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            user_ids = [u.id for u in page]
+            user_course_counts = self._compute_batch_course_counts(user_ids)
+            context = dict(self.get_serializer_context(), user_course_counts=user_course_counts)
+            serializer = self.get_serializer(page, many=True, context=context)
+            return self.get_paginated_response(serializer.data)
+
+        user_ids = [u.id for u in queryset]
+        user_course_counts = self._compute_batch_course_counts(user_ids)
+        context = dict(self.get_serializer_context(), user_course_counts=user_course_counts)
+        serializer = self.get_serializer(queryset, many=True, context=context)
+        return Response(serializer.data)
 
     @action(detail=True, methods=['get'])
     def courses(self, request, pk=None):
         user = self.get_object()
         from orders.models import Purchase
-        from courses.models import Enrollment
-        
-        purchases = Purchase.objects.filter(user=user, status='SUCCESS').select_related('course')
-        enrollments = Enrollment.objects.filter(user=user).select_related('course')
+        from courses.models import Enrollment, LiveBatchStudent, CourseInstructor
         
         data = []
+        purchases = Purchase.objects.filter(user=user, status='SUCCESS').select_related('course')
         for p in purchases:
-            data.append({
-                "id": f"p_{p.id}",
-                "course_id": p.course.id,
-                "title": p.course.title,
-                "thumbnail": request.build_absolute_uri(p.course.thumbnail.url) if p.course.thumbnail else None,
-                "assigned_at": p.created_at
-            })
+            if p.course:
+                data.append({
+                    "id": f"p_{p.id}",
+                    "course_id": p.course.id,
+                    "title": p.course.title,
+                    "thumbnail": request.build_absolute_uri(p.course.thumbnail.url) if p.course.thumbnail else None,
+                    "assigned_at": p.created_at,
+                    "role": "Purchased"
+                })
+
+        enrollments = Enrollment.objects.filter(user=user).select_related('course')
         for e in enrollments:
-            data.append({
-                "id": f"e_{e.id}",
-                "course_id": e.course.id,
-                "title": e.course.title,
-                "thumbnail": request.build_absolute_uri(e.course.thumbnail.url) if e.course.thumbnail else None,
-                "assigned_at": e.enrolled_at
-            })
+            if e.course:
+                data.append({
+                    "id": f"e_{e.id}",
+                    "course_id": e.course.id,
+                    "title": e.course.title,
+                    "thumbnail": request.build_absolute_uri(e.course.thumbnail.url) if e.course.thumbnail else None,
+                    "assigned_at": e.enrolled_at,
+                    "role": "Enrolled"
+                })
+
+        batch_students = LiveBatchStudent.objects.filter(student=user).select_related('batch__course')
+        for lbs in batch_students:
+            if lbs.batch and lbs.batch.course:
+                c = lbs.batch.course
+                data.append({
+                    "id": f"lbs_{lbs.id}",
+                    "course_id": c.id,
+                    "title": c.title,
+                    "thumbnail": request.build_absolute_uri(c.thumbnail.url) if c.thumbnail else None,
+                    "assigned_at": lbs.created_at,
+                    "role": "Batch Student"
+                })
+
+        instructor_assignments = CourseInstructor.objects.filter(user=user).select_related('course')
+        for ci in instructor_assignments:
+            if ci.course:
+                data.append({
+                    "id": f"ci_{ci.id}",
+                    "course_id": ci.course.id,
+                    "title": ci.course.title,
+                    "thumbnail": request.build_absolute_uri(ci.course.thumbnail.url) if ci.course.thumbnail else None,
+                    "assigned_at": ci.created_at,
+                    "role": ci.get_role_display() if hasattr(ci, 'get_role_display') else ci.role
+                })
             
         unique_courses = { c['course_id']: c for c in data }.values()
         return Response(list(unique_courses))
@@ -789,10 +900,13 @@ class AdminUserViewSet(viewsets.ModelViewSet):
             
         from courses.models import Enrollment
         
-        # Delete only enrollment records (keep purchase log intact)
+        from courses.models import LiveBatchStudent, CourseInstructor
+
         deleted_enrollments, _ = Enrollment.objects.filter(user=user, course_id=course_id).delete()
-        
-        if deleted_enrollments:
+        deleted_instructors, _ = CourseInstructor.objects.filter(user=user, course_id=course_id).delete()
+        deleted_batches, _ = LiveBatchStudent.objects.filter(student=user, batch__course_id=course_id).delete()
+
+        if deleted_enrollments or deleted_instructors or deleted_batches:
             return Response({"message": "Successfully unassigned the course."})
         else:
             return Response({"error": "The user is not assigned to this course."}, status=status.HTTP_404_NOT_FOUND)

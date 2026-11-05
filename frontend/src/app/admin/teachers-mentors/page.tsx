@@ -243,12 +243,20 @@ function SearchableUserSelect({
 }
 
 export default function TeachersMentorsPage() {
-  const [allUsers, setAllUsers] = useState<AdminUser[]>([]);
+  const [users, setUsers] = useState<AdminUser[]>([]);
   const [usersLoading, setUsersLoading] = useState(true);
   const [usersError, setUsersError] = useState("");
+  const [totalCount, setTotalCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const pageSize = 50;
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+
+  const [teachersCount, setTeachersCount] = useState<number | null>(null);
+  const [mentorsCount, setMentorsCount] = useState<number | null>(null);
 
   const [activeTab, setActiveTab] = useState<"teachers" | "mentors">("teachers");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
   const [mentorships, setMentorships] = useState<Mentorship[]>([]);
   const [mentorshipsLoading, setMentorshipsLoading] = useState(true);
@@ -257,6 +265,8 @@ export default function TeachersMentorsPage() {
   const [filterMentorId, setFilterMentorId] = useState("");
 
   const [showAssignModal, setShowAssignModal] = useState(false);
+  const [modalStudents, setModalStudents] = useState<AdminUser[]>([]);
+  const [modalMentors, setModalMentors] = useState<AdminUser[]>([]);
   const [assignStudent, setAssignStudent] = useState("");
   const [assignMentor, setAssignMentor] = useState("");
   const [assignStart, setAssignStart] = useState("");
@@ -267,14 +277,58 @@ export default function TeachersMentorsPage() {
 
   const [endingId, setEndingId] = useState<number | null>(null);
 
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [search]);
+
+  const probeCounts = async () => {
+    try {
+      const [tRes, mRes] = await Promise.all([
+        fetch(`${API_BASE}/api/users/admin-users/?role=teachers&page_size=1`, { credentials: "include" }),
+        fetch(`${API_BASE}/api/users/admin-users/?role=mentors&page_size=1`, { credentials: "include" }),
+      ]);
+      if (tRes.ok) {
+        const d = await tRes.json();
+        setTeachersCount(typeof d.count === "number" ? d.count : (Array.isArray(d) ? d.length : 0));
+      }
+      if (mRes.ok) {
+        const d = await mRes.json();
+        setMentorsCount(typeof d.count === "number" ? d.count : (Array.isArray(d) ? d.length : 0));
+      }
+    } catch {
+      // Non-blocking fallback
+    }
+  };
+
   const fetchUsers = async () => {
     setUsersLoading(true);
     setUsersError("");
     try {
-      const res = await fetch(`${API_BASE}/api/users/admin-users/`, { credentials: "include" });
+      const params = new URLSearchParams();
+      params.set("role", activeTab);
+      params.set("page", String(page));
+      params.set("page_size", String(pageSize));
+      if (debouncedSearch.trim()) {
+        params.set("search", debouncedSearch.trim());
+      }
+      const res = await fetch(`${API_BASE}/api/users/admin-users/?${params.toString()}`, { credentials: "include" });
       if (res.ok) {
-        const data: AdminUser[] = await res.json();
-        setAllUsers(Array.isArray(data) ? data : []);
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setUsers(data);
+          setTotalCount(data.length);
+          if (activeTab === "teachers" && !debouncedSearch.trim()) setTeachersCount(data.length);
+          if (activeTab === "mentors" && !debouncedSearch.trim()) setMentorsCount(data.length);
+        } else {
+          setUsers(data.results || []);
+          setTotalCount(typeof data.count === "number" ? data.count : (data.results || []).length);
+          if (activeTab === "teachers" && !debouncedSearch.trim()) setTeachersCount(data.count);
+          if (activeTab === "mentors" && !debouncedSearch.trim()) setMentorsCount(data.count);
+        }
       } else {
         setUsersError("Failed to fetch users.");
       }
@@ -309,28 +363,45 @@ export default function TeachersMentorsPage() {
     }
   };
 
+  const fetchModalCandidates = async () => {
+    try {
+      const [sRes, mRes] = await Promise.all([
+        fetch(`${API_BASE}/api/users/admin-users/?role=students&page_size=100`, { credentials: "include" }),
+        fetch(`${API_BASE}/api/users/admin-users/?role=mentors&page_size=100`, { credentials: "include" }),
+      ]);
+      if (sRes.ok) {
+        const sData = await sRes.json();
+        setModalStudents(Array.isArray(sData) ? sData : (sData.results || []));
+      }
+      if (mRes.ok) {
+        const mData = await mRes.json();
+        setModalMentors(Array.isArray(mData) ? mData : (mData.results || []));
+      }
+    } catch {
+      // Non-blocking
+    }
+  };
+
   useEffect(() => {
-    fetchUsers();
+    probeCounts();
     fetchMentorships();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    fetchUsers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, page, debouncedSearch]);
+
+  const handleTabChange = (tab: "teachers" | "mentors") => {
+    setActiveTab(tab);
+    setPage(1);
+  };
 
   const handleMentorshipFilterSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     fetchMentorships();
   };
-
-  const teachers = allUsers.filter((u) => u.is_teacher);
-  const mentors = allUsers.filter((u) => u.is_mentor);
-  const students = allUsers.filter((u) => u.is_student);
-  const currentTabUsers = activeTab === "teachers" ? teachers : mentors;
-
-  const searchLower = search.trim().toLowerCase();
-  const filteredUsers = searchLower
-    ? currentTabUsers.filter((u) =>
-        [u.username, u.email, u.first_name, u.last_name].some((f) => (f || "").toLowerCase().includes(searchLower))
-      )
-    : currentTabUsers;
 
   const openAssignModal = () => {
     setAssignStudent("");
@@ -340,6 +411,7 @@ export default function TeachersMentorsPage() {
     setAssignNotes("");
     setAssignError("");
     setShowAssignModal(true);
+    fetchModalCandidates();
   };
 
   const closeAssignModal = () => {
@@ -435,20 +507,20 @@ export default function TeachersMentorsPage() {
       <div className="flex flex-col md:flex-row gap-4 mb-6">
         <div className="flex gap-2 bg-zinc-900 border border-white/10 rounded-xl p-1">
           <button
-            onClick={() => setActiveTab("teachers")}
+            onClick={() => handleTabChange("teachers")}
             className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
               activeTab === "teachers" ? "bg-[#facc15] text-black" : "text-zinc-400 hover:text-white"
             }`}
           >
-            Teachers ({teachers.length})
+            Teachers ({teachersCount !== null ? teachersCount : (activeTab === "teachers" ? totalCount : 0)})
           </button>
           <button
-            onClick={() => setActiveTab("mentors")}
+            onClick={() => handleTabChange("mentors")}
             className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
               activeTab === "mentors" ? "bg-[#facc15] text-black" : "text-zinc-400 hover:text-white"
             }`}
           >
-            Mentors ({mentors.length})
+            Mentors ({mentorsCount !== null ? mentorsCount : (activeTab === "mentors" ? totalCount : 0)})
           </button>
         </div>
 
@@ -489,14 +561,14 @@ export default function TeachersMentorsPage() {
                     </div>
                   </td>
                 </tr>
-              ) : filteredUsers.length === 0 ? (
+              ) : users.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="p-16 text-center text-zinc-500 text-sm">
                     No {activeTab} found.
                   </td>
                 </tr>
               ) : (
-                filteredUsers.map((u) => (
+                users.map((u) => (
                   <tr key={u.id} className="hover:bg-white/5 transition-colors">
                     <td className="p-4 font-bold text-white text-sm">{displayName(u)}</td>
                     <td className="p-4 text-zinc-400">{u.email}</td>
@@ -531,6 +603,34 @@ export default function TeachersMentorsPage() {
             </tbody>
           </table>
         </div>
+        {totalPages > 1 && (
+          <div className="flex flex-col sm:flex-row items-center justify-between px-6 py-4 border-t border-white/5 bg-zinc-950/40 text-xs gap-3">
+            <span className="text-zinc-500">
+              Showing {(page - 1) * pageSize + 1} to {Math.min(page * pageSize, totalCount)} of {totalCount} {activeTab}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="px-3 py-1.5 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 transition-colors"
+              >
+                Previous
+              </button>
+              <span className="px-3 py-1.5 text-zinc-400">
+                Page {page} of {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="px-3 py-1.5 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 transition-colors"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Mentorship Assignment Panel */}
@@ -673,7 +773,7 @@ export default function TeachersMentorsPage() {
 
             <form onSubmit={handleCreateAssignment} className="space-y-4">
               <SearchableUserSelect
-                users={students}
+                users={modalStudents}
                 value={assignStudent}
                 onChange={setAssignStudent}
                 placeholder="Search and select a student..."
@@ -682,7 +782,7 @@ export default function TeachersMentorsPage() {
               />
 
               <SearchableUserSelect
-                users={mentors}
+                users={modalMentors}
                 value={assignMentor}
                 onChange={setAssignMentor}
                 placeholder="Search and select a mentor..."

@@ -6,9 +6,16 @@ import { motion } from "framer-motion";
 
 export default function AdminCourses() {
   const [courses, setCourses] = useState<any[]>([]);
+  const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  const filteredCourses = courses.filter((c: any) => {
+    if (!search.trim()) return true;
+    const term = search.toLowerCase();
+    return (c.title || "").toLowerCase().includes(term) || (c.description || "").toLowerCase().includes(term);
+  });
 
   const handleDeleteCourse = async (courseId: number, title: string) => {
     if (!window.confirm(`Are you sure you want to delete "${title}"? This will permanently delete the course, its modules, and lessons.`)) {
@@ -52,7 +59,7 @@ export default function AdminCourses() {
       });
       if (res.ok) {
         const data = await res.json();
-        setCourses(data);
+        setCourses(Array.isArray(data) ? data : (data.results || []));
       } else {
         setError("Failed to fetch courses");
       }
@@ -86,6 +93,18 @@ export default function AdminCourses() {
         </Link>
       </div>
 
+      {courses.length > 0 && (
+        <div className="mb-6 max-w-md">
+          <input
+            type="text"
+            placeholder="Search masterclasses by title..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full bg-[#18181b] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#facc15] transition-colors"
+          />
+        </div>
+      )}
+
       {error && (
         <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-lg mb-6 text-sm flex items-center gap-3">
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -118,7 +137,7 @@ export default function AdminCourses() {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-          {courses.map((course: any, idx: number) => (
+          {filteredCourses.map((course: any, idx: number) => (
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}

@@ -152,12 +152,18 @@ class AdminUserSerializer(serializers.ModelSerializer):
         return user
 
     def get_courses_count(self, obj):
-        from courses.models import Course
-        from django.db.models import Q
-        return Course.objects.filter(
-            Q(purchases__user=obj, purchases__status='SUCCESS') | 
-            Q(enrollments__user=obj)
-        ).distinct().count()
+        user_counts = self.context.get('user_course_counts')
+        if user_counts is not None and obj.id in user_counts:
+            return user_counts[obj.id]
+
+        from courses.models import Course, Enrollment, LiveBatchStudent, CourseInstructor
+        from orders.models import Purchase
+        course_ids = set(Purchase.objects.filter(user=obj, status='SUCCESS').values_list('course_id', flat=True))
+        course_ids.update(Enrollment.objects.filter(user=obj).values_list('course_id', flat=True))
+        course_ids.update(LiveBatchStudent.objects.filter(student=obj).values_list('batch__course_id', flat=True))
+        course_ids.update(CourseInstructor.objects.filter(user=obj).values_list('course_id', flat=True))
+        course_ids.discard(None)
+        return len(course_ids)
 
 from .models import OnboardingField, Mentorship
 

@@ -351,6 +351,17 @@ class CourseSerializer(serializers.ModelSerializer):
         if not user or not user.is_authenticated:
             return None
 
+        # Optimization: calculate from prefetched modules/lessons if available to avoid N+1 queries
+        if hasattr(obj, '_prefetched_objects_cache') and 'modules' in obj._prefetched_objects_cache:
+            lessons = [lesson for module in obj.modules.all() for lesson in module.lessons.all()]
+            total_lessons = len(lessons)
+            if total_lessons == 0:
+                return 0
+            completed_lesson_ids = self.context.get('completed_lesson_ids')
+            if completed_lesson_ids is not None:
+                completed_lessons = sum(1 for lesson in lessons if lesson.id in completed_lesson_ids)
+                return round((completed_lessons / total_lessons) * 100)
+
         total_lessons = VideoLesson.objects.filter(module__course=obj).count()
         if total_lessons == 0:
             return 0

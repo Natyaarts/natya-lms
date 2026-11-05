@@ -91,15 +91,26 @@ class CourseViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if user.is_authenticated and (user.is_superuser or user.is_staff):
-            return Course.objects.all()
-        if user.is_authenticated:
+            qs = Course.objects.all()
+        elif user.is_authenticated:
             from django.db.models import Q
-            return Course.objects.filter(
+            qs = Course.objects.filter(
                 Q(is_published=True) |
                 Q(enrollments__user=user) |   # student access, and legacy teacher self-enrollment
                 Q(instructors__user=user)      # real CourseInstructor assignment (teacher/mentor/assistant)
             ).distinct()
-        return Course.objects.filter(is_published=True)
+        else:
+            qs = Course.objects.filter(is_published=True)
+
+        if self.action == 'list':
+            qs = qs.prefetch_related(
+                'modules',
+                'modules__lessons',
+                'modules__lessons__translated_audios',
+                'modules__assessments',
+                'modules__assessments__questions'
+            )
+        return qs
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()

@@ -22,7 +22,16 @@ export default function AdminUsers() {
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState<number | 'all'>(8);
+  const [pageSize, setPageSize] = useState<number | 'all'>(50);
+  const [totalCount, setTotalCount] = useState(0);
+  const [debouncedSearch, setDebouncedSearch] = useState(searchQuery);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   // Add Modals State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -64,13 +73,41 @@ export default function AdminUsers() {
   };
 
   const fetchUsers = async () => {
+    setLoading(true);
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/`, {
+      const params = new URLSearchParams();
+      params.set('page', currentPage.toString());
+      if (pageSize !== 'all') {
+        params.set('page_size', pageSize.toString());
+      } else {
+        params.set('page_size', '100');
+      }
+
+      if (activeTab) {
+        params.set('role', activeTab);
+      }
+      if (statusFilter !== 'all') {
+        params.set('status', statusFilter);
+      }
+      if (activeTab === 'students' && trackFilter !== 'all') {
+        params.set('student_type', trackFilter);
+      }
+      if (debouncedSearch.trim()) {
+        params.set('search', debouncedSearch.trim());
+      }
+
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/?${params.toString()}`, {
         credentials: "include",
       });
       if (res.ok) {
         const data = await res.json();
-        setUsers(data);
+        if (Array.isArray(data)) {
+          setUsers(data);
+          setTotalCount(data.length);
+        } else {
+          setUsers(data.results || []);
+          setTotalCount(data.count || 0);
+        }
       } else {
         setError("Failed to fetch users");
       }
@@ -83,7 +120,7 @@ export default function AdminUsers() {
 
   useEffect(() => {
     fetchUsers();
-  }, []);
+  }, [currentPage, pageSize, activeTab, statusFilter, trackFilter, debouncedSearch]);
 
   const handleToggleStatus = async (userId: number, currentStatus: boolean, e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent row click details navigation
@@ -199,43 +236,11 @@ export default function AdminUsers() {
     }
   };
 
-  // Filter lists based on Tab, Search, and Status dropdown
-  const filteredUsers = users.filter(user => {
-    // Role filter
-    if (activeTab === 'students' && !user.is_student) return false;
-    if (activeTab === 'teachers' && !user.is_teacher) return false;
-    if (activeTab === 'mentors' && !user.is_mentor) return false;
-
-    // Status filter
-    if (statusFilter === 'active' && !user.is_active) return false;
-    if (statusFilter === 'inactive' && user.is_active) return false;
-
-    // Track filter for students
-    if (activeTab === 'students' && trackFilter !== 'all' && user.student_type !== trackFilter) {
-      return false;
-    }
-
-    // Search filter
-    if (searchQuery) {
-      const term = searchQuery.toLowerCase();
-      const matchName = `${user.first_name || ""} ${user.last_name || ""}`.toLowerCase().includes(term);
-      const matchUsername = (user.username || "").toLowerCase().includes(term);
-      const matchEmail = (user.email || "").toLowerCase().includes(term);
-      const matchPhone = (user.phone_number || "").toLowerCase().includes(term);
-      const matchLocation = `${user.state || ""} ${user.district || ""}`.toLowerCase().includes(term);
-      return matchName || matchUsername || matchEmail || matchPhone || matchLocation;
-    }
-
-    return true;
-  });
-
-  // Paginate list
+  // Server-side filtered and paginated user list
+  const displayedUsers = users;
   const isViewAll = pageSize === 'all';
-  const effectivePageSize = isViewAll ? Math.max(1, filteredUsers.length) : pageSize;
-  const totalPages = isViewAll ? 1 : Math.max(1, Math.ceil(filteredUsers.length / effectivePageSize));
-  const displayedUsers = isViewAll
-    ? filteredUsers
-    : filteredUsers.slice((currentPage - 1) * effectivePageSize, currentPage * effectivePageSize);
+  const effectivePageSize = isViewAll ? Math.max(1, totalCount) : pageSize;
+  const totalPages = isViewAll ? 1 : Math.max(1, Math.ceil(totalCount / effectivePageSize));
 
   // Reset page when switching filters/tabs or page size
   useEffect(() => {
@@ -492,20 +497,20 @@ export default function AdminUsers() {
         </div>
 
         {/* Pagination bar */}
-        {filteredUsers.length > 0 && (
+        {totalCount > 0 && (
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-4 bg-white/5 border-t border-white/5 text-sm text-zinc-400">
             <div>
               {isViewAll ? (
                 <span>
-                  Showing all <span className="font-semibold text-white">{filteredUsers.length}</span> users
+                  Showing all <span className="font-semibold text-white">{totalCount}</span> users
                 </span>
               ) : (
                 <span>
                   Showing <span className="font-semibold text-white">{(currentPage - 1) * effectivePageSize + 1}</span> to{" "}
                   <span className="font-semibold text-white">
-                    {Math.min(currentPage * effectivePageSize, filteredUsers.length)}
+                    {Math.min(currentPage * effectivePageSize, totalCount)}
                   </span>{" "}
-                  of <span className="font-semibold text-white">{filteredUsers.length}</span> users
+                  of <span className="font-semibold text-white">{totalCount}</span> users
                 </span>
               )}
             </div>
@@ -523,10 +528,10 @@ export default function AdminUsers() {
                   }}
                   className="bg-zinc-950 border border-white/10 hover:border-white/20 text-white text-xs rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-[#facc15] transition-colors cursor-pointer"
                 >
-                  <option value={8}>8 per page</option>
                   <option value={20}>20 per page</option>
                   <option value={50}>50 per page</option>
-                  <option value="all">View All ({filteredUsers.length})</option>
+                  <option value={100}>100 per page</option>
+                  <option value="all">View All (up to 100)</option>
                 </select>
               </div>
 
@@ -534,7 +539,7 @@ export default function AdminUsers() {
               <button
                 type="button"
                 onClick={() => {
-                  setPageSize(prev => (prev === 'all' ? 8 : 'all'));
+                  setPageSize(prev => (prev === 'all' ? 50 : 'all'));
                   setCurrentPage(1);
                 }}
                 className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
@@ -543,7 +548,7 @@ export default function AdminUsers() {
                     : "bg-zinc-950 text-zinc-400 border-white/10 hover:text-white hover:border-white/20"
                 }`}
               >
-                {isViewAll ? "Paginate (8)" : "View All"}
+                {isViewAll ? "Paginate (50)" : "View All"}
               </button>
 
               {/* Page navigation buttons */}

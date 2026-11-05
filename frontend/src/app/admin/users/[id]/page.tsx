@@ -323,16 +323,20 @@ export default function UserDetailPage() {
     }
   };
 
-  // Fetch all courses list for the select box
+  // Fetch all courses list for the select box on-demand when modal opens
   useEffect(() => {
+    if (!showAssignModal || allCourses.length > 0) return;
     const fetchAllCourses = async () => {
       try {
         const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/`, { credentials: "include" });
-        if (res.ok) setAllCourses(await res.json());
+        if (res.ok) {
+          const data = await res.json();
+          setAllCourses(Array.isArray(data) ? data : (data.results || []));
+        }
       } catch (err) {}
     };
     fetchAllCourses();
-  }, []);
+  }, [showAssignModal, allCourses.length]);
 
   // Handle direct admin course enrollment
   const handleAssignCourse = async () => {
@@ -820,7 +824,14 @@ export default function UserDetailPage() {
                       </div>
                       <div>
                         <div className="font-bold text-white text-sm">{course.title}</div>
-                        <p className="text-xs text-zinc-500 mt-1">Assigned on: {new Date(course.assigned_at || Date.now()).toLocaleDateString()}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <p className="text-xs text-zinc-500">Assigned on: {new Date(course.assigned_at || Date.now()).toLocaleDateString()}</p>
+                          {course.role && (
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-white/10 text-zinc-300">
+                              {course.role}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                     <div className="flex gap-3 items-center">
