@@ -165,9 +165,16 @@ def execute_rented_lms_migration(file_path=None, is_commit=False, verbose=False,
                 return sim_users_by_name[nc]
         return None
 
-    atomic_ctx = transaction.atomic()
+    sig_disconnected = False
+    try:
+        from django.db.models.signals import post_save
+        from notifications.signals import enrollment_created_signal
+        post_save.disconnect(enrollment_created_signal, sender=Enrollment)
+        sig_disconnected = True
+    except Exception:
+        pass
 
-    with atomic_ctx:
+    with transaction.atomic():
         # =========================================================
         # 1. RECONCILE COURSES (from 'Course Analytics')
         # =========================================================
@@ -188,19 +195,11 @@ def execute_rented_lms_migration(file_path=None, is_commit=False, verbose=False,
                 else:
                     stats['courses']['to_create'] += 1
                     is_live = any(k in title.lower() for k in ['batch', 'live', 'cmj', 'cms', 'g ', 'session', 'class'])
-                    course_type = 'live' if is_live else 'recorded'
+                    course_type = Course.CourseType.LIVE if is_live else Course.CourseType.RECORDED
 
                     if is_commit:
-                        base_slug = slugify(title)[:45] or f"course-{cid}"
-                        slug = base_slug
-                        idx = 1
-                        while Course.objects.filter(slug=slug).exists():
-                            slug = f"{base_slug}-{idx}"
-                            idx += 1
-
                         new_course = Course.objects.create(
                             title=title,
-                            slug=slug,
                             course_type=course_type,
                             description=f"Imported from master catalog: {title}",
                             is_published=True,
@@ -373,11 +372,7 @@ def execute_rented_lms_migration(file_path=None, is_commit=False, verbose=False,
                             if is_commit:
                                 Enrollment.objects.get_or_create(
                                     course=course,
-                                    user=student,
-                                    defaults={
-                                        'payment_status': 'completed',
-                                        'access_granted': True
-                                    }
+                                    user=student
                                 )
                                 existing_enrollment_pairs.add(pair)
                                 stats['enrollments']['created'] += 1
@@ -411,5 +406,11 @@ def execute_rented_lms_migration(file_path=None, is_commit=False, verbose=False,
 
         if not is_commit:
             transaction.set_rollback(True)
+
+    if sig_disconnected:
+        try:
+            post_save.connect(enrollment_created_signal, sender=Enrollment)
+        except Exception:
+            pass
 
     return stats
