@@ -3716,3 +3716,40 @@ class AttendanceConfigurationView(APIView):
 
     def post(self, request):
         return self.patch(request)
+
+
+class AdminMigrateRentedLmsView(APIView):
+    """
+    Superadmin-only API to audit (dry-run) and execute 100% idempotent migration
+    from the rented LMS master Excel export.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsSuperAdminOrAdmin]
+
+    def get(self, request):
+        return self._handle_migration(request, is_commit=False)
+
+    def post(self, request):
+        is_commit = bool(request.data.get('commit', False)) if hasattr(request, 'data') and isinstance(request.data, dict) else False
+        return self._handle_migration(request, is_commit=is_commit)
+
+    def _handle_migration(self, request, is_commit=False):
+        from courses.rented_lms_service import execute_rented_lms_migration
+        file_arg = request.data.get('file') if hasattr(request, 'data') and isinstance(request.data, dict) else None
+        try:
+            stats = execute_rented_lms_migration(file_path=file_arg, is_commit=is_commit)
+            return Response({
+                'status': 'success',
+                'mode': 'commit' if is_commit else 'dry_run',
+                'summary': stats,
+                'message': (
+                    '100% Migration committed successfully.' if is_commit
+                    else 'Dry-run audit successful. No changes made to database. Send POST with {"commit": true} to apply.'
+                )
+            }, status=drf_status.HTTP_200_OK)
+        except Exception as e:
+            logger.exception("Rented LMS migration API error: %s", e)
+            return Response({
+                'status': 'error',
+                'message': str(e)
+            }, status=drf_status.HTTP_400_BAD_REQUEST)
+
