@@ -3,8 +3,28 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, Plus, X, ChevronLeft, ChevronRight, Check, Eye } from "lucide-react";
+import { Search, Plus, X, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Check, Eye } from "lucide-react";
 import CountrySelect from "@/components/CountrySelect";
+
+function buildPageItems(currentPage: number, totalPages: number): (number | "ellipsis")[] {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  const items: (number | "ellipsis")[] = [1];
+  if (currentPage > 3) {
+    items.push("ellipsis");
+  }
+  const start = Math.max(2, currentPage - 1);
+  const end = Math.min(totalPages - 1, currentPage + 1);
+  for (let i = start; i <= end; i++) {
+    items.push(i);
+  }
+  if (currentPage < totalPages - 2) {
+    items.push("ellipsis");
+  }
+  items.push(totalPages);
+  return items;
+}
 
 export default function AdminUsers() {
   const router = useRouter();
@@ -552,26 +572,67 @@ export default function AdminUsers() {
               </button>
 
               {/* Page navigation buttons */}
-              {!isViewAll && totalPages > 1 && (
+              {!isViewAll && totalPages >= 1 && (
                 <div className="flex items-center gap-1.5">
-                  <span className="text-xs text-zinc-500 mr-1 hidden sm:inline">
-                    Page {currentPage} of {totalPages}
-                  </span>
                   <button
-                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                    type="button"
+                    onClick={() => setCurrentPage(1)}
                     disabled={currentPage === 1}
-                    className="p-2 bg-zinc-950 border border-white/10 hover:border-white/20 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                    title="Previous page"
+                    className="p-1.5 bg-zinc-950 border border-white/10 hover:border-white/20 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-zinc-300 hover:text-white"
+                    title="First page"
                   >
-                    <ChevronLeft className="w-4 h-4" />
+                    <ChevronsLeft className="w-4 h-4" />
                   </button>
                   <button
+                    type="button"
+                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                    disabled={currentPage === 1}
+                    className="px-2.5 py-1.5 bg-zinc-950 border border-white/10 hover:border-white/20 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-xs font-medium text-zinc-300 hover:text-white inline-flex items-center gap-1"
+                    title="Previous page"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Prev</span>
+                  </button>
+                  <div className="flex items-center gap-1 mx-1">
+                    {buildPageItems(currentPage, totalPages).map((item, idx) =>
+                      item === "ellipsis" ? (
+                        <span key={`ellipsis-${idx}`} className="px-2 py-1 text-zinc-500 text-xs select-none">
+                          &hellip;
+                        </span>
+                      ) : (
+                        <button
+                          key={item}
+                          type="button"
+                          onClick={() => setCurrentPage(item)}
+                          className={`min-w-[32px] h-8 px-2.5 rounded-lg text-xs font-semibold transition-all border ${
+                            item === currentPage
+                              ? "bg-[#facc15] text-black border-[#facc15] shadow-sm shadow-[#facc15]/20"
+                              : "bg-zinc-950 border-white/10 text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                          }`}
+                        >
+                          {item}
+                        </button>
+                      )
+                    )}
+                  </div>
+                  <button
+                    type="button"
                     onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
                     disabled={currentPage === totalPages}
-                    className="p-2 bg-zinc-950 border border-white/10 hover:border-white/20 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    className="px-2.5 py-1.5 bg-zinc-950 border border-white/10 hover:border-white/20 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-xs font-medium text-zinc-300 hover:text-white inline-flex items-center gap-1"
                     title="Next page"
                   >
-                    <ChevronRight className="w-4 h-4" />
+                    <span className="hidden sm:inline">Next</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage(totalPages)}
+                    disabled={currentPage === totalPages}
+                    className="p-1.5 bg-zinc-950 border border-white/10 hover:border-white/20 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-zinc-300 hover:text-white"
+                    title="Last page"
+                  >
+                    <ChevronsRight className="w-4 h-4" />
                   </button>
                 </div>
               )}

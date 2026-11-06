@@ -211,6 +211,19 @@ def run():
             User.objects.filter(id__in=matched_teacher_ids, is_mentor=True).update(is_mentor=False)
             CourseInstructor.objects.filter(user_id__in=matched_teacher_ids, role='MENTOR').delete()
 
+        # 5. Ensure existing LiveBatch rows have their course's mentor assigned when mentor is null
+        from courses.models import LiveBatch
+        if music_courses:
+            LiveBatch.objects.filter(course__in=music_courses, mentor__isnull=True).update(mentor=athulya)
+        if dance_courses and dance_mentors:
+            unassigned_dance_batches = list(
+                LiveBatch.objects.filter(course__in=dance_courses, mentor__isnull=True).order_by('id')
+            )
+            for idx, b in enumerate(unassigned_dance_batches):
+                b.mentor = dance_mentors[idx % len(dance_mentors)]
+            if unassigned_dance_batches:
+                LiveBatch.objects.bulk_update(unassigned_dance_batches, ['mentor'], batch_size=500)
+
     print(f"\n[OK] ATHULYA MUSIC MENTOR linked to {len(music_courses)} Music courses ({len(music_user_ids)} students)")
     print(f"[OK] 4 DANCE MENTORS linked to {len(dance_courses)} Dance courses each ({len(dance_user_ids)} students)")
     print(f"[OK] Created {len(new_ci)} new course-mentor links, {len(new_ms)} new student-mentor links, and {len(new_teacher_ci)} teacher-course links.")

@@ -17,6 +17,9 @@ export default function AdminLayout({
 
   const handleLogout = async () => {
     try {
+      sessionStorage.removeItem("natya_admin_user");
+    } catch {}
+    try {
       await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/logout/`, {
         method: 'POST',
         credentials: 'include'
@@ -35,7 +38,26 @@ export default function AdminLayout({
       return;
     }
 
-    // Check if user is superadmin
+    // Fast path: hydrate immediately from sessionStorage if login just completed
+    let hadCachedUser = false;
+    try {
+      const rawCached = sessionStorage.getItem("natya_admin_user");
+      if (rawCached) {
+        const cached = JSON.parse(rawCached);
+        if (cached && (cached.is_superuser || cached.is_staff || cached.is_teacher || cached.is_mentor)) {
+          setUser(cached);
+          setIsAdmin(true);
+          setLoading(false);
+          hadCachedUser = true;
+          if (!(cached.is_superuser || cached.is_staff) && window.location.pathname === "/admin") {
+            window.location.href = "/admin/courses";
+            return;
+          }
+        }
+      }
+    } catch {}
+
+    // Verify user session in the background (or foreground if no cached user)
     fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/user/`, { credentials: 'include' })
       .then(res => {
         if (res.ok) {
@@ -46,6 +68,9 @@ export default function AdminLayout({
       })
       .then(data => {
         setUser(data);
+        try {
+          sessionStorage.setItem("natya_admin_user", JSON.stringify(data));
+        } catch {}
         // is_staff ("Admin", non-superuser) previously fell through to
         // /dashboard here even though several backend permission classes
         // already trusted is_staff for admin-level access (course/lesson
@@ -61,10 +86,15 @@ export default function AdminLayout({
       })
       .catch(err => {
         console.error(err);
-        window.location.href = "/admin/login";
+        try {
+          sessionStorage.removeItem("natya_admin_user");
+        } catch {}
+        if (!hadCachedUser) {
+          window.location.href = "/admin/login";
+        }
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [pathname]);
 
   if (loading) {
     return (

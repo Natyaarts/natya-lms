@@ -7,6 +7,11 @@ import { motion, AnimatePresence } from "framer-motion";
 import { 
   ChevronUp, 
   ChevronDown, 
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Search,
   Video, 
   Film, 
   Headphones, 
@@ -23,6 +28,26 @@ import {
   Check,
   X
 } from "lucide-react";
+
+function buildPageItems(currentPage: number, totalPages: number): (number | "ellipsis")[] {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  const items: (number | "ellipsis")[] = [1];
+  if (currentPage > 3) {
+    items.push("ellipsis");
+  }
+  const start = Math.max(2, currentPage - 1);
+  const end = Math.min(totalPages - 1, currentPage + 1);
+  for (let i = start; i <= end; i++) {
+    items.push(i);
+  }
+  if (currentPage < totalPages - 2) {
+    items.push("ellipsis");
+  }
+  items.push(totalPages);
+  return items;
+}
 
 // Canonical language list for manual audio-track uploads. Kept in sync with
 // backend/courses/languages.py (SUPPORTED_LANGUAGES). Base codes only -- the
@@ -144,6 +169,13 @@ export default function CourseManager() {
   const [highlightedLessonId, setHighlightedLessonId] = useState<number | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // Curriculum pagination & search state
+  const [curriculumSearch, setCurriculumSearch] = useState("");
+  const [modulesPage, setModulesPage] = useState(1);
+  const [modulesPageSize, setModulesPageSize] = useState(5);
+  const [lessonPageByModule, setLessonPageByModule] = useState<Record<number, number>>({});
+  const [lessonsPageSize, setLessonsPageSize] = useState(10);
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => {
@@ -220,13 +252,20 @@ export default function CourseManager() {
 
   const fetchEligibleUsers = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/`, {
-        credentials: "include"
-      });
-      if (res.ok) {
-        const all = await res.json();
-        setEligibleUsers(all.filter((u: any) => u.is_teacher || u.is_mentor));
+      const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const [tRes, mRes] = await Promise.all([
+        fetch(`${apiBase}/api/users/admin-users/?role=teachers&page_size=100`, { credentials: "include" }),
+        fetch(`${apiBase}/api/users/admin-users/?role=mentors&page_size=100`, { credentials: "include" }),
+      ]);
+      const tData = tRes.ok ? await tRes.json() : [];
+      const mData = mRes.ok ? await mRes.json() : [];
+      const tList = Array.isArray(tData) ? tData : tData.results || [];
+      const mList = Array.isArray(mData) ? mData : mData.results || [];
+      const byId = new Map<number, any>();
+      for (const u of [...tList, ...mList]) {
+        if (u && (u.is_teacher || u.is_mentor)) byId.set(u.id, u);
       }
+      setEligibleUsers(Array.from(byId.values()));
     } catch (err) {
       console.error(err);
     }
@@ -1131,23 +1170,48 @@ export default function CourseManager() {
         {/* Right Column: Curriculum Builder */}
         <div className="lg:col-span-8">
           <div className="bg-[#0e0e12] border border-white/10 rounded-2xl p-6 shadow-xl">
-            <div className="flex items-center justify-between mb-8 pb-5 border-b border-white/[0.08] flex-wrap gap-4">
+            <div className="flex items-center justify-between mb-6 pb-5 border-b border-white/[0.08] flex-wrap gap-4">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-[#facc15]/10 border border-[#facc15]/20 flex items-center justify-center text-[#facc15] shadow-sm">
                   <Layers className="w-5 h-5" />
                 </div>
                 <div>
-                  <h2 className="text-xl font-bold text-white tracking-tight">Curriculum Builder</h2>
+                  <h2 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
+                    Curriculum Builder
+                    {course.modules?.length > 0 && (
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[#facc15]/10 text-[#facc15] border border-[#facc15]/20">
+                        {course.modules.length} {course.modules.length === 1 ? "Module" : "Modules"}
+                      </span>
+                    )}
+                  </h2>
                   <p className="text-xs text-zinc-400 mt-0.5">Organize modules, upload video lessons, and manage audio tracks</p>
                 </div>
               </div>
-              <button 
-                onClick={() => setShowAddModule(true)}
-                className="px-4 py-2 bg-[#facc15] hover:bg-yellow-400 text-black font-semibold rounded-xl transition-all text-xs flex items-center gap-1.5 shadow-sm hover:shadow-yellow-500/20"
-              >
-                <Plus className="w-4 h-4 stroke-[2.5]" />
-                Add Module
-              </button>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                {(course.modules?.length || 0) > 0 && (
+                  <div className="relative w-56 sm:w-64">
+                    <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="Filter lessons by title..."
+                      value={curriculumSearch}
+                      onChange={(e) => {
+                        setCurriculumSearch(e.target.value);
+                        setModulesPage(1);
+                        setLessonPageByModule({});
+                      }}
+                      className="w-full bg-zinc-900 border border-white/10 rounded-xl pl-8 pr-3 py-2 text-xs text-white focus:outline-none focus:border-[#facc15] transition-colors placeholder:text-zinc-500"
+                    />
+                  </div>
+                )}
+                <button 
+                  onClick={() => setShowAddModule(true)}
+                  className="px-4 py-2 bg-[#facc15] hover:bg-yellow-400 text-black font-semibold rounded-xl transition-all text-xs flex items-center gap-1.5 shadow-sm hover:shadow-yellow-500/20"
+                >
+                  <Plus className="w-4 h-4 stroke-[2.5]" />
+                  Add Module
+                </button>
+              </div>
             </div>
 
             {/* Add Module Inline Form */}
@@ -1198,8 +1262,44 @@ export default function CourseManager() {
                   <p className="text-sm font-medium text-zinc-400">No modules yet</p>
                   <p className="text-xs text-zinc-600 mt-1">Click "Add Module" to start structuring your course curriculum.</p>
                 </div>
-              ) : (
-                course.modules?.map((module: any, idx: number) => (
+              ) : (() => {
+                const allModules: any[] = course.modules || [];
+                const totalModulesCount = allModules.length;
+                const totalModulePages = Math.max(1, Math.ceil(totalModulesCount / modulesPageSize));
+                const currentModulesPage = Math.min(modulesPage, totalModulePages);
+                const modulesSliceStart = (currentModulesPage - 1) * modulesPageSize;
+                const visibleModules = allModules.slice(modulesSliceStart, modulesSliceStart + modulesPageSize);
+                const modulePageItems = buildPageItems(currentModulesPage, totalModulePages);
+                const q = curriculumSearch.trim().toLowerCase();
+
+                return (
+                  <>
+                    {visibleModules.map((module: any, pageIdx: number) => {
+                      const idx = modulesSliceStart + pageIdx;
+                      const allLessonsWithIndex = (module.lessons || []).map((lesson: any, origLIdx: number) => ({
+                        lesson,
+                        origLIdx,
+                      }));
+                      const filteredLessons = q
+                        ? allLessonsWithIndex.filter(
+                            ({ lesson }: { lesson: any }) =>
+                              (lesson.title || "").toLowerCase().includes(q) ||
+                              (lesson.description || "").toLowerCase().includes(q)
+                          )
+                        : allLessonsWithIndex;
+                      const totalLessonsCount = filteredLessons.length;
+                      const totalLessonPages = Math.max(1, Math.ceil(totalLessonsCount / lessonsPageSize));
+                      const currentLessonPage = Math.min(lessonPageByModule[module.id] || 1, totalLessonPages);
+                      const lessonSliceStart = (currentLessonPage - 1) * lessonsPageSize;
+                      const paginatedLessons = filteredLessons.slice(
+                        lessonSliceStart,
+                        lessonSliceStart + lessonsPageSize
+                      );
+                      const lessonPageItems = buildPageItems(currentLessonPage, totalLessonPages);
+                      const lessonStartItem = totalLessonsCount > 0 ? lessonSliceStart + 1 : 0;
+                      const lessonEndItem = Math.min(currentLessonPage * lessonsPageSize, totalLessonsCount);
+
+                      return (
                   <div key={module.id} className="bg-zinc-950/70 border border-white/10 rounded-2xl overflow-hidden shadow-sm">
                     {/* Module Top Bar */}
                     <div className="bg-[#141419] px-5 py-3.5 border-b border-white/[0.08] flex items-center justify-between flex-wrap gap-3">
@@ -1295,7 +1395,7 @@ export default function CourseManager() {
                     </div>
 
                     <div className="p-3.5 space-y-2.5">
-                      {module.lessons?.map((lesson: any, lIdx: number) => {
+                      {paginatedLessons.map(({ lesson, origLIdx: lIdx }: { lesson: any; origLIdx: number }) => {
                         const isHighlighted = highlightedLessonId === lesson.id;
                         const cleanFileName = getCleanVideoFileName(lesson.video_file);
                         return (
@@ -1688,9 +1788,118 @@ export default function CourseManager() {
                       );
                     })}
 
-                      {module.lessons?.length === 0 && addingLessonToModule !== module.id && (
+                      {filteredLessons.length === 0 && addingLessonToModule !== module.id && (
                         <div className="text-center py-6 text-zinc-600 text-sm">
-                          Empty module
+                          {module.lessons?.length === 0 ? "Empty module" : `No lessons match "${curriculumSearch}".`}
+                        </div>
+                      )}
+
+                      {totalLessonsCount > 0 && (
+                        <div className="mt-3 pt-3 border-t border-white/[0.06] flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-zinc-400">
+                          <div className="flex flex-wrap items-center gap-3">
+                            <span>
+                              Showing <span className="text-white font-semibold">{lessonStartItem}</span> to{" "}
+                              <span className="text-white font-semibold">{lessonEndItem}</span> of{" "}
+                              <span className="text-white font-semibold">{totalLessonsCount}</span> lessons
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-zinc-500">Per page:</span>
+                              <select
+                                value={lessonsPageSize}
+                                onChange={(e) => {
+                                  setLessonsPageSize(Number(e.target.value));
+                                  setLessonPageByModule({});
+                                }}
+                                className="bg-zinc-900 border border-white/10 rounded-lg px-2 py-1 text-xs text-white font-medium focus:outline-none focus:border-[#facc15] transition-colors cursor-pointer"
+                              >
+                                {[5, 10, 20, 50].map((size) => (
+                                  <option key={size} value={size}>
+                                    {size}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setLessonPageByModule((prev) => ({ ...prev, [module.id]: 1 }))
+                              }
+                              disabled={currentLessonPage <= 1}
+                              title="First Page"
+                              className="p-1.5 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 hover:text-white transition-colors"
+                            >
+                              <ChevronsLeft className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setLessonPageByModule((prev) => ({
+                                  ...prev,
+                                  [module.id]: Math.max(1, currentLessonPage - 1),
+                                }))
+                              }
+                              disabled={currentLessonPage <= 1}
+                              className="px-2 py-1 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 hover:text-white transition-colors inline-flex items-center gap-1 font-medium"
+                            >
+                              <ChevronLeft className="w-3.5 h-3.5" />
+                              <span className="hidden sm:inline">Prev</span>
+                            </button>
+                            <div className="flex items-center gap-1 mx-0.5">
+                              {lessonPageItems.map((item, pIdx) =>
+                                item === "ellipsis" ? (
+                                  <span key={`ellipsis-${pIdx}`} className="px-1.5 py-0.5 text-zinc-500 select-none">
+                                    &hellip;
+                                  </span>
+                                ) : (
+                                  <button
+                                    key={item}
+                                    type="button"
+                                    onClick={() =>
+                                      setLessonPageByModule((prev) => ({ ...prev, [module.id]: item }))
+                                    }
+                                    className={`min-w-[28px] h-7 px-2 rounded-lg text-xs font-semibold transition-all border ${
+                                      item === currentLessonPage
+                                        ? "bg-[#facc15] text-black border-[#facc15] shadow-sm shadow-[#facc15]/20"
+                                        : "bg-zinc-900 border-white/10 text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                                    }`}
+                                  >
+                                    {item}
+                                  </button>
+                                )
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setLessonPageByModule((prev) => ({
+                                  ...prev,
+                                  [module.id]: Math.min(totalLessonPages, currentLessonPage + 1),
+                                }))
+                              }
+                              disabled={currentLessonPage >= totalLessonPages}
+                              className="px-2 py-1 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 hover:text-white transition-colors inline-flex items-center gap-1 font-medium"
+                            >
+                              <span className="hidden sm:inline">Next</span>
+                              <ChevronRight className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setLessonPageByModule((prev) => ({
+                                  ...prev,
+                                  [module.id]: totalLessonPages,
+                                }))
+                              }
+                              disabled={currentLessonPage >= totalLessonPages}
+                              title="Last Page"
+                              className="p-1.5 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 hover:text-white transition-colors"
+                            >
+                              <ChevronsRight className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
                       )}
 
@@ -1884,8 +2093,103 @@ export default function CourseManager() {
                       )}
                     </div>
                   </div>
-                ))
-              )}
+                      );
+                    })}
+
+                    {totalModulesCount > 1 && (
+                      <div className="mt-6 flex flex-col sm:flex-row items-center justify-between px-5 py-3.5 rounded-2xl border border-white/10 bg-zinc-950/60 text-xs gap-3">
+                        <div className="flex flex-wrap items-center gap-3 text-zinc-400">
+                          <span>
+                            Showing modules <span className="text-white font-semibold">{modulesSliceStart + 1}</span> to{" "}
+                            <span className="text-white font-semibold">
+                              {Math.min(currentModulesPage * modulesPageSize, totalModulesCount)}
+                            </span>{" "}
+                            of <span className="text-white font-semibold">{totalModulesCount}</span>
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-zinc-500">Modules per page:</span>
+                            <select
+                              value={modulesPageSize}
+                              onChange={(e) => {
+                                setModulesPageSize(Number(e.target.value));
+                                setModulesPage(1);
+                              }}
+                              className="bg-zinc-900 border border-white/10 rounded-lg px-2 py-1 text-xs text-white font-medium focus:outline-none focus:border-[#facc15] transition-colors cursor-pointer"
+                            >
+                              {[3, 5, 10, 20].map((size) => (
+                                <option key={size} value={size}>
+                                  {size}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setModulesPage(1)}
+                            disabled={currentModulesPage <= 1}
+                            title="First Page"
+                            className="p-1.5 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 hover:text-white transition-colors"
+                          >
+                            <ChevronsLeft className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setModulesPage(Math.max(1, currentModulesPage - 1))}
+                            disabled={currentModulesPage <= 1}
+                            className="px-2.5 py-1 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 hover:text-white transition-colors inline-flex items-center gap-1 font-medium"
+                          >
+                            <ChevronLeft className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Prev</span>
+                          </button>
+                          <div className="flex items-center gap-1 mx-0.5">
+                            {modulePageItems.map((item, mIdx) =>
+                              item === "ellipsis" ? (
+                                <span key={`ellipsis-${mIdx}`} className="px-1.5 py-0.5 text-zinc-500 select-none">
+                                  &hellip;
+                                </span>
+                              ) : (
+                                <button
+                                  key={item}
+                                  type="button"
+                                  onClick={() => setModulesPage(item)}
+                                  className={`min-w-[28px] h-7 px-2 rounded-lg text-xs font-semibold transition-all border ${
+                                    item === currentModulesPage
+                                      ? "bg-[#facc15] text-black border-[#facc15] shadow-sm shadow-[#facc15]/20"
+                                      : "bg-zinc-900 border-white/10 text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                                  }`}
+                                >
+                                  {item}
+                                </button>
+                              )
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setModulesPage(Math.min(totalModulePages, currentModulesPage + 1))}
+                            disabled={currentModulesPage >= totalModulePages}
+                            className="px-2.5 py-1 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 hover:text-white transition-colors inline-flex items-center gap-1 font-medium"
+                          >
+                            <span className="hidden sm:inline">Next</span>
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setModulesPage(totalModulePages)}
+                            disabled={currentModulesPage >= totalModulePages}
+                            title="Last Page"
+                            className="p-1.5 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 hover:text-white transition-colors"
+                          >
+                            <ChevronsRight className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           </div>
         </div>

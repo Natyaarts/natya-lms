@@ -897,12 +897,20 @@ class LiveBatchSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         user = getattr(request, 'user', None)
         if user and not (user.is_superuser or user.is_staff):
+            course = attrs.get('course') or getattr(self.instance, 'course', None)
+            is_course_mentor = bool(
+                course and getattr(user, 'is_mentor', False)
+                and course.instructors.filter(user=user, role='MENTOR').exists()
+            )
+            is_batch_mentor = bool(self.instance and self.instance.mentor_id == user.id)
             instructor = attrs.get('instructor')
             if instructor is None and not self.instance:
                 attrs['instructor'] = user
-            elif instructor is not None and instructor != user:
+                if getattr(user, 'is_mentor', False) and not attrs.get('mentor'):
+                    attrs['mentor'] = user
+            elif instructor is not None and instructor != user and not is_course_mentor:
                 raise serializers.ValidationError({"instructor": "You can only create/manage sessions for yourself."})
-            elif self.instance and self.instance.instructor != user:
+            elif self.instance and self.instance.instructor != user and not (is_batch_mentor or is_course_mentor):
                 raise serializers.ValidationError({"instructor": "You can only manage your own batches."})
 
         # Handle validation for both create and update instances

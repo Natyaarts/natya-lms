@@ -5,6 +5,11 @@ import {
   Video, 
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Search,
   AlertCircle,
   Plus, 
   X, 
@@ -78,6 +83,26 @@ const formatScheduledDate = (isoStr: string) => {
 // Monday=0 .. Sunday=6 -- NOT JS Date.getDay()'s Sunday=0.
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const jsDayToBackend = (jsDay: number) => (jsDay + 6) % 7;
+
+function buildPageItems(currentPage: number, totalPages: number): (number | "ellipsis")[] {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  const items: (number | "ellipsis")[] = [1];
+  if (currentPage > 3) {
+    items.push("ellipsis");
+  }
+  const start = Math.max(2, currentPage - 1);
+  const end = Math.min(totalPages - 1, currentPage + 1);
+  for (let i = start; i <= end; i++) {
+    items.push(i);
+  }
+  if (currentPage < totalPages - 2) {
+    items.push("ellipsis");
+  }
+  items.push(totalPages);
+  return items;
+}
 
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
   return (
@@ -308,7 +333,15 @@ export default function LiveClassesPage() {
     }
   };
 
+  // ---- Pagination & filter state ----
+  const [classesPage, setClassesPage] = useState(1);
+  const [classesPageSize, setClassesPageSize] = useState(10);
+  const [batchesPage, setBatchesPage] = useState(1);
+  const [batchesPageSize, setBatchesPageSize] = useState(10);
+  const [batchStudentSearch, setBatchStudentSearch] = useState("");
+
   useEffect(() => {
+    setClassesPage(1);
     fetchClasses();
     if (tab === "history") {
       autoSyncPending();
@@ -316,7 +349,8 @@ export default function LiveClassesPage() {
   }, [tab]);
 
   useEffect(() => {
-    const hasPendingRecording = classes.some(
+    const safeClasses = Array.isArray(classes) ? classes : [];
+    const hasPendingRecording = safeClasses.some(
       (c) => c.status === "COMPLETED" && c.meeting_provider === "ZOOM" && !c.recording_url
     );
     const pollInterval = hasPendingRecording ? 10000 : 30000;
@@ -342,7 +376,9 @@ export default function LiveClassesPage() {
         ]);
         const upData = up.ok ? await up.json() : { results: [] };
         const histData = hist.ok ? await hist.json() : { results: [] };
-        const merged = [...(upData.results || upData), ...(histData.results || histData)];
+        const upList = Array.isArray(upData) ? upData : upData.results || [];
+        const histList = Array.isArray(histData) ? histData : histData.results || [];
+        const merged = [...upList, ...histList];
         setCalendarClasses(merged);
       } catch (err) {
         console.error(err);
@@ -386,6 +422,8 @@ export default function LiveClassesPage() {
 
   // ---- Batch modal state ----
   const [showBatchModal, setShowBatchModal] = useState(false);
+  const [editingBatchId, setEditingBatchId] = useState<number | null>(null);
+  const [initialBatchStudentIds, setInitialBatchStudentIds] = useState<number[]>([]);
   const [batchForm, setBatchForm] = useState<{
     courseId: string;
     batchType: "GROUP" | "ONE_TO_ONE";
@@ -417,9 +455,28 @@ export default function LiveClassesPage() {
         setBatches(Array.isArray(bAll) ? bAll : bAll.results || []);
       }
       if (isFullAdmin) {
-        const uRes = await authedFetch("/api/users/admin-users/");
-        if (uRes.ok) setAllUsers(await uRes.json());
+        const [tRes, mRes, sRes] = await Promise.all([
+          authedFetch("/api/users/admin-users/?role=teachers&page_size=100"),
+          authedFetch("/api/users/admin-users/?role=mentors&page_size=100"),
+          authedFetch("/api/users/admin-users/?role=students&page_size=100"),
+        ]);
+        const tData = tRes.ok ? await tRes.json() : [];
+        const mData = mRes.ok ? await mRes.json() : [];
+        const sData = sRes.ok ? await sRes.json() : [];
+        const combined = [
+          ...(Array.isArray(tData) ? tData : tData.results || []),
+          ...(Array.isArray(mData) ? mData : mData.results || []),
+          ...(Array.isArray(sData) ? sData : sData.results || []),
+        ];
+        const byId = new Map<number, any>();
+        for (const u of combined) {
+          if (u && typeof u.id === "number") byId.set(u.id, u);
+        }
+        setAllUsers(Array.from(byId.values()));
       } else {
+        if (currentUser) {
+          setAllUsers([currentUser]);
+        }
         const rRes = await authedFetch("/api/users/me/students/");
         if (rRes.ok) {
           const rData = await rRes.json();
@@ -433,14 +490,41 @@ export default function LiveClassesPage() {
 
   const openCreateBatch = async () => {
     setBatchError("");
+    setEditingBatchId(null);
+    setInitialBatchStudentIds([]);
     await loadDependencies();
     setBatchForm({
       courseId: "",
       batchType: "GROUP",
       maxParticipants: "20",
       instructorId: currentUser?.id ? String(currentUser.id) : "",
-      mentorId: "",
+      mentorId: currentUser?.is_mentor ? String(currentUser.id) : "",
       studentIds: [],
+    });
+    setShowBatchModal(true);
+  };
+
+  const openEditBatch = async (b: any) => {
+    setBatchError("");
+    setEditingBatchId(b.id);
+    await loadDependencies();
+    let existingStudentIds: number[] = [];
+    try {
+      const sRes = await authedFetch(`/api/courses/live-batches/${b.id}/students/?page_size=200`);
+      if (sRes.ok) {
+        const sData = await sRes.json();
+        const sList = Array.isArray(sData) ? sData : sData.results || [];
+        existingStudentIds = sList.map((row: any) => Number(row.student)).filter((n: number) => !isNaN(n));
+      }
+    } catch {}
+    setInitialBatchStudentIds(existingStudentIds);
+    setBatchForm({
+      courseId: b.course ? String(b.course) : "",
+      batchType: b.batch_type === "ONE_TO_ONE" ? "ONE_TO_ONE" : "GROUP",
+      maxParticipants: b.max_participants ? String(b.max_participants) : "",
+      instructorId: b.instructor ? String(b.instructor) : (currentUser?.id ? String(currentUser.id) : ""),
+      mentorId: b.mentor ? String(b.mentor) : (currentUser?.is_mentor ? String(currentUser.id) : ""),
+      studentIds: existingStudentIds,
     });
     setShowBatchModal(true);
   };
@@ -457,15 +541,22 @@ export default function LiveClassesPage() {
       };
       if (batchForm.batchType === "GROUP" && batchForm.maxParticipants) {
         batchPayload.max_participants = Number(batchForm.maxParticipants);
+      } else if (batchForm.batchType === "ONE_TO_ONE") {
+        batchPayload.max_participants = null;
       }
       if (isFullAdmin && batchForm.instructorId) {
         batchPayload.instructor = batchForm.instructorId;
       }
       if (batchForm.mentorId) {
         batchPayload.mentor = batchForm.mentorId;
+      } else if (editingBatchId) {
+        batchPayload.mentor = null;
       }
-      const bRes = await authedFetch("/api/courses/live-batches/", {
-        method: "POST",
+      const targetUrl = editingBatchId
+        ? `/api/courses/live-batches/${editingBatchId}/`
+        : "/api/courses/live-batches/";
+      const bRes = await authedFetch(targetUrl, {
+        method: editingBatchId ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(batchPayload),
       });
@@ -476,23 +567,33 @@ export default function LiveClassesPage() {
         return;
       }
 
-      for (const sId of batchForm.studentIds) {
-        await authedFetch(`/api/courses/live-batches/${bData.id}/students/`, {
+      const batchId = editingBatchId || bData.id;
+      const toAdd = batchForm.studentIds.filter((id) => !initialBatchStudentIds.includes(id));
+      const toRemove = initialBatchStudentIds.filter((id) => !batchForm.studentIds.includes(id));
+
+      for (const sId of toAdd) {
+        await authedFetch(`/api/courses/live-batches/${batchId}/students/`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ student_id: sId }),
         });
       }
+      for (const sId of toRemove) {
+        await authedFetch(`/api/courses/live-batches/${batchId}/students/${sId}/`, {
+          method: "DELETE",
+        });
+      }
 
-      setBanner("Live class batch created successfully!");
+      setBanner(editingBatchId ? "Batch and students updated successfully!" : "Live class batch created successfully!");
       setShowBatchModal(false);
+      setEditingBatchId(null);
       const bFetch = await authedFetch("/api/courses/live-batches/?page_size=200");
       if (bFetch.ok) {
         const bList = await bFetch.json();
         setBatches(Array.isArray(bList) ? bList : bList.results || []);
       }
     } catch (err) {
-      setBatchError("Failed to create batch. Please check fields.");
+      setBatchError("Failed to save batch. Please check fields.");
     } finally {
       setBatchCreating(false);
     }
@@ -563,21 +664,56 @@ export default function LiveClassesPage() {
   };
 
   const eligibleInstructors = useMemo(
-    () => allUsers.filter((u) => u.is_teacher || u.is_mentor),
+    () => (Array.isArray(allUsers) ? allUsers : []).filter((u) => u && (u.is_teacher || u.is_mentor)),
     [allUsers]
   );
   const eligibleMentors = useMemo(
-    () => allUsers.filter((u) => u.is_mentor || u.is_superuser || u.is_staff),
+    () => (Array.isArray(allUsers) ? allUsers : []).filter((u) => u && (u.is_mentor || u.is_superuser || u.is_staff)),
     [allUsers]
   );
   const eligibleStudents = useMemo(
-    () => (isFullAdmin ? allUsers.filter((u) => u.is_student) : rosterStudents),
+    () =>
+      isFullAdmin
+        ? (Array.isArray(allUsers) ? allUsers : []).filter((u) => u && u.is_student)
+        : Array.isArray(rosterStudents)
+        ? rosterStudents
+        : [],
     [allUsers, rosterStudents, isFullAdmin]
   );
   const batchesForCourse = useMemo(
-    () => batches.filter((b) => String(b.course) === String(form.courseId)),
+    () => (Array.isArray(batches) ? batches : []).filter((b) => b && String(b.course) === String(form.courseId)),
     [batches, form.courseId]
   );
+
+  const safeBatches = Array.isArray(batches) ? batches : [];
+  const batchesTotalPages = Math.max(1, Math.ceil(safeBatches.length / batchesPageSize));
+  const safeBatchesPage = Math.min(batchesPage, batchesTotalPages);
+  const paginatedBatches = useMemo(
+    () => safeBatches.slice((safeBatchesPage - 1) * batchesPageSize, safeBatchesPage * batchesPageSize),
+    [safeBatches, safeBatchesPage, batchesPageSize]
+  );
+
+  const safeClasses = Array.isArray(classes) ? classes : [];
+  const classesTotalPages = Math.max(1, Math.ceil(safeClasses.length / classesPageSize));
+  const safeClassesPage = Math.min(classesPage, classesTotalPages);
+  const paginatedClasses = useMemo(
+    () => safeClasses.slice((safeClassesPage - 1) * classesPageSize, safeClassesPage * classesPageSize),
+    [safeClasses, safeClassesPage, classesPageSize]
+  );
+
+  const filteredBatchStudents = useMemo(() => {
+    const q = batchStudentSearch.trim().toLowerCase();
+    if (!q) return eligibleStudents;
+    return eligibleStudents.filter((s: any) => {
+      const fullName = `${s.first_name || ""} ${s.last_name || ""}`.toLowerCase();
+      return (
+        fullName.includes(q) ||
+        (s.username || "").toLowerCase().includes(q) ||
+        (s.phone_number || "").toLowerCase().includes(q) ||
+        (s.email || "").toLowerCase().includes(q)
+      );
+    });
+  }, [eligibleStudents, batchStudentSearch]);
 
   const toggleWeekday = (d: number) => {
     setForm((f) => ({
@@ -960,7 +1096,8 @@ export default function LiveClassesPage() {
     }
     const aRes = await authedFetch(`/api/courses/live-classes/${lc.id}/attendance/`);
     if (aRes.ok) {
-      const existing = await aRes.json();
+      const existingData = await aRes.json();
+      const existing = Array.isArray(existingData) ? existingData : existingData.results || [];
       const map: Record<number, string> = {};
       const durMap: Record<number, number> = {};
       const rosterIds = new Set(roster.map((r: any) => r.student));
@@ -1268,7 +1405,7 @@ export default function LiveClassesPage() {
                 setTab(t);
                 if (t === "settings") {
                   fetchGlobalAttendanceSettings();
-                  if (classes.length === 0) fetchClasses();
+                  if (safeClasses.length === 0) fetchClasses();
                 }
               }}
               className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all capitalize flex items-center gap-1.5 ${
@@ -1278,7 +1415,7 @@ export default function LiveClassesPage() {
               }`}
             >
               {t === "settings" && <Sliders className="w-3.5 h-3.5" />}
-              {t === "batches" ? `Batches (${batches.length})` : t === "settings" ? "Attendance Settings" : t}
+              {t === "batches" ? `Batches (${safeBatches.length})` : t === "settings" ? "Attendance Settings" : t}
             </button>
           ))}
         </div>
@@ -1299,13 +1436,13 @@ export default function LiveClassesPage() {
       </div>
 
       {view === "calendar" ? (
-        <MonthCalendar classes={calendarClasses} />
+        <MonthCalendar classes={Array.isArray(calendarClasses) ? calendarClasses : []} />
       ) : (
         <div className="bg-[#0e0e12] border border-white/10 rounded-2xl overflow-hidden shadow-xl">
           {tab === "batches" ? (
             loading ? (
               <div className="text-center py-20 text-zinc-500 text-sm">Loading batches...</div>
-            ) : batches.length === 0 ? (
+            ) : safeBatches.length === 0 ? (
               <div className="text-center py-20 text-zinc-500 text-sm space-y-2">
                 <p>No batches created yet.</p>
                 <button onClick={openCreateBatch} className="px-4 py-2 bg-[#facc15] text-black font-bold text-xs rounded-xl hover:bg-yellow-400 shadow-sm">
@@ -1313,6 +1450,7 @@ export default function LiveClassesPage() {
                 </button>
               </div>
             ) : (
+              <>
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-[#141419] border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[11px]">
@@ -1326,7 +1464,7 @@ export default function LiveClassesPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/[0.06] text-zinc-300">
-                  {batches.map((b: any) => (
+                  {paginatedBatches.map((b: any) => (
                     <tr key={b.id} className="hover:bg-white/[0.02] transition-colors">
                       <td className="p-4 text-white font-bold">{b.course_title || `Course #${b.course}`}</td>
                       <td className="p-4">
@@ -1350,6 +1488,13 @@ export default function LiveClassesPage() {
                       <td className="p-4">
                         <div className="flex items-center justify-end gap-2">
                           <button
+                            onClick={() => openEditBatch(b)}
+                            className="px-2.5 py-1.5 rounded-lg bg-white/10 text-white text-[10px] font-bold hover:bg-white/15 border border-white/10 transition-colors flex items-center gap-1"
+                            title="Manage Batch Mentor & Students"
+                          >
+                            <UsersIcon className="w-3 h-3" /> Manage Students
+                          </button>
+                          <button
                             onClick={() => openScheduleForBatch(b)}
                             className="px-2.5 py-1.5 rounded-lg bg-[#facc15] text-black text-[10px] font-bold hover:bg-yellow-400 transition-colors flex items-center gap-1 shadow-sm"
                           >
@@ -1368,6 +1513,95 @@ export default function LiveClassesPage() {
                   ))}
                 </tbody>
               </table>
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-5 py-3.5 border-t border-white/10 bg-[#121216] text-xs text-zinc-400">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span>
+                    Showing{" "}
+                    <span className="text-white font-semibold">
+                      {(safeBatchesPage - 1) * batchesPageSize + 1}
+                    </span>{" "}
+                    to{" "}
+                    <span className="text-white font-semibold">
+                      {Math.min(safeBatchesPage * batchesPageSize, safeBatches.length)}
+                    </span>{" "}
+                    of <span className="text-white font-semibold">{safeBatches.length}</span> batches
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-zinc-500">Rows:</span>
+                    <select
+                      value={batchesPageSize}
+                      onChange={(e) => {
+                        setBatchesPageSize(Number(e.target.value));
+                        setBatchesPage(1);
+                      }}
+                      className="bg-black border border-white/10 rounded-lg px-2 py-1 text-white text-xs focus:outline-none focus:border-[#facc15]"
+                    >
+                      {[10, 20, 50].map((sz) => (
+                        <option key={sz} value={sz}>
+                          {sz} / page
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={safeBatchesPage <= 1}
+                    onClick={() => setBatchesPage(1)}
+                    className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 disabled:opacity-30 disabled:pointer-events-none transition-colors border border-white/5"
+                    title="First Page"
+                  >
+                    <ChevronsLeft className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={safeBatchesPage <= 1}
+                    onClick={() => setBatchesPage(Math.max(1, safeBatchesPage - 1))}
+                    className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 disabled:opacity-30 disabled:pointer-events-none transition-colors border border-white/5 flex items-center gap-1 font-medium"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" /> Prev
+                  </button>
+                  {buildPageItems(safeBatchesPage, batchesTotalPages).map((item, idx) =>
+                    item === "ellipsis" ? (
+                      <span key={`e-${idx}`} className="px-2 text-zinc-600 select-none">
+                        …
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        key={item}
+                        onClick={() => setBatchesPage(item)}
+                        className={`min-w-[30px] h-[30px] px-2 rounded-lg font-bold transition-all border ${
+                          item === safeBatchesPage
+                            ? "bg-[#facc15] text-black border-[#facc15] shadow-sm shadow-[#facc15]/20"
+                            : "bg-white/5 hover:bg-white/10 text-zinc-300 border-white/5"
+                        }`}
+                      >
+                        {item}
+                      </button>
+                    )
+                  )}
+                  <button
+                    type="button"
+                    disabled={safeBatchesPage >= batchesTotalPages}
+                    onClick={() => setBatchesPage(Math.min(batchesTotalPages, safeBatchesPage + 1))}
+                    className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 disabled:opacity-30 disabled:pointer-events-none transition-colors border border-white/5 flex items-center gap-1 font-medium"
+                  >
+                    Next <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={safeBatchesPage >= batchesTotalPages}
+                    onClick={() => setBatchesPage(batchesTotalPages)}
+                    className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 disabled:opacity-30 disabled:pointer-events-none transition-colors border border-white/5"
+                    title="Last Page"
+                  >
+                    <ChevronsRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+              </>
             )
           ) : tab === "settings" ? (
             <div className="p-6 space-y-6">
@@ -1493,7 +1727,7 @@ export default function LiveClassesPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/[0.06] text-zinc-300">
-                      {classes
+                      {safeClasses
                         .filter((lc: any) => {
                           if (!settingsSearchQuery.trim()) return true;
                           const q = settingsSearchQuery.toLowerCase();
@@ -1567,9 +1801,10 @@ export default function LiveClassesPage() {
             <div className="text-center py-20 text-zinc-500 text-sm">Loading live classes...</div>
           ) : error ? (
             <div className="text-center py-20 text-red-400 text-sm">{error}</div>
-          ) : classes.length === 0 ? (
+          ) : safeClasses.length === 0 ? (
             <div className="text-center py-20 text-zinc-500 text-sm">No {tab} live classes found.</div>
           ) : (
+            <>
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="bg-[#141419] border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[11px]">
@@ -1582,7 +1817,7 @@ export default function LiveClassesPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.06] text-zinc-300">
-                {classes.map((lc: any) => {
+                {paginatedClasses.map((lc: any) => {
                   const sched = formatScheduledDate(lc.scheduled_start);
                   return (
                     <tr key={lc.id} className="hover:bg-white/[0.02] transition-colors">
@@ -1874,6 +2109,95 @@ export default function LiveClassesPage() {
                 })}
               </tbody>
             </table>
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-5 py-3.5 border-t border-white/10 bg-[#121216] text-xs text-zinc-400">
+              <div className="flex items-center gap-3 flex-wrap">
+                <span>
+                  Showing{" "}
+                  <span className="text-white font-semibold">
+                    {(safeClassesPage - 1) * classesPageSize + 1}
+                  </span>{" "}
+                  to{" "}
+                  <span className="text-white font-semibold">
+                    {Math.min(safeClassesPage * classesPageSize, safeClasses.length)}
+                  </span>{" "}
+                  of <span className="text-white font-semibold">{safeClasses.length}</span> classes
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-zinc-500">Rows:</span>
+                  <select
+                    value={classesPageSize}
+                    onChange={(e) => {
+                      setClassesPageSize(Number(e.target.value));
+                      setClassesPage(1);
+                    }}
+                    className="bg-black border border-white/10 rounded-lg px-2 py-1 text-white text-xs focus:outline-none focus:border-[#facc15]"
+                  >
+                    {[10, 20, 50].map((sz) => (
+                      <option key={sz} value={sz}>
+                        {sz} / page
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  disabled={safeClassesPage <= 1}
+                  onClick={() => setClassesPage(1)}
+                  className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 disabled:opacity-30 disabled:pointer-events-none transition-colors border border-white/5"
+                  title="First Page"
+                >
+                  <ChevronsLeft className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  disabled={safeClassesPage <= 1}
+                  onClick={() => setClassesPage(Math.max(1, safeClassesPage - 1))}
+                  className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 disabled:opacity-30 disabled:pointer-events-none transition-colors border border-white/5 flex items-center gap-1 font-medium"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" /> Prev
+                </button>
+                {buildPageItems(safeClassesPage, classesTotalPages).map((item, idx) =>
+                  item === "ellipsis" ? (
+                    <span key={`e-${idx}`} className="px-2 text-zinc-600 select-none">
+                      …
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      key={item}
+                      onClick={() => setClassesPage(item)}
+                      className={`min-w-[30px] h-[30px] px-2 rounded-lg font-bold transition-all border ${
+                        item === safeClassesPage
+                          ? "bg-[#facc15] text-black border-[#facc15] shadow-sm shadow-[#facc15]/20"
+                          : "bg-white/5 hover:bg-white/10 text-zinc-300 border-white/5"
+                      }`}
+                    >
+                      {item}
+                    </button>
+                  )
+                )}
+                <button
+                  type="button"
+                  disabled={safeClassesPage >= classesTotalPages}
+                  onClick={() => setClassesPage(Math.min(classesTotalPages, safeClassesPage + 1))}
+                  className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 disabled:opacity-30 disabled:pointer-events-none transition-colors border border-white/5 flex items-center gap-1 font-medium"
+                >
+                  Next <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  disabled={safeClassesPage >= classesTotalPages}
+                  onClick={() => setClassesPage(classesTotalPages)}
+                  className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 disabled:opacity-30 disabled:pointer-events-none transition-colors border border-white/5"
+                  title="Last Page"
+                >
+                  <ChevronsRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+            </>
           )}
         </div>
       )}
@@ -2726,10 +3050,10 @@ export default function LiveClassesPage() {
         )}
       </AnimatePresence>
 
-      {/* ---------------- Create Batch Modal ---------------- */}
+      {/* ---------------- Create / Manage Batch Modal ---------------- */}
       <AnimatePresence>
         {showBatchModal && (
-          <Modal title="Create Live Class Batch" onClose={() => setShowBatchModal(false)} wide>
+          <Modal title={editingBatchId ? `Manage Batch #${editingBatchId} (Mentor & Students)` : "Create Live Class Batch"} onClose={() => { setShowBatchModal(false); setEditingBatchId(null); }} wide>
             <form onSubmit={handleCreateBatch} className="space-y-4">
               {batchError && (
                 <div className="px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-xs">
@@ -2820,11 +3144,46 @@ export default function LiveClassesPage() {
               </div>
 
               <div>
-                <label className={labelCls}>Assign Students ({batchForm.studentIds.length} selected)</label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className={`${labelCls} mb-0`}>Assign Students ({batchForm.studentIds.length} selected)</label>
+                  <div className="flex items-center gap-2 text-[10px]">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const filteredIds = filteredBatchStudents.map((s: any) => s.id);
+                        setBatchForm((f) => ({
+                          ...f,
+                          studentIds: Array.from(new Set([...f.studentIds, ...filteredIds])),
+                        }));
+                      }}
+                      className="text-[#facc15] hover:underline font-semibold"
+                    >
+                      Select Filtered
+                    </button>
+                    <span className="text-zinc-600">·</span>
+                    <button
+                      type="button"
+                      onClick={() => setBatchForm((f) => ({ ...f, studentIds: [] }))}
+                      className="text-zinc-400 hover:text-white font-semibold"
+                    >
+                      Clear All
+                    </button>
+                  </div>
+                </div>
+                <div className="relative mb-2">
+                  <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={batchStudentSearch}
+                    onChange={(e) => setBatchStudentSearch(e.target.value)}
+                    placeholder="Filter students by name, username, or phone..."
+                    className="w-full pl-8 pr-3 py-1.5 bg-zinc-950 border border-white/10 rounded-xl text-white text-xs focus:outline-none focus:border-[#facc15]"
+                  />
+                </div>
                 <div className="max-h-40 overflow-y-auto space-y-1 bg-zinc-950 border border-white/10 rounded-xl p-2.5">
-                  {eligibleStudents.length === 0 ? (
-                    <p className="text-xs text-zinc-500 p-2">No students available to assign.</p>
-                  ) : eligibleStudents.map((s: any) => {
+                  {filteredBatchStudents.length === 0 ? (
+                    <p className="text-xs text-zinc-500 p-2">No matching students found.</p>
+                  ) : filteredBatchStudents.map((s: any) => {
                     const isChecked = batchForm.studentIds.includes(s.id);
                     return (
                       <label
@@ -2866,7 +3225,7 @@ export default function LiveClassesPage() {
                   disabled={batchCreating}
                   className="flex-1 py-2.5 bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-all text-xs disabled:opacity-50"
                 >
-                  {batchCreating ? "Creating..." : "Create Batch"}
+                  {batchCreating ? "Saving..." : editingBatchId ? "Save Batch & Students" : "Create Batch"}
                 </button>
               </div>
             </form>

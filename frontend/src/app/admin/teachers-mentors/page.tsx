@@ -23,7 +23,22 @@
 
 import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
-import { Eye, Search, Plus, X, AlertTriangle, Ban, Users, ChevronDown, Check, Calendar } from "lucide-react";
+import {
+  Eye,
+  Search,
+  Plus,
+  X,
+  AlertTriangle,
+  Ban,
+  Users,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Check,
+  Calendar,
+} from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -242,14 +257,144 @@ function SearchableUserSelect({
   );
 }
 
+function buildPageItems(currentPage: number, totalPages: number): (number | "ellipsis")[] {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, i) => i + 1);
+  }
+  const items: (number | "ellipsis")[] = [1];
+  if (currentPage > 3) {
+    items.push("ellipsis");
+  }
+  const start = Math.max(2, currentPage - 1);
+  const end = Math.min(totalPages - 1, currentPage + 1);
+  for (let i = start; i <= end; i++) {
+    items.push(i);
+  }
+  if (currentPage < totalPages - 2) {
+    items.push("ellipsis");
+  }
+  items.push(totalPages);
+  return items;
+}
+
+function PaginationBar({
+  page,
+  pageSize,
+  totalCount,
+  itemLabel,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  itemLabel: string;
+  onPageChange: (nextPage: number) => void;
+  onPageSizeChange: (nextSize: number) => void;
+}) {
+  if (totalCount <= 0) return null;
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const startItem = (page - 1) * pageSize + 1;
+  const endItem = Math.min(page * pageSize, totalCount);
+  const pageItems = buildPageItems(page, totalPages);
+
+  return (
+    <div className="flex flex-col lg:flex-row items-center justify-between px-6 py-4 border-t border-white/5 bg-zinc-950/50 text-xs gap-4">
+      <div className="flex flex-wrap items-center gap-4 text-zinc-400">
+        <span>
+          Showing <span className="text-white font-semibold">{startItem.toLocaleString()}</span> to{" "}
+          <span className="text-white font-semibold">{endItem.toLocaleString()}</span> of{" "}
+          <span className="text-white font-semibold">{totalCount.toLocaleString()}</span> {itemLabel}
+        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-zinc-500">Rows per page:</span>
+          <select
+            value={pageSize}
+            onChange={(e) => onPageSizeChange(Number(e.target.value))}
+            className="bg-zinc-900 border border-white/10 rounded-lg px-2.5 py-1 text-xs text-white font-medium focus:outline-none focus:border-[#facc15] transition-colors cursor-pointer"
+          >
+            {[10, 20, 50, 100].map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => onPageChange(1)}
+          disabled={page <= 1}
+          title="First Page"
+          className="p-1.5 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 hover:text-white transition-colors"
+        >
+          <ChevronsLeft className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => onPageChange(Math.max(1, page - 1))}
+          disabled={page <= 1}
+          className="px-2.5 py-1.5 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 hover:text-white transition-colors inline-flex items-center gap-1 font-medium"
+        >
+          <ChevronLeft className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">Prev</span>
+        </button>
+
+        <div className="flex items-center gap-1 mx-1">
+          {pageItems.map((item, idx) =>
+            item === "ellipsis" ? (
+              <span key={`ellipsis-${idx}`} className="px-2 py-1 text-zinc-500 select-none">
+                &hellip;
+              </span>
+            ) : (
+              <button
+                key={item}
+                type="button"
+                onClick={() => onPageChange(item)}
+                className={`min-w-[32px] h-8 px-2.5 rounded-lg text-xs font-semibold transition-all border ${
+                  item === page
+                    ? "bg-[#facc15] text-black border-[#facc15] shadow-sm shadow-[#facc15]/20"
+                    : "bg-zinc-900 border-white/10 text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                }`}
+              >
+                {item}
+              </button>
+            )
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+          disabled={page >= totalPages}
+          className="px-2.5 py-1.5 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 hover:text-white transition-colors inline-flex items-center gap-1 font-medium"
+        >
+          <span className="hidden sm:inline">Next</span>
+          <ChevronRight className="w-3.5 h-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={() => onPageChange(totalPages)}
+          disabled={page >= totalPages}
+          title="Last Page"
+          className="p-1.5 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 hover:text-white transition-colors"
+        >
+          <ChevronsRight className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function TeachersMentorsPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [usersLoading, setUsersLoading] = useState(true);
   const [usersError, setUsersError] = useState("");
   const [totalCount, setTotalCount] = useState(0);
   const [page, setPage] = useState(1);
-  const pageSize = 50;
-  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const [pageSize, setPageSize] = useState(20);
 
   const [teachersCount, setTeachersCount] = useState<number | null>(null);
   const [mentorsCount, setMentorsCount] = useState<number | null>(null);
@@ -261,6 +406,12 @@ export default function TeachersMentorsPage() {
   const [mentorships, setMentorships] = useState<Mentorship[]>([]);
   const [mentorshipsLoading, setMentorshipsLoading] = useState(true);
   const [mentorshipsError, setMentorshipsError] = useState("");
+  const [mentorshipsTotalCount, setMentorshipsTotalCount] = useState(0);
+  const [mentorshipsPage, setMentorshipsPage] = useState(1);
+  const [mentorshipsPageSize, setMentorshipsPageSize] = useState(20);
+  const [mentorshipsSearch, setMentorshipsSearch] = useState("");
+  const [debouncedMentorshipsSearch, setDebouncedMentorshipsSearch] = useState("");
+  const [filterStatus, setFilterStatus] = useState<"" | "ACTIVE" | "INACTIVE">("");
   const [filterStudentId, setFilterStudentId] = useState("");
   const [filterMentorId, setFilterMentorId] = useState("");
 
@@ -284,6 +435,14 @@ export default function TeachersMentorsPage() {
     }, 300);
     return () => clearTimeout(handler);
   }, [search]);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedMentorshipsSearch(mentorshipsSearch);
+      setMentorshipsPage(1);
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [mentorshipsSearch]);
 
   const probeCounts = async () => {
     try {
@@ -344,6 +503,10 @@ export default function TeachersMentorsPage() {
     setMentorshipsError("");
     try {
       const params = new URLSearchParams();
+      params.set("page", String(mentorshipsPage));
+      params.set("page_size", String(mentorshipsPageSize));
+      if (debouncedMentorshipsSearch.trim()) params.set("search", debouncedMentorshipsSearch.trim());
+      if (filterStatus) params.set("status", filterStatus);
       if (filterStudentId) params.set("student", filterStudentId);
       if (filterMentorId) params.set("mentor", filterMentorId);
       const qs = params.toString();
@@ -351,8 +514,16 @@ export default function TeachersMentorsPage() {
         credentials: "include",
       });
       if (res.ok) {
-        const data: Mentorship[] = await res.json();
-        setMentorships(Array.isArray(data) ? data : []);
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setMentorships(data);
+          setMentorshipsTotalCount(data.length);
+        } else {
+          setMentorships(data.results || []);
+          setMentorshipsTotalCount(
+            typeof data.count === "number" ? data.count : (data.results || []).length
+          );
+        }
       } else {
         setMentorshipsError("Failed to fetch mentorship assignments.");
       }
@@ -384,14 +555,19 @@ export default function TeachersMentorsPage() {
 
   useEffect(() => {
     probeCounts();
-    fetchMentorships();
+    fetchModalCandidates();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     fetchUsers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, page, debouncedSearch]);
+  }, [activeTab, page, pageSize, debouncedSearch]);
+
+  useEffect(() => {
+    fetchMentorships();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mentorshipsPage, mentorshipsPageSize, debouncedMentorshipsSearch, filterStatus, filterMentorId]);
 
   const handleTabChange = (tab: "teachers" | "mentors") => {
     setActiveTab(tab);
@@ -400,7 +576,11 @@ export default function TeachersMentorsPage() {
 
   const handleMentorshipFilterSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchMentorships();
+    if (mentorshipsPage !== 1) {
+      setMentorshipsPage(1);
+    } else {
+      fetchMentorships();
+    }
   };
 
   const openAssignModal = () => {
@@ -603,34 +783,17 @@ export default function TeachersMentorsPage() {
             </tbody>
           </table>
         </div>
-        {totalPages > 1 && (
-          <div className="flex flex-col sm:flex-row items-center justify-between px-6 py-4 border-t border-white/5 bg-zinc-950/40 text-xs gap-3">
-            <span className="text-zinc-500">
-              Showing {(page - 1) * pageSize + 1} to {Math.min(page * pageSize, totalCount)} of {totalCount} {activeTab}
-            </span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page <= 1}
-                className="px-3 py-1.5 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 transition-colors"
-              >
-                Previous
-              </button>
-              <span className="px-3 py-1.5 text-zinc-400">
-                Page {page} of {totalPages}
-              </span>
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={page >= totalPages}
-                className="px-3 py-1.5 bg-zinc-900 border border-white/10 rounded-lg text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-800 transition-colors"
-              >
-                Next
-              </button>
-            </div>
-          </div>
-        )}
+        <PaginationBar
+          page={page}
+          pageSize={pageSize}
+          totalCount={totalCount}
+          itemLabel={activeTab}
+          onPageChange={(nextPage) => setPage(nextPage)}
+          onPageSizeChange={(nextSize) => {
+            setPageSize(nextSize);
+            setPage(1);
+          }}
+        />
       </div>
 
       {/* Mentorship Assignment Panel */}
@@ -639,6 +802,11 @@ export default function TeachersMentorsPage() {
           <h2 className="text-xl font-bold flex items-center gap-2">
             <Users className="w-5 h-5 text-[#facc15]" />
             Mentorship Assignments
+            {mentorshipsTotalCount > 0 && (
+              <span className="ml-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#facc15]/10 text-[#facc15] border border-[#facc15]/20">
+                {mentorshipsTotalCount.toLocaleString()}
+              </span>
+            )}
           </h2>
           <p className="text-zinc-400 text-sm mt-1">Assign mentors to students and manage active assignments.</p>
         </div>
@@ -651,29 +819,60 @@ export default function TeachersMentorsPage() {
         </button>
       </div>
 
-      {/* Optional student/mentor id filters -- narrows the "see everything"
-          admin queryset the same way ?student=/?mentor= narrow it server-side. */}
-      <form onSubmit={handleMentorshipFilterSubmit} className="flex flex-col md:flex-row gap-4 mb-6">
-        <input
-          type="number"
-          placeholder="Filter by student ID..."
-          value={filterStudentId}
-          onChange={(e) => setFilterStudentId(e.target.value)}
-          className="w-full md:w-48 bg-zinc-900 border border-white/5 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#facc15] placeholder:text-zinc-500"
-        />
-        <input
-          type="number"
-          placeholder="Filter by mentor ID..."
+      {/* Search & Filters for Mentorship Assignments */}
+      <form onSubmit={handleMentorshipFilterSubmit} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
+        <div className="relative sm:col-span-2">
+          <Search className="w-4 h-4 text-zinc-500 absolute left-4 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            placeholder="Search student or mentor name, username, phone..."
+            value={mentorshipsSearch}
+            onChange={(e) => setMentorshipsSearch(e.target.value)}
+            className="w-full bg-zinc-900 border border-white/5 rounded-xl pl-11 pr-4 py-3 text-sm text-white focus:outline-none focus:border-[#facc15] transition-colors placeholder:text-zinc-500"
+          />
+        </div>
+        <select
           value={filterMentorId}
-          onChange={(e) => setFilterMentorId(e.target.value)}
-          className="w-full md:w-48 bg-zinc-900 border border-white/5 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#facc15] placeholder:text-zinc-500"
-        />
-        <button
-          type="submit"
-          className="px-5 py-3 bg-zinc-900 border border-white/10 hover:bg-zinc-800 text-sm font-semibold rounded-xl transition-all"
+          onChange={(e) => {
+            setFilterMentorId(e.target.value);
+            setMentorshipsPage(1);
+          }}
+          className="w-full bg-zinc-900 border border-white/5 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#facc15] transition-colors"
         >
-          Apply Filters
-        </button>
+          <option value="">All Mentors</option>
+          {modalMentors.map((m) => (
+            <option key={m.id} value={String(m.id)}>
+              {displayName(m)}
+            </option>
+          ))}
+        </select>
+        <select
+          value={filterStatus}
+          onChange={(e) => {
+            setFilterStatus(e.target.value as "" | "ACTIVE" | "INACTIVE");
+            setMentorshipsPage(1);
+          }}
+          className="w-full bg-zinc-900 border border-white/5 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#facc15] transition-colors"
+        >
+          <option value="">All Statuses</option>
+          <option value="ACTIVE">Active Only</option>
+          <option value="INACTIVE">Inactive Only</option>
+        </select>
+        <div className="flex gap-2">
+          <input
+            type="number"
+            placeholder="Student ID..."
+            value={filterStudentId}
+            onChange={(e) => setFilterStudentId(e.target.value)}
+            className="w-full bg-zinc-900 border border-white/5 rounded-xl px-3.5 py-3 text-sm text-white focus:outline-none focus:border-[#facc15] placeholder:text-zinc-500"
+          />
+          <button
+            type="submit"
+            className="px-4 py-3 bg-zinc-900 border border-white/10 hover:bg-zinc-800 text-xs font-semibold rounded-xl transition-all shrink-0"
+          >
+            Filter
+          </button>
+        </div>
       </form>
 
       {mentorshipsError && (
@@ -755,6 +954,17 @@ export default function TeachersMentorsPage() {
             </tbody>
           </table>
         </div>
+        <PaginationBar
+          page={mentorshipsPage}
+          pageSize={mentorshipsPageSize}
+          totalCount={mentorshipsTotalCount}
+          itemLabel="assignments"
+          onPageChange={(nextPage) => setMentorshipsPage(nextPage)}
+          onPageSizeChange={(nextSize) => {
+            setMentorshipsPageSize(nextSize);
+            setMentorshipsPage(1);
+          }}
+        />
       </div>
 
       {/* New Assignment Modal */}

@@ -59,9 +59,17 @@ class LiveBatchService:
                 if purchase.status != 'SUCCESS':
                     raise ValidationError("Purchase status must be SUCCESS.")
             else:
-                # Paid course requires purchase, unless administrative override or free course
+                # Paid course requires purchase, unless administrative/instructor/mentor override,
+                # already enrolled student, or free course.
                 is_admin = request_user and (request_user.is_superuser or request_user.is_staff)
-                if batch.course.price > 0 and not is_admin:
+                is_authorized_staff = request_user and (
+                    batch.instructor_id == request_user.id
+                    or batch.mentor_id == request_user.id
+                    or getattr(request_user, 'is_mentor', False)
+                    or getattr(request_user, 'is_teacher', False)
+                )
+                already_enrolled = Enrollment.objects.filter(user=student, course=batch.course).exists()
+                if batch.course.price > 0 and not (is_admin or is_authorized_staff or already_enrolled):
                     raise ValidationError("Payment/Purchase is required to enroll in this paid course.")
 
             # 5. Check duplicate/idempotency

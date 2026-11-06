@@ -232,6 +232,7 @@ SESSION_COOKIE_DOMAIN = COOKIE_DOMAIN
 
 REST_AUTH = {
     'USE_JWT': True,
+    'SESSION_LOGIN': False,
     'JWT_AUTH_COOKIE': 'natya-auth',
     'JWT_AUTH_REFRESH_COOKIE': 'natya-refresh',
     'USER_DETAILS_SERIALIZER': 'users.serializers.CustomUserDetailsSerializer',

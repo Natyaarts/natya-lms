@@ -9,7 +9,7 @@ User = get_user_model()
 logger = logging.getLogger(__name__)
 
 
-def attach_jwt_cookies(response, user):
+def attach_jwt_cookies(response, user, refresh=None):
     """
     Attach dj-rest-auth / SimpleJWT cookies to an HTTP response so that
     cross-origin frontend clients (Next.js on academy.natyaarts.com) are
@@ -21,7 +21,8 @@ def attach_jwt_cookies(response, user):
     try:
         from datetime import timedelta
         from rest_framework_simplejwt.tokens import RefreshToken
-        refresh = RefreshToken.for_user(user)
+        if refresh is None:
+            refresh = RefreshToken.for_user(user)
         access_cookie_key = getattr(settings, 'REST_AUTH', {}).get('JWT_AUTH_COOKIE', 'natya-auth')
         refresh_cookie_key = getattr(settings, 'REST_AUTH', {}).get('JWT_AUTH_REFRESH_COOKIE', 'natya-refresh')
         cookie_domain = getattr(settings, 'COOKIE_DOMAIN', None)

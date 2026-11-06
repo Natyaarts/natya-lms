@@ -44,11 +44,19 @@ export default function AvailabilityPage() {
   useEffect(() => {
     if (!currentUser) return;
     if (currentUser.is_superuser || currentUser.is_staff) {
-      authedFetch("/api/users/admin-users/").then(async (res) => {
-        if (res.ok) {
-          const all = await res.json();
-          setInstructors(all.filter((u: any) => u.is_teacher || u.is_mentor));
+      Promise.all([
+        authedFetch("/api/users/admin-users/?role=teachers&page_size=100"),
+        authedFetch("/api/users/admin-users/?role=mentors&page_size=100"),
+      ]).then(async ([tRes, mRes]) => {
+        const tData = tRes.ok ? await tRes.json() : [];
+        const mData = mRes.ok ? await mRes.json() : [];
+        const tList = Array.isArray(tData) ? tData : tData.results || [];
+        const mList = Array.isArray(mData) ? mData : mData.results || [];
+        const byId = new Map<number, any>();
+        for (const u of [...tList, ...mList]) {
+          if (u && (u.is_teacher || u.is_mentor)) byId.set(u.id, u);
         }
+        setInstructors(Array.from(byId.values()));
       });
     }
   }, [currentUser]);

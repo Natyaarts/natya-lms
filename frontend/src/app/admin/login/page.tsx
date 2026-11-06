@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { Eye, EyeOff } from "lucide-react";
 
 export default function AdminLogin() {
+  const router = useRouter();
   const [formData, setFormData] = useState({
     username: "",
     password: ""
@@ -52,15 +54,29 @@ export default function AdminLogin() {
         headers["X-CSRFToken"] = csrfToken;
       }
 
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/auth/login/`, {
         method: "POST",
         headers: headers,
         body: JSON.stringify(payload),
-        credentials: "include" // Important for cookies
-      });
+        credentials: "include", // Important for cookies
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId));
 
       if (res.ok) {
-        window.location.href = "/admin";
+        const data = await res.json().catch(() => null);
+        const u = data?.user;
+        if (u && typeof window !== "undefined") {
+          try {
+            sessionStorage.setItem("natya_admin_user", JSON.stringify(u));
+          } catch {}
+        }
+        const target = u && !(u.is_superuser || u.is_staff) && (u.is_teacher || u.is_mentor)
+          ? "/admin/courses"
+          : "/admin";
+        router.replace(target);
       } else {
         const text = await res.text();
         console.error("Login Error Status:", res.status);
@@ -73,8 +89,12 @@ export default function AdminLogin() {
         }
         setLoading(false);
       }
-    } catch (err) {
-      setError("Failed to connect to server");
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        setError("Login request timed out. Please try again.");
+      } else {
+        setError("Failed to connect to server");
+      }
       setLoading(false);
     }
   };

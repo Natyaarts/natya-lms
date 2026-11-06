@@ -119,20 +119,54 @@ class ThrottledLoginView(LoginView):
     throttle_classes = [LoginRateThrottle]
 
     def post(self, request, *args, **kwargs):
-        try:
-            raw_uname = (request.data.get('username') or '').strip()
-            if raw_uname and '@' not in raw_uname and not User.objects.filter(username=raw_uname).exists():
-                matched_u = (
-                    User.objects.filter(username__iexact=raw_uname).only('username').first()
-                    or User.objects.filter(first_name__iexact=raw_uname).only('username').first()
-                )
-                if matched_u:
-                    data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
-                    data['username'] = matched_u.username
-                    request._full_data = data
-        except Exception:
-            pass
-        return super().post(request, *args, **kwargs)
+        raw_ident = (request.data.get('username') or request.data.get('email') or '').strip()
+        raw_password = request.data.get('password') or ''
+        if not raw_ident or not raw_password:
+            return Response(
+                {"non_field_errors": ["Must include \"username\" and \"password\"."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from django.db.models import Q
+        from django.contrib.auth.hashers import check_password
+        from .serializers import CustomUserDetailsSerializer
+        from .adapters import attach_jwt_cookies
+
+        q = Q(username__iexact=raw_ident) | Q(email__iexact=raw_ident) | Q(first_name__iexact=raw_ident)
+        digits = re.sub(r'\D', '', raw_ident)
+        if len(digits) >= 10:
+            q |= Q(phone_number__endswith=digits[-10:])
+
+        candidates = list(
+            User.objects.filter(q, is_active=True)
+            .order_by('-is_superuser', '-is_staff', '-is_mentor', '-is_teacher', 'id')[:5]
+        )
+
+        matched_user = None
+        for candidate in candidates:
+            if candidate.password and check_password(raw_password, candidate.password):
+                matched_user = candidate
+                break
+
+        if not matched_user:
+            return Response(
+                {"non_field_errors": ["Unable to log in with provided credentials."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        refresh = RefreshToken.for_user(matched_user)
+        access_str = str(refresh.access_token)
+        refresh_str = str(refresh)
+
+        response = Response(
+            {
+                "access": access_str,
+                "refresh": refresh_str,
+                "user": CustomUserDetailsSerializer(matched_user, context={'request': request}).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+        return attach_jwt_cookies(response, matched_user, refresh=refresh)
 
 
 class ThrottledPasswordResetView(PasswordResetView):
@@ -1018,7 +1052,7 @@ class AdminStatsView(APIView):
 
         from django.utils import timezone
         import datetime
-        from django.db.models import Sum, Count, OuterRef, Exists
+        from django.db.models import Sum, Count, OuterRef, Exists, Q
         from django.db.models.functions import TruncMonth
         from courses.models import Course, Enrollment, AssignmentSubmission, LiveClass
         from orders.models import Purchase, Subscription
@@ -1028,21 +1062,36 @@ class AdminStatsView(APIView):
         start_of_week = now - datetime.timedelta(days=7)
         start_of_month = now - datetime.timedelta(days=30)
 
-        # Users
-        total_students = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False).count()
-        new_students_week = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False, date_joined__gte=start_of_week).count()
-        new_students_month = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False, date_joined__gte=start_of_month).count()
-        active_students = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False, is_active=True).count()
-        inactive_students = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False, is_active=False).count()
-        total_teachers = User.objects.filter(is_teacher=True, is_superuser=False).count()
+        # Users (single aggregate query instead of 7 separate COUNT queries)
+        student_q = Q(is_student=True, is_teacher=False, is_superuser=False)
+        user_aggs = User.objects.aggregate(
+            total_students=Count('id', filter=student_q),
+            new_students_week=Count('id', filter=student_q & Q(date_joined__gte=start_of_week)),
+            new_students_month=Count('id', filter=student_q & Q(date_joined__gte=start_of_month)),
+            active_students=Count('id', filter=student_q & Q(is_active=True)),
+            inactive_students=Count('id', filter=student_q & Q(is_active=False)),
+            total_teachers=Count('id', filter=Q(is_teacher=True, is_superuser=False)),
+            total_mentors=Count('id', filter=Q(is_mentor=True, is_superuser=False)),
+        )
+        total_students = user_aggs['total_students']
+        new_students_week = user_aggs['new_students_week']
+        new_students_month = user_aggs['new_students_month']
+        active_students = user_aggs['active_students']
+        inactive_students = user_aggs['inactive_students']
+        total_teachers = user_aggs['total_teachers']
         # Admin Dashboard Completion gap fix: nav wants "Teachers/Mentors"
         # together, and the overview previously reported teachers only.
-        total_mentors = User.objects.filter(is_mentor=True, is_superuser=False).count()
+        total_mentors = user_aggs['total_mentors']
 
-        # Courses
-        total_courses = Course.objects.count()
-        active_courses = Course.objects.filter(is_published=True).count()
-        draft_courses = Course.objects.filter(is_published=False).count()
+        # Courses (single aggregate query instead of 3 separate COUNT queries)
+        course_aggs = Course.objects.aggregate(
+            total_courses=Count('id'),
+            active_courses=Count('id', filter=Q(is_published=True)),
+            draft_courses=Count('id', filter=Q(is_published=False)),
+        )
+        total_courses = course_aggs['total_courses']
+        active_courses = course_aggs['active_courses']
+        draft_courses = course_aggs['draft_courses']
         
         top_courses_qs = Course.objects.annotate(enrollment_count=Count('enrollments')).order_by('-enrollment_count')[:5]
         top_courses = []
@@ -1055,12 +1104,18 @@ class AdminStatsView(APIView):
 
         # Payments & Revenue (strictly exclude Apple StoreKit Sandbox test transactions)
         billable_purchases = Purchase.objects.exclude(apple_environment=Purchase.AppleEnvironment.SANDBOX)
-        revenue = billable_purchases.filter(status='SUCCESS').aggregate(total=Sum('amount'))['total'] or 0.00
-        current_month_revenue = billable_purchases.filter(status='SUCCESS', created_at__gte=start_of_month).aggregate(total=Sum('amount'))['total'] or 0.00
-        
-        success_payments = billable_purchases.filter(status='SUCCESS').count()
-        pending_payments = billable_purchases.filter(status='PENDING').count()
-        failed_payments = billable_purchases.filter(status='FAILED').count()
+        purchase_aggs = billable_purchases.aggregate(
+            revenue=Sum('amount', filter=Q(status='SUCCESS')),
+            current_month_revenue=Sum('amount', filter=Q(status='SUCCESS', created_at__gte=start_of_month)),
+            success_payments=Count('id', filter=Q(status='SUCCESS')),
+            pending_payments=Count('id', filter=Q(status='PENDING')),
+            failed_payments=Count('id', filter=Q(status='FAILED')),
+        )
+        revenue = purchase_aggs['revenue'] or 0.00
+        current_month_revenue = purchase_aggs['current_month_revenue'] or 0.00
+        success_payments = purchase_aggs['success_payments']
+        pending_payments = purchase_aggs['pending_payments']
+        failed_payments = purchase_aggs['failed_payments']
 
         # Monthly breakdown
         monthly_rev = billable_purchases.filter(status='SUCCESS') \
@@ -1077,9 +1132,13 @@ class AdminStatsView(APIView):
                 "total": float(item['total'] or 0.00)
             })
 
-        # Enrollments
-        total_enrollments = Enrollment.objects.count()
-        new_enrollments_month = Enrollment.objects.filter(enrolled_at__gte=start_of_month).count()
+        # Enrollments (single aggregate query instead of 2 separate COUNT queries)
+        enroll_aggs = Enrollment.objects.aggregate(
+            total_enrollments=Count('id'),
+            new_enrollments_month=Count('id', filter=Q(enrolled_at__gte=start_of_month)),
+        )
+        total_enrollments = enroll_aggs['total_enrollments']
+        new_enrollments_month = enroll_aggs['new_enrollments_month']
         
         paid_enrollments_count = billable_purchases.filter(
             status='SUCCESS',
@@ -1560,6 +1619,7 @@ class MentorshipViewSet(viewsets.ModelViewSet):
     """
     serializer_class = MentorshipSerializer
     permission_classes = [permissions.IsAuthenticated, IsSuperAdminOrReadOnlyMentorship]
+    pagination_class = AdminUserPagination
 
     def get_queryset(self):
         user = self.request.user
@@ -1567,6 +1627,19 @@ class MentorshipViewSet(viewsets.ModelViewSet):
         status_param = self.request.query_params.get('status')
         if status_param:
             qs = qs.filter(status=status_param)
+
+        search = (self.request.query_params.get('search') or self.request.query_params.get('q') or '').strip()
+        if search:
+            qs = qs.filter(
+                Q(student__first_name__icontains=search) |
+                Q(student__last_name__icontains=search) |
+                Q(student__username__icontains=search) |
+                Q(student__email__icontains=search) |
+                Q(student__phone_number__icontains=search) |
+                Q(mentor__first_name__icontains=search) |
+                Q(mentor__last_name__icontains=search) |
+                Q(mentor__username__icontains=search)
+            )
 
         if user.is_superuser or user.is_staff:
             # Admin use, e.g. a specific user's detail page: ?student= or
@@ -1585,6 +1658,11 @@ class MentorshipViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
+        if request.query_params.get('page'):
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
         if not request.query_params.get('student') and not request.query_params.get('mentor'):
             try:
                 limit = min(int(request.query_params.get('limit', 200)), 1000)
