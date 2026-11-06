@@ -141,7 +141,7 @@ def run():
                     new_ci.append(CourseInstructor(course=c, user=dm, role='MENTOR', is_primary=False))
                     existing_ci.add((c.id, dm.id))
         if new_ci:
-            CourseInstructor.objects.bulk_create(new_ci, ignore_conflicts=True)
+            CourseInstructor.objects.bulk_create(new_ci, batch_size=1000, ignore_conflicts=True)
 
         existing_ms = set(
             Mentorship.objects.filter(status='ACTIVE').values_list('mentor_id', 'student_id')
@@ -167,7 +167,7 @@ def run():
                     new_ms.append(Mentorship(mentor=dm, student_id=uid, status='ACTIVE'))
                     existing_ms.add((dm.id, uid))
         if new_ms:
-            Mentorship.objects.bulk_create(new_ms, ignore_conflicts=True)
+            Mentorship.objects.bulk_create(new_ms, batch_size=1000, ignore_conflicts=True)
 
         # 4. Sync Teacher CourseInstructor assignments across all matching teacher accounts
         #    (e.g. 'Athiraravi' <-> 'Kalamandalam Athira Ravi') so any teacher login sees their exact courses
@@ -204,7 +204,7 @@ def run():
                         existing_teacher_ci.add((c.id, u.id))
 
         if new_teacher_ci:
-            CourseInstructor.objects.bulk_create(new_teacher_ci, ignore_conflicts=True)
+            CourseInstructor.objects.bulk_create(new_teacher_ci, batch_size=1000, ignore_conflicts=True)
 
         # Clean up any regular teachers who were mistakenly marked is_mentor=True by earlier scripts
         if matched_teacher_ids:

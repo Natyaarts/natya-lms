@@ -78,18 +78,35 @@ jobs:
           mkdir -p diag
           echo "=== CHECKING ENVIRONMENT STATUS ==="
 
-          # Wait up to 10 minutes (60 x 10s) if environment is currently updating, failing closed if not Ready
+          # If a previous deployment is stuck on an unresponsive (Grey) instance, abort it first
+          INIT_INFO=$(aws elasticbeanstalk describe-environments \
+            --environment-names Natya-lms-backend-env \
+            --region ap-south-1 \
+            --query 'Environments[0].[Status,Health,HealthStatus,AbortableOperationInProgress]' \
+            --output text 2>/dev/null || echo "")
+          read -r INIT_STATUS INIT_HEALTH INIT_HEALTH_STATUS INIT_ABORTABLE <<< "$INIT_INFO" || true
+          echo "Initial State: Status=${INIT_STATUS} | Health=${INIT_HEALTH} (${INIT_HEALTH_STATUS}) | Abortable=${INIT_ABORTABLE}"
+          if [ "$INIT_STATUS" != "Ready" ] && [ "$INIT_HEALTH" = "Grey" ] && { [ "$INIT_ABORTABLE" = "True" ] || [ "$INIT_ABORTABLE" = "true" ]; }; then
+            echo "Stuck operation detected on unresponsive (Grey) instance. Aborting stuck environment update..."
+            aws elasticbeanstalk abort-environment-update --environment-name Natya-lms-backend-env --region ap-south-1 || true
+            sleep 15
+          fi
+
+          # Wait up to 8 minutes (48 x 10s) if environment is currently updating, failing closed if not Ready
           ENV_READY=false
           STATUS=""
-          for i in $(seq 1 60); do
-            STATUS=$(aws elasticbeanstalk describe-environments \
+          HEALTH=""
+          HEALTH_STATUS=""
+          for i in $(seq 1 48); do
+            PRE_INFO=$(aws elasticbeanstalk describe-environments \
               --environment-names Natya-lms-backend-env \
               --region ap-south-1 \
-              --query 'Environments[0].Status' \
+              --query 'Environments[0].[Status,Health,HealthStatus]' \
               --output text 2>/dev/null || echo "")
-            echo "[$i/60] Status: $STATUS"
+            read -r STATUS HEALTH HEALTH_STATUS <<< "$PRE_INFO" || true
+            echo "[$i/48] Status: $STATUS | Health: $HEALTH ($HEALTH_STATUS)"
             if [ "$STATUS" = "Ready" ]; then
-              echo "Environment is Ready for deployment!"
+              echo "Environment is Ready (Health: $HEALTH / $HEALTH_STATUS)!"
               ENV_READY=true
               break
             fi
@@ -97,8 +114,49 @@ jobs:
           done
 
           if [ "$ENV_READY" != "true" ]; then
-            echo "::error::Environment Natya-lms-backend-env did not reach Ready state within 10 minutes (current status: $STATUS). Aborting safely without starting a conflicting deployment."
+            echo "::error::Environment Natya-lms-backend-env did not reach Ready state within 8 minutes (current status: $STATUS). Aborting safely without starting a conflicting deployment."
             exit 1
+          fi
+
+          # If the instance is frozen/unresponsive (Health=Grey or Red/Severe) when Ready, reboot the EC2 instance
+          # so cfn-hup / eb-engine can respond to the new deployment within the command timeout.
+          if [ "$HEALTH" != "Green" ]; then
+            echo "Environment is Ready but Health is ${HEALTH} (${HEALTH_STATUS}). Inspecting EC2 instance for recovery reboot..."
+            INSTANCE_ID=$(aws elasticbeanstalk describe-environment-resources \
+              --environment-name Natya-lms-backend-env \
+              --region ap-south-1 \
+              --query 'EnvironmentResources.Instances[0].Id' \
+              --output text 2>/dev/null || echo "")
+            echo "Detected EC2 Instance ID: ${INSTANCE_ID}"
+            if [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+              echo "Issuing EC2 hypervisor reboot to unresponsive instance ${INSTANCE_ID}..."
+              aws ec2 reboot-instances --instance-ids "$INSTANCE_ID" --region ap-south-1 || true
+              echo "Waiting 60 seconds for instance ${INSTANCE_ID} to reboot cleanly..."
+              sleep 60
+              ENV_READY=false
+              for j in $(seq 1 24); do
+                REBOOT_INFO=$(aws elasticbeanstalk describe-environments \
+                  --environment-names Natya-lms-backend-env \
+                  --region ap-south-1 \
+                  --query 'Environments[0].[Status,Health,HealthStatus]' \
+                  --output text 2>/dev/null || echo "")
+                read -r STATUS HEALTH HEALTH_STATUS <<< "$REBOOT_INFO" || true
+                echo "[Post-Reboot $j/24] Status: $STATUS | Health: $HEALTH ($HEALTH_STATUS)"
+                if [ "$STATUS" = "Ready" ] && [ "$HEALTH" != "Grey" ]; then
+                  echo "Instance ${INSTANCE_ID} recovered from Grey state (Status=${STATUS}, Health=${HEALTH}/${HEALTH_STATUS})."
+                  ENV_READY=true
+                  break
+                fi
+                sleep 10
+              done
+              if [ "$STATUS" = "Ready" ]; then
+                ENV_READY=true
+              fi
+              if [ "$ENV_READY" != "true" ]; then
+                echo "::error::Environment did not return to Ready state after EC2 reboot (Status=${STATUS}, Health=${HEALTH})."
+                exit 1
+              fi
+            fi
           fi
 
           # Determine expected S3 bucket, version label, and S3 key
@@ -248,6 +306,13 @@ jobs:
               --no-paginate \
               --region ap-south-1 \
               --output json | jq --arg req "$DEPLOY_REQUEST_ID" '[.Events[] | select(.RequestId == $req)]' || true
+            echo "=== REQUESTING INSTANCE TAIL LOGS ==="
+            aws elasticbeanstalk request-environment-info --environment-name Natya-lms-backend-env --info-type tail --region ap-south-1 2>/dev/null || true
+            sleep 12
+            TAIL_URL=$(aws elasticbeanstalk retrieve-environment-info --environment-name Natya-lms-backend-env --info-type tail --region ap-south-1 --query 'EnvironmentInfo[0].Message' --output text 2>/dev/null || echo "")
+            if [ -n "$TAIL_URL" ] && [ "$TAIL_URL" != "None" ] && [ "$TAIL_URL" != "null" ]; then
+              curl -s --max-time 15 "$TAIL_URL" | tail -n 150 || true
+            fi
             exit 1
           fi
 
