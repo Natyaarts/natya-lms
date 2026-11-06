@@ -9,14 +9,18 @@ on:
       - '.github/workflows/backend-deploy.yml'
   workflow_dispatch:
 
+concurrency:
+  group: natya-production-elastic-beanstalk
+  cancel-in-progress: false
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   deploy:
     name: Deploy to Production Elastic Beanstalk
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     environment: production
     if: github.ref == 'refs/heads/main'
 
@@ -38,101 +42,254 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
-      - name: Configure S3 Bucket CORS for Direct Uploads
-        run: |
-          cat << 'EOF' > /tmp/s3_cors.json
-          {
-            "CORSRules": [
-              {
-                "AllowedHeaders": ["*"],
-                "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
-                "AllowedOrigins": [
-                  "*",
-                  "https://academy.natyaarts.com",
-                  "https://natya-lms.vercel.app",
-                  "http://localhost:3000"
-                ],
-                "ExposeHeaders": ["ETag"],
-                "MaxAgeSeconds": 3000
-              }
-            ]
-          }
-          EOF
-          aws s3api put-bucket-cors \
-            --bucket natyalms-media-2026 \
-            --cors-configuration file:///tmp/s3_cors.json \
-            --region ap-south-1 2>&1 || echo "Warning: S3 put-bucket-cors requires s3:PutBucketCORS permission."
-
       - name: Generate Deployment Package
         run: |
           cd backend
           zip -r ../deploy.zip . \
+            -x "*.zip" \
+            -x "*/*.zip" \
             -x ".env" \
+            -x ".env.*" \
             -x "*/.env" \
+            -x "*/.env.*" \
+            -x "db.sqlite3" \
+            -x "*.sqlite3" \
+            -x "*.sqlite3-journal" \
             -x "venv/*" \
+            -x ".venv/*" \
+            -x "env/*" \
             -x "*/__pycache__/*" \
             -x "*.pyc" \
-            -x "static/*"
+            -x "*.pyo" \
+            -x "*.bak" \
+            -x "*.log" \
+            -x "static/*" \
+            -x "test_zip_extract/*" \
+            -x "test.mp4" \
+            -x "test_*.py" \
+            -x "*/test_*.py" \
+            -x "*/tests.py" \
+            -x "run_postgres_validation.py"
+          ls -lh ../deploy.zip
 
       - name: Wait for EB Ready and Deploy via AWS CLI
         run: |
+          set -euo pipefail
           mkdir -p diag
           echo "=== CHECKING ENVIRONMENT STATUS ==="
-          
-          # Wait up to 5 minutes if environment is currently updating
-          for i in $(seq 1 30); do
-            STATUS=$(aws elasticbeanstalk describe-environments --environment-names Natya-lms-backend-env --region ap-south-1 --query 'Environments[0].Status' --output text 2>/dev/null || echo "")
-            echo "[$i/30] Status: $STATUS"
+
+          # Wait up to 10 minutes (60 x 10s) if environment is currently updating, failing closed if not Ready
+          ENV_READY=false
+          STATUS=""
+          for i in $(seq 1 60); do
+            STATUS=$(aws elasticbeanstalk describe-environments \
+              --environment-names Natya-lms-backend-env \
+              --region ap-south-1 \
+              --query 'Environments[0].Status' \
+              --output text 2>/dev/null || echo "")
+            echo "[$i/60] Status: $STATUS"
             if [ "$STATUS" = "Ready" ]; then
               echo "Environment is Ready for deployment!"
+              ENV_READY=true
               break
             fi
             sleep 10
           done
 
-          # Upload artifact to Elastic Beanstalk S3 bucket
+          if [ "$ENV_READY" != "true" ]; then
+            echo "::error::Environment Natya-lms-backend-env did not reach Ready state within 10 minutes (current status: $STATUS). Aborting safely without starting a conflicting deployment."
+            exit 1
+          fi
+
+          # Determine expected S3 bucket, version label, and S3 key
           BUCKET=$(aws elasticbeanstalk create-storage-location --region ap-south-1 --query 'S3Bucket' --output text)
-          S3_KEY="backend-${{ github.sha }}.zip"
-          echo "Uploading deploy.zip to s3://${BUCKET}/${S3_KEY}..."
-          aws s3 cp deploy.zip "s3://${BUCKET}/${S3_KEY}" --region ap-south-1
+          EXPECTED_VERSION="backend-${{ github.sha }}"
+          S3_KEY="${EXPECTED_VERSION}.zip"
 
-          # Create application version
-          echo "Creating application version backend-${{ github.sha }}..."
-          aws elasticbeanstalk create-application-version \
+          # Check whether EXPECTED_VERSION already exists BEFORE uploading deploy.zip (no error suppression)
+          echo "Checking if application version ${EXPECTED_VERSION} already exists..."
+          EXISTING_VER_JSON=$(aws elasticbeanstalk describe-application-versions \
             --application-name natya-lms-backend \
-            --version-label "backend-${{ github.sha }}" \
-            --source-bundle S3Bucket="${BUCKET}",S3Key="${S3_KEY}" \
-            --region ap-south-1 || true
+            --version-labels "${EXPECTED_VERSION}" \
+            --region ap-south-1 \
+            --output json)
 
-          # Deploy to environment
-          echo "Deploying version backend-${{ github.sha }} to Natya-lms-backend-env..."
-          aws elasticbeanstalk update-environment \
+          EXISTING_COUNT=$(echo "$EXISTING_VER_JSON" | jq '.ApplicationVersions | length')
+          if [ "$EXISTING_COUNT" -gt 0 ]; then
+            EXISTING_BUCKET=$(echo "$EXISTING_VER_JSON" | jq -r '.ApplicationVersions[0].SourceBundle.S3Bucket // empty')
+            EXISTING_KEY=$(echo "$EXISTING_VER_JSON" | jq -r '.ApplicationVersions[0].SourceBundle.S3Key // empty')
+            echo "Application version ${EXPECTED_VERSION} already exists with SourceBundle s3://${EXISTING_BUCKET}/${EXISTING_KEY}."
+            if [ "$EXISTING_BUCKET" != "$BUCKET" ] || [ "$EXISTING_KEY" != "$S3_KEY" ]; then
+              echo "::error::Existing application version ${EXPECTED_VERSION} SourceBundle mismatch: found s3://${EXISTING_BUCKET}/${EXISTING_KEY}, expected s3://${BUCKET}/${S3_KEY}."
+              exit 1
+            fi
+            echo "Verified existing application version ${EXPECTED_VERSION} SourceBundle matches s3://${BUCKET}/${S3_KEY}. Reusing existing application version without overwriting S3 object."
+          else
+            echo "Application version ${EXPECTED_VERSION} does not exist. Uploading deploy.zip to s3://${BUCKET}/${S3_KEY}..."
+            aws s3 cp deploy.zip "s3://${BUCKET}/${S3_KEY}" --region ap-south-1
+
+            echo "Creating application version ${EXPECTED_VERSION}..."
+            CREATE_VER_JSON=$(aws elasticbeanstalk create-application-version \
+              --application-name natya-lms-backend \
+              --version-label "${EXPECTED_VERSION}" \
+              --source-bundle S3Bucket="${BUCKET}",S3Key="${S3_KEY}" \
+              --region ap-south-1 \
+              --output json)
+            CREATED_BUCKET=$(echo "$CREATE_VER_JSON" | jq -r '.ApplicationVersion.SourceBundle.S3Bucket // empty')
+            CREATED_KEY=$(echo "$CREATE_VER_JSON" | jq -r '.ApplicationVersion.SourceBundle.S3Key // empty')
+            if [ "$CREATED_BUCKET" != "$BUCKET" ] || [ "$CREATED_KEY" != "$S3_KEY" ]; then
+              echo "::error::Created application version ${EXPECTED_VERSION} SourceBundle verification failed: got s3://${CREATED_BUCKET}/${CREATED_KEY}, expected s3://${BUCKET}/${S3_KEY}."
+              exit 1
+            fi
+            echo "Created and verified application version ${EXPECTED_VERSION} (s3://${CREATED_BUCKET}/${CREATED_KEY})."
+          fi
+
+          # Record deployment start timestamp immediately before calling update-environment
+          DEPLOY_START_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "Deploying version ${EXPECTED_VERSION} to Natya-lms-backend-env (started at ${DEPLOY_START_TIME})..."
+          UPDATE_JSON=$(aws elasticbeanstalk update-environment \
             --environment-name Natya-lms-backend-env \
-            --version-label "backend-${{ github.sha }}" \
-            --region ap-south-1
+            --version-label "${EXPECTED_VERSION}" \
+            --region ap-south-1 \
+            --output json)
 
-          echo "Deployment initiated. Waiting for environment update to complete..."
-          sleep 25
+          # Poll describe-events using --start-time "$DEPLOY_START_TIME" to discover the current deployment's RequestId
+          # from the "Environment update is starting." event (up to 2 minutes: 24 x 5s to handle delayed event propagation)
+          echo "Discovering deployment RequestId from Elastic Beanstalk events since ${DEPLOY_START_TIME}..."
+          DEPLOY_REQUEST_ID=""
+          DISCOVERY_EVENTS_JSON='{"Events":[]}'
+          for attempt in $(seq 1 24); do
+            DISCOVERY_EVENTS_JSON=$(aws elasticbeanstalk describe-events \
+              --environment-name Natya-lms-backend-env \
+              --start-time "$DEPLOY_START_TIME" \
+              --no-paginate \
+              --region ap-south-1 \
+              --output json 2>/dev/null || echo '{"Events":[]}')
+
+            DEPLOY_REQUEST_ID=$(echo "$DISCOVERY_EVENTS_JSON" | jq -r '
+              [.Events[] | select(.Message == "Environment update is starting." and .RequestId != null and .RequestId != "")]
+              | sort_by(.EventDate)
+              | last
+              | .RequestId // empty
+            ')
+
+            if [ -n "$DEPLOY_REQUEST_ID" ]; then
+              echo "Captured deployment RequestId: ${DEPLOY_REQUEST_ID} (on attempt ${attempt}/24)"
+              break
+            fi
+
+            echo "[RequestId Discovery ${attempt}/24] Waiting for 'Environment update is starting.' event since ${DEPLOY_START_TIME}..."
+            sleep 5
+          done
+
+          if [ -z "$DEPLOY_REQUEST_ID" ]; then
+            echo "::error::Failed to discover deployment RequestId ('Environment update is starting.' event) within 2 minutes after ${DEPLOY_START_TIME}."
+            echo "=== RELEVANT ELASTIC BEANSTALK EVENTS SINCE ${DEPLOY_START_TIME} ==="
+            echo "$DISCOVERY_EVENTS_JSON" | jq '.Events' || true
+            exit 1
+          fi
+
+          echo "Waiting for environment update to complete (max 15 minutes, polling every 10s)..."
+          sleep 20
           DEPLOY_SUCCESS=false
-          for i in $(seq 1 45); do
-            ENV_INFO=$(aws elasticbeanstalk describe-environments --environment-names Natya-lms-backend-env --region ap-south-1 --query 'Environments[0].[Status,Health,VersionLabel]' --output text 2>/dev/null || echo "")
-            read -r STATUS HEALTH VERSION <<< "$ENV_INFO"
-            echo "[$i/45] Status: $STATUS | Health: $HEALTH | Version: $VERSION"
+          STATUS=""
+          HEALTH=""
+          HEALTH_STATUS=""
+          VERSION=""
+          EB_CNAME=""
+          for i in $(seq 1 90); do
+            ENV_INFO=$(aws elasticbeanstalk describe-environments \
+              --environment-names Natya-lms-backend-env \
+              --region ap-south-1 \
+              --query 'Environments[0].[Status,Health,HealthStatus,VersionLabel,CNAME]' \
+              --output text 2>/dev/null || echo "")
+            read -r STATUS HEALTH HEALTH_STATUS VERSION EB_CNAME <<< "$ENV_INFO" || true
+            echo "[$i/90] Status: $STATUS | Health: $HEALTH ($HEALTH_STATUS) | Version: $VERSION"
+
+            # Check if the current deployment RequestId emitted a terminal failure event
+            REQ_ERRORS=$(aws elasticbeanstalk describe-events \
+              --environment-name Natya-lms-backend-env \
+              --request-id "$DEPLOY_REQUEST_ID" \
+              --start-time "$DEPLOY_START_TIME" \
+              --no-paginate \
+              --region ap-south-1 \
+              --output json 2>/dev/null | jq -r --arg req "$DEPLOY_REQUEST_ID" '.Events[] | select(.RequestId == $req and (.Severity == "ERROR" or .Severity == "FATAL")) | .Message' || echo "")
+            if [ -n "$REQ_ERRORS" ]; then
+              echo "::error::Deployment RequestId ${DEPLOY_REQUEST_ID} reported error(s): ${REQ_ERRORS}"
+              break
+            fi
+
             if [ "$STATUS" = "Ready" ]; then
-              if [ "$VERSION" = "backend-${{ github.sha }}" ]; then
-                echo "Deployment successfully verified! Version: $VERSION, Health: $HEALTH"
-                DEPLOY_SUCCESS=true
-                break
-              else
-                echo "::error::Environment reached Ready state but active VersionLabel ($VERSION) does not match expected backend-${{ github.sha }}! Deployment failed or rolled back."
+              if [ "$VERSION" != "${EXPECTED_VERSION}" ]; then
+                echo "::error::Environment reached Ready state but active VersionLabel ($VERSION) does not match expected ${EXPECTED_VERSION}! Deployment failed or rolled back."
                 break
               fi
+              if [ "$HEALTH" = "Green" ] && [ "$HEALTH_STATUS" = "Ok" ]; then
+                echo "Environment reached Ready state with expected version ${VERSION}, Health=${HEALTH}, and HealthStatus=${HEALTH_STATUS}!"
+                DEPLOY_SUCCESS=true
+                break
+              fi
+              if [ "$HEALTH" = "Red" ] || [ "$HEALTH_STATUS" = "Severe" ]; then
+                echo "::error::Environment reached Ready state on ${VERSION} with degraded health: Health=${HEALTH}, HealthStatus=${HEALTH_STATUS} (required: Green / Ok)."
+                break
+              fi
+              echo "Environment is Ready on ${VERSION}, waiting for Health=Green and HealthStatus=Ok (current: Health=${HEALTH}, HealthStatus=${HEALTH_STATUS})..."
             fi
             sleep 10
           done
 
           if [ "$DEPLOY_SUCCESS" != "true" ]; then
-            echo "=== RECENT ELASTIC BEANSTALK EVENTS ==="
-            aws elasticbeanstalk describe-events --environment-name Natya-lms-backend-env --max-items 25 --region ap-south-1 || true
+            echo "::error::Deployment verification failed (Status=${STATUS}, Version=${VERSION}, Expected=${EXPECTED_VERSION}, Health=${HEALTH}, HealthStatus=${HEALTH_STATUS}). Required: Status=Ready, Version=${EXPECTED_VERSION}, Health=Green, HealthStatus=Ok."
+            echo "=== ELASTIC BEANSTALK EVENTS FOR CURRENT DEPLOYMENT (RequestId: ${DEPLOY_REQUEST_ID}) ==="
+            aws elasticbeanstalk describe-events \
+              --environment-name Natya-lms-backend-env \
+              --request-id "$DEPLOY_REQUEST_ID" \
+              --start-time "$DEPLOY_START_TIME" \
+              --no-paginate \
+              --region ap-south-1 \
+              --output json | jq --arg req "$DEPLOY_REQUEST_ID" '[.Events[] | select(.RequestId == $req)]' || true
             exit 1
           fi
+
+          # HTTP Health-Check Verification against existing Django health endpoints in core/urls.py:
+          # 1. '/' (health_check) -> returns HTTP 200 with body "OK" (exempt from SSL redirect via SECURE_REDIRECT_EXEMPT=[r'^$'])
+          # 2. '/health/detailed/' (health_check_detailed) -> verifies database, redis, and celery dependencies and returns
+          #    HTTP 200 with JSON {"status": "ok", "checks": {"database": "ok", "redis": "ok", "celery": "ok"}}
+          #    (requires X-Forwarded-Proto: https header when hitting EB HTTP endpoint because SECURE_SSL_REDIRECT=True)
+          echo "=== RUNNING HTTP HEALTH CHECK ==="
+          TARGET_HOST="${EB_CNAME:-Natya-lms-backend-env.eba-5tjxp8qg.ap-south-1.elasticbeanstalk.com}"
+          HTTP_OK=false
+          for attempt in $(seq 1 12); do
+            ROOT_RESP=$(curl -s -w "\n%{http_code}" --max-time 10 "http://${TARGET_HOST}/" || echo -e "\n000")
+            ROOT_CODE=$(echo "$ROOT_RESP" | tail -n1)
+            ROOT_BODY=$(echo "$ROOT_RESP" | sed '$d')
+
+            DETAIL_RESP=$(curl -s -w "\n%{http_code}" --max-time 15 -H "X-Forwarded-Proto: https" "http://${TARGET_HOST}/health/detailed/" || echo -e "\n000")
+            DETAIL_CODE=$(echo "$DETAIL_RESP" | tail -n1)
+            DETAIL_BODY=$(echo "$DETAIL_RESP" | sed '$d')
+
+            DETAIL_STATUS=$(echo "$DETAIL_BODY" | jq -r '.status // empty' 2>/dev/null || echo "")
+            DB_CHECK=$(echo "$DETAIL_BODY" | jq -r '.checks.database // empty' 2>/dev/null || echo "")
+            REDIS_CHECK=$(echo "$DETAIL_BODY" | jq -r '.checks.redis // empty' 2>/dev/null || echo "")
+            CELERY_CHECK=$(echo "$DETAIL_BODY" | jq -r '.checks.celery // empty' 2>/dev/null || echo "")
+
+            echo "[Health Check $attempt/12] / -> HTTP ${ROOT_CODE} ('${ROOT_BODY}') | /health/detailed/ -> HTTP ${DETAIL_CODE} (status=${DETAIL_STATUS}, db=${DB_CHECK}, redis=${REDIS_CHECK}, celery=${CELERY_CHECK})"
+
+            if [ "$ROOT_CODE" = "200" ] && \
+               [ "$ROOT_BODY" = "OK" ] && \
+               [ "$DETAIL_CODE" = "200" ] && \
+               [ "$DETAIL_STATUS" = "ok" ] && \
+               [ "$DB_CHECK" = "ok" ] && \
+               [ "$REDIS_CHECK" = "ok" ] && \
+               [ "$CELERY_CHECK" = "ok" ]; then
+              HTTP_OK=true
+              break
+            fi
+            sleep 5
+          done
+
+          if [ "$HTTP_OK" != "true" ]; then
+            echo "::error::HTTP health check failed against ${TARGET_HOST} (root: HTTP ${ROOT_CODE} '${ROOT_BODY}', detailed: HTTP ${DETAIL_CODE} '${DETAIL_BODY}')."
+            exit 1
+          fi
+          echo "Deployment and HTTP health checks ('/' and '/health/detailed/') verified successfully!"
