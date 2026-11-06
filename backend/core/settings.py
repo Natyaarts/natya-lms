@@ -692,16 +692,17 @@ else:
 # codebase has deliberately avoided everywhere else.
 CACHES = {
     'default': (
-        {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}
-        if DEBUG else
         {
             'BACKEND': 'django.core.cache.backends.redis.RedisCache',
             'LOCATION': CELERY_BROKER_URL,
             'OPTIONS': {
-                'socket_connect_timeout': 2.0,
-                'socket_timeout': 2.0,
+                'socket_connect_timeout': 1.0,
+                'socket_timeout': 1.0,
+                'retry_on_timeout': False,
             }
         }
+        if (not DEBUG and os.environ.get('USE_REDIS_CACHE', 'False') == 'True') else
+        {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache', 'LOCATION': 'natya-lms-cache'}
     )
 }
 

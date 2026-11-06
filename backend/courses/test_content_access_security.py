@@ -259,6 +259,23 @@ class ContentAccessSecurityTests(APITestCase):
         self.assertIsNone(lesson['video_file'])
         self.assertEqual(lesson['translated_audios'], [])
 
+    def test_teacher_course_list_returns_only_assigned_courses(self):
+        self.client.force_authenticate(user=self.teacher_owner)
+        response = self.client.get(self.list_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data if isinstance(response.data, list) else response.data.get('results', response.data)
+        course_ids = [c['id'] for c in results]
+        self.assertEqual(course_ids, [self.course.id])
+        self.assertNotIn(self.other_course.id, course_ids)
+
+        # Unassigned teacher sees zero courses in list and 404 on ?assigned_only=true detail
+        self.client.force_authenticate(user=self.teacher_other)
+        res_other = self.client.get(self.list_url)
+        other_results = res_other.data if isinstance(res_other.data, list) else res_other.data.get('results', res_other.data)
+        self.assertEqual([c['id'] for c in other_results], [])
+        res_detail_assigned = self.client.get(f"{self.detail_url}?assigned_only=true")
+        self.assertEqual(res_detail_assigned.status_code, status.HTTP_404_NOT_FOUND)
+
     # ---- 16-17: direct module/lesson endpoints ----
 
     def test_direct_lesson_endpoint_denied_for_anonymous(self):

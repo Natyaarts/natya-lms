@@ -118,6 +118,22 @@ class ThrottledLoginView(LoginView):
     authentication_classes = []
     throttle_classes = [LoginRateThrottle]
 
+    def post(self, request, *args, **kwargs):
+        try:
+            raw_uname = (request.data.get('username') or '').strip()
+            if raw_uname and '@' not in raw_uname and not User.objects.filter(username=raw_uname).exists():
+                matched_u = (
+                    User.objects.filter(username__iexact=raw_uname).only('username').first()
+                    or User.objects.filter(first_name__iexact=raw_uname).only('username').first()
+                )
+                if matched_u:
+                    data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
+                    data['username'] = matched_u.username
+                    request._full_data = data
+        except Exception:
+            pass
+        return super().post(request, *args, **kwargs)
+
 
 class ThrottledPasswordResetView(PasswordResetView):
     """
@@ -993,9 +1009,12 @@ class AdminStatsView(APIView):
     def get(self, request):
         from django.core.cache import cache
         cache_key = 'admin_overview_stats_v2'
-        cached_data = cache.get(cache_key)
-        if cached_data is not None:
-            return Response(cached_data)
+        try:
+            cached_data = cache.get(cache_key)
+            if cached_data is not None:
+                return Response(cached_data)
+        except Exception:
+            pass
 
         from django.utils import timezone
         import datetime
@@ -1305,6 +1324,23 @@ class MyStudentsView(APIView):
 
         students = list(students_dict.values())
 
+        from courses.models import Course, Enrollment
+        from django.db.models import Q
+        assigned_courses = Course.objects.filter(
+            Q(instructors__user=user) |
+            Q(live_batches__instructor=user) |
+            Q(live_batches__mentor=user) |
+            Q(enrollments__user=user)
+        ).distinct()
+        courses_by_student = {}
+        if students_dict:
+            for uid, ctitle in Enrollment.objects.filter(
+                user_id__in=list(students_dict.keys()),
+                course__in=assigned_courses
+            ).values_list('user_id', 'course__title'):
+                if ctitle not in courses_by_student.setdefault(uid, []):
+                    courses_by_student[uid].append(ctitle)
+
         data = [{
             "id": s.id,
             "username": s.username,
@@ -1314,6 +1350,7 @@ class MyStudentsView(APIView):
             "phone_number": s.phone_number,
             "is_active": s.is_active,
             "date_joined": s.date_joined,
+            "enrolled_courses": courses_by_student.get(s.id, []),
         } for s in students]
         return Response(data)
 
@@ -1545,6 +1582,17 @@ class MentorshipViewSet(viewsets.ModelViewSet):
         if getattr(user, 'is_mentor', False):
             return qs.filter(mentor=user)
         return qs.filter(student=user)
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        if not request.query_params.get('student') and not request.query_params.get('mentor'):
+            try:
+                limit = min(int(request.query_params.get('limit', 200)), 1000)
+            except (ValueError, TypeError):
+                limit = 200
+            queryset = queryset[:limit]
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     def perform_create(self, serializer):
         serializer.save(assigned_by=self.request.user)

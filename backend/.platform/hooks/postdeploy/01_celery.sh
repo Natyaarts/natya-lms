@@ -14,8 +14,8 @@ systemctl daemon-reload
 
 # 3. Enable and restart Celery Worker on every EB instance
 echo "[01_celery.sh] Enabling and restarting celery-worker.service..."
-systemctl enable celery-worker.service
-systemctl restart celery-worker.service
+systemctl enable celery-worker.service || true
+systemctl restart --no-block celery-worker.service || true
 
 # 4. Manage Celery Beat singleton
 # In Elastic Beanstalk multi-instance environments, EB_IS_COMMAND_LEADER is 'true' on the leader
@@ -24,14 +24,14 @@ echo "[01_celery.sh] Checking leader status (EB_IS_COMMAND_LEADER='${EB_IS_COMMA
 
 if [ "${EB_IS_COMMAND_LEADER}" = "false" ]; then
     echo "[01_celery.sh] Non-leader instance. Ensuring celery-beat.service is stopped and disabled."
-    systemctl stop celery-beat.service 2>/dev/null || true
+    systemctl stop --no-block celery-beat.service 2>/dev/null || true
     systemctl disable celery-beat.service 2>/dev/null || true
 else
     echo "[01_celery.sh] Leader instance (or single-instance environment). Enabling and restarting celery-beat.service."
     # Remove stale pidfile if left behind by previous process or crash
     rm -f /var/run/celery/beat.pid
-    systemctl enable celery-beat.service
-    systemctl restart celery-beat.service
+    systemctl enable celery-beat.service || true
+    systemctl restart --no-block celery-beat.service || true
 fi
 
 echo "=== [01_celery.sh] Celery Postdeploy Hook Completed Successfully ==="

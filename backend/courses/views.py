@@ -99,11 +99,22 @@ class CourseViewSet(viewsets.ModelViewSet):
             qs = Course.objects.all()
         elif user.is_authenticated:
             from django.db.models import Q
-            qs = Course.objects.filter(
-                Q(is_published=True) |
-                Q(enrollments__user=user) |   # student access, and legacy teacher self-enrollment
-                Q(instructors__user=user)      # real CourseInstructor assignment (teacher/mentor/assistant)
-            ).distinct()
+            assigned_only = self.request.query_params.get('assigned_only') in ('true', '1')
+            is_instructor_user = getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False)
+            is_catalog_request = self.request.query_params.get('catalog') in ('true', '1')
+            if assigned_only or (self.action == 'list' and is_instructor_user and not is_catalog_request):
+                qs = Course.objects.filter(
+                    Q(instructors__user=user) |
+                    Q(live_batches__instructor=user) |
+                    Q(live_batches__mentor=user) |
+                    Q(enrollments__user=user)
+                ).distinct()
+            else:
+                qs = Course.objects.filter(
+                    Q(is_published=True) |
+                    Q(enrollments__user=user) |   # student access, and legacy teacher self-enrollment
+                    Q(instructors__user=user)      # real CourseInstructor assignment (teacher/mentor/assistant)
+                ).distinct()
         else:
             qs = Course.objects.filter(is_published=True)
 
@@ -1551,7 +1562,11 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             queryset = LiveClass.objects.all().select_related('course', 'instructor', 'batch', 'batch__course', 'batch__mentor', 'report').prefetch_related('attendance_records')
         elif getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False):
             queryset = LiveClass.objects.filter(
-                Q(batch__instructor=user) | Q(batch__mentor=user)
+                Q(batch__instructor=user) |
+                Q(batch__mentor=user) |
+                Q(instructor=user) |
+                Q(course__instructors__user=user) |
+                Q(batch__course__instructors__user=user)
             ).distinct().select_related('course', 'instructor', 'batch', 'batch__course', 'batch__mentor', 'report').prefetch_related('attendance_records')
         else:
             queryset = LiveClass.objects.filter(batch__students__student=user).distinct().select_related('course', 'instructor', 'batch', 'batch__course', 'batch__mentor', 'report').prefetch_related('attendance_records')
@@ -2733,7 +2748,9 @@ class LiveBatchViewSet(viewsets.ModelViewSet):
         if user.is_superuser or user.is_staff:
             queryset = LiveBatch.objects.all()
         elif getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False):
-            queryset = LiveBatch.objects.filter(Q(instructor=user) | Q(mentor=user)).distinct()
+            queryset = LiveBatch.objects.filter(
+                Q(instructor=user) | Q(mentor=user) | Q(course__instructors__user=user)
+            ).distinct()
         else:
             queryset = LiveBatch.objects.filter(students__student=user)
 

@@ -5,11 +5,14 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 
 export default function AdminCourses() {
+  const [currentUser, setCurrentUser] = useState<any>(null);
   const [courses, setCourses] = useState<any[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  const isFullAdmin = !!(currentUser?.is_superuser || currentUser?.is_staff);
 
   const filteredCourses = courses.filter((c: any) => {
     if (!search.trim()) return true;
@@ -54,7 +57,16 @@ export default function AdminCourses() {
 
   const fetchCourses = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/`, {
+      const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      let fullAdmin = false;
+      const userRes = await fetch(`${apiBase}/api/auth/user/`, { credentials: "include" });
+      if (userRes.ok) {
+        const userData = await userRes.json();
+        setCurrentUser(userData);
+        fullAdmin = !!(userData?.is_superuser || userData?.is_staff);
+      }
+      const query = fullAdmin ? "" : "?assigned_only=true";
+      const res = await fetch(`${apiBase}/api/courses/${query}`, {
         credentials: "include"
       });
       if (res.ok) {
@@ -78,19 +90,27 @@ export default function AdminCourses() {
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-8 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Manage Courses</h1>
-          <p className="text-zinc-400 text-sm mt-1">Create, edit, and manage your masterclass catalog.</p>
+          <h1 className="text-2xl font-bold text-white tracking-tight">
+            {isFullAdmin ? "Manage Courses" : "My Assigned Courses"}
+          </h1>
+          <p className="text-zinc-400 text-sm mt-1">
+            {isFullAdmin
+              ? "Create, edit, and manage your masterclass catalog."
+              : `Viewing ${courses.length} course${courses.length === 1 ? "" : "s"} assigned to your account.`}
+          </p>
         </div>
-        <Link 
-          href="/admin/courses/new"
-          className="px-4 py-2 bg-white text-black text-sm font-medium rounded-lg hover:bg-zinc-200 transition-colors inline-flex items-center gap-2 shadow-sm"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="12" y1="5" x2="12" y2="19"></line>
-            <line x1="5" y1="12" x2="19" y2="12"></line>
-          </svg>
-          Create Course
-        </Link>
+        {isFullAdmin && (
+          <Link 
+            href="/admin/courses/new"
+            className="px-4 py-2 bg-white text-black text-sm font-medium rounded-lg hover:bg-zinc-200 transition-colors inline-flex items-center gap-2 shadow-sm"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            Create Course
+          </Link>
+        )}
       </div>
 
       {courses.length > 0 && (
@@ -126,14 +146,22 @@ export default function AdminCourses() {
               <line x1="12" y1="17" x2="12" y2="21"></line>
             </svg>
           </div>
-          <h3 className="text-lg font-semibold text-white mb-2 tracking-tight">No courses found</h3>
-          <p className="text-sm text-zinc-500 mb-6 max-w-sm mx-auto leading-relaxed">You haven't created any masterclasses yet. Get started by setting up your first course and curriculum.</p>
-          <Link 
-            href="/admin/courses/new"
-            className="px-5 py-2.5 bg-white text-black text-sm font-medium rounded-lg hover:bg-zinc-200 transition-colors shadow-sm inline-block"
-          >
-            Create your first course
-          </Link>
+          <h3 className="text-lg font-semibold text-white mb-2 tracking-tight">
+            {isFullAdmin ? "No courses found" : "No assigned courses yet"}
+          </h3>
+          <p className="text-sm text-zinc-500 mb-6 max-w-sm mx-auto leading-relaxed">
+            {isFullAdmin
+              ? "You haven't created any masterclasses yet. Get started by setting up your first course and curriculum."
+              : "No courses have been assigned to your account yet. Please contact the administrator if you believe this is an error."}
+          </p>
+          {isFullAdmin && (
+            <Link 
+              href="/admin/courses/new"
+              className="px-5 py-2.5 bg-white text-black text-sm font-medium rounded-lg hover:bg-zinc-200 transition-colors shadow-sm inline-block"
+            >
+              Create your first course
+            </Link>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
@@ -164,23 +192,29 @@ export default function AdminCourses() {
                 <p className="text-zinc-500 text-xs line-clamp-2 flex-1 mb-4 leading-relaxed">{course.description}</p>
                 
                 <div className="flex items-center justify-between pt-3 border-t border-white/5">
-                  <div className="text-sm font-semibold text-white tracking-tight">₹{parseFloat(course.price).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                  <div className="text-xs font-medium text-zinc-400 tracking-tight">
+                    {isFullAdmin
+                      ? `₹${parseFloat(course.price || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+                      : (course.course_type === "LIVE" ? "Live Batch" : "Recorded Course")}
+                  </div>
                   <div className="flex items-center gap-2">
                     <Link 
                       href={`/admin/courses/${course.id}`}
                       className="text-xs font-medium text-white hover:text-zinc-300 flex items-center gap-1 transition-colors bg-white/5 px-2.5 py-1.5 rounded hover:bg-white/10"
                     >
-                      Manage
+                      {isFullAdmin ? "Manage" : "View Course"}
                     </Link>
-                    <button 
-                      type="button"
-                      disabled={deletingId === course.id}
-                      onClick={() => handleDeleteCourse(course.id, course.title)}
-                      className="text-xs font-medium text-red-400 hover:text-red-300 transition-colors bg-red-500/10 hover:bg-red-500/20 px-2.5 py-1.5 rounded disabled:opacity-50"
-                      title="Delete Course"
-                    >
-                      {deletingId === course.id ? "Deleting..." : "Delete"}
-                    </button>
+                    {isFullAdmin && (
+                      <button 
+                        type="button"
+                        disabled={deletingId === course.id}
+                        onClick={() => handleDeleteCourse(course.id, course.title)}
+                        className="text-xs font-medium text-red-400 hover:text-red-300 transition-colors bg-red-500/10 hover:bg-red-500/20 px-2.5 py-1.5 rounded disabled:opacity-50"
+                        title="Delete Course"
+                      >
+                        {deletingId === course.id ? "Deleting..." : "Delete"}
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>

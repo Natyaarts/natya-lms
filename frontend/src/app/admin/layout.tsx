@@ -52,6 +52,9 @@ export default function AdminLayout({
         // editing, live batches) -- this closes that frontend/backend gap.
         if (data.is_superuser || data.is_staff || data.is_teacher || data.is_mentor) {
           setIsAdmin(true);
+          if (!(data.is_superuser || data.is_staff) && window.location.pathname === "/admin") {
+            window.location.href = "/admin/courses";
+          }
         } else {
           window.location.href = "/dashboard";
         }
@@ -201,9 +204,11 @@ export default function AdminLayout({
       {/* Sidebar */}
       <div className="w-60 bg-[#09090b] border-r border-white/5 flex flex-col h-screen sticky top-0">
         <div className="h-14 px-6 border-b border-white/5 flex items-center justify-between shrink-0">
-          <Link href="/admin" className="flex items-center gap-2 transition-opacity hover:opacity-80">
+          <Link href={isFullAdmin ? "/admin" : "/admin/courses"} className="flex items-center gap-2 transition-opacity hover:opacity-80">
             <img src="/img/logo.png" alt="Natya Admin" className="h-6 w-auto" />
-            <span className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase mt-0.5">Admin</span>
+            <span className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase mt-0.5">
+              {isFullAdmin ? "Admin" : isTeacher ? "Teacher" : "Mentor"}
+            </span>
           </Link>
         </div>
         

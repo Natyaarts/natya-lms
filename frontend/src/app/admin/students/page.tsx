@@ -60,6 +60,7 @@ export default function MyStudentsPage() {
             <thead>
               <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
                 <th className="p-4 font-semibold">Student</th>
+                <th className="p-4 font-semibold">Assigned Courses</th>
                 <th className="p-4 font-semibold">Email</th>
                 <th className="p-4 font-semibold">Phone</th>
                 <th className="p-4 font-semibold">Joined</th>
@@ -70,10 +71,22 @@ export default function MyStudentsPage() {
               {students.map((s: any) => (
                 <tr
                   key={s.id}
-                  onClick={() => router.push(`/admin/users/${s.id}`)}
-                  className="hover:bg-white/5 transition-colors cursor-pointer font-medium"
+                  className="hover:bg-white/5 transition-colors font-medium"
                 >
                   <td className="p-4 text-white font-bold">{s.first_name || s.username} {s.last_name || ""}</td>
+                  <td className="p-4">
+                    {Array.isArray(s.enrolled_courses) && s.enrolled_courses.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {s.enrolled_courses.map((ct: string, idx: number) => (
+                          <span key={idx} className="px-2 py-0.5 bg-[#facc15]/10 text-[#facc15] border border-[#facc15]/20 rounded text-[10px] font-semibold">
+                            {ct}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-zinc-600">—</span>
+                    )}
+                  </td>
                   <td className="p-4">{s.email || <span className="text-zinc-600">None</span>}</td>
                   <td className="p-4">{s.phone_number || <span className="text-zinc-600">None</span>}</td>
                   <td className="p-4 text-zinc-400">{new Date(s.date_joined).toLocaleDateString()}</td>
