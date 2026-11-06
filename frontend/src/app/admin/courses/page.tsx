@@ -115,17 +115,26 @@ export default function AdminCourses() {
   const fetchCourses = async () => {
     try {
       const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      let fullAdmin = false;
-      const userRes = await fetch(`${apiBase}/api/auth/user/`, { credentials: "include" });
+      if (typeof window !== "undefined") {
+        try {
+          const cached = sessionStorage.getItem("natya_admin_user");
+          if (cached) setCurrentUser(JSON.parse(cached));
+        } catch {}
+      }
+
+      const [userRes, res] = await Promise.all([
+        fetch(`${apiBase}/api/auth/user/`, { credentials: "include" }),
+        fetch(`${apiBase}/api/courses/?assigned_only=true`, { credentials: "include" }),
+      ]);
+
       if (userRes.ok) {
         const userData = await userRes.json();
         setCurrentUser(userData);
-        fullAdmin = !!(userData?.is_superuser || userData?.is_staff);
+        try {
+          sessionStorage.setItem("natya_admin_user", JSON.stringify(userData));
+        } catch {}
       }
-      const query = fullAdmin ? "" : "?assigned_only=true";
-      const res = await fetch(`${apiBase}/api/courses/${query}`, {
-        credentials: "include"
-      });
+
       if (res.ok) {
         const data = await res.json();
         setCourses(Array.isArray(data) ? data : (data.results || []));
@@ -148,7 +157,7 @@ export default function AdminCourses() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-8 gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5">
-            {isFullAdmin ? "Manage Courses" : "My Assigned Courses"}
+            {isFullAdmin || !currentUser ? "Manage Courses" : "My Assigned Courses"}
             {!loading && courses.length > 0 && (
               <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#facc15]/10 text-[#facc15] border border-[#facc15]/20">
                 {courses.length.toLocaleString()}
@@ -156,7 +165,7 @@ export default function AdminCourses() {
             )}
           </h1>
           <p className="text-zinc-400 text-sm mt-1">
-            {isFullAdmin
+            {isFullAdmin || !currentUser
               ? "Create, edit, and manage your masterclass catalog."
               : `Viewing ${courses.length} course${courses.length === 1 ? "" : "s"} assigned to your account.`}
           </p>

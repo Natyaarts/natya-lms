@@ -353,12 +353,15 @@ class CourseListSerializer(serializers.ModelSerializer):
         if not user or not user.is_authenticated:
             return None
 
+        completed_lesson_ids = self.context.get('completed_lesson_ids')
+        if completed_lesson_ids is not None and len(completed_lesson_ids) == 0:
+            return 0
+
         if hasattr(obj, '_prefetched_objects_cache') and 'modules' in obj._prefetched_objects_cache:
             lessons = [lesson for module in obj.modules.all() for lesson in getattr(module, '_prefetched_objects_cache', {}).get('lessons', module.lessons.all())]
             total_lessons = len(lessons)
             if total_lessons == 0:
                 return 0
-            completed_lesson_ids = self.context.get('completed_lesson_ids')
             if completed_lesson_ids is not None:
                 completed_lessons = sum(1 for lesson in lessons if lesson.id in completed_lesson_ids)
                 return round((completed_lessons / total_lessons) * 100)
@@ -810,7 +813,11 @@ class LiveClassSerializer(serializers.ModelSerializer):
             total_recs = len(records)
             present_recs = sum(1 for r in records if r.status in ('PRESENT', 'LATE'))
             total_duration = sum(getattr(r, 'duration_minutes', 0) for r in records)
-            batch_count = instance.batch.students.count() if instance.batch else 0
+            annotated_batch_count = getattr(instance, 'batch_student_count', None)
+            if annotated_batch_count is not None:
+                batch_count = annotated_batch_count
+            else:
+                batch_count = instance.batch.students.count() if instance.batch else 0
             ret['attendance_total_count'] = total_recs if total_recs > 0 else batch_count
             ret['attendance_present_count'] = present_recs
             ret['attendance_avg_duration'] = round(total_duration / present_recs) if present_recs > 0 else 0
@@ -824,7 +831,13 @@ class LiveClassSerializer(serializers.ModelSerializer):
         ret['has_report'] = bool(report)
         ret['report_visible_to_students'] = bool(report and report.is_visible_to_students)
         ret['min_attendance_percentage'] = instance.min_attendance_percentage
-        ret['effective_min_attendance_percentage'] = instance.get_effective_min_attendance_percentage()
+        default_pct = self.context.get('default_min_attendance_percentage')
+        if instance.min_attendance_percentage is not None:
+            ret['effective_min_attendance_percentage'] = instance.min_attendance_percentage
+        elif default_pct is not None:
+            ret['effective_min_attendance_percentage'] = default_pct
+        else:
+            ret['effective_min_attendance_percentage'] = instance.get_effective_min_attendance_percentage()
         if report:
             can_see_report = False
             if request and request.user and request.user.is_authenticated:

@@ -119,7 +119,16 @@ class CourseViewSet(viewsets.ModelViewSet):
             qs = Course.objects.filter(is_published=True)
 
         if self.action == 'list':
-            qs = qs.prefetch_related('modules', 'modules__lessons')
+            from django.db.models import Prefetch
+            if user.is_authenticated and (user.is_superuser or user.is_staff):
+                qs = qs.prefetch_related(
+                    Prefetch('modules', queryset=Module.objects.only('id', 'title', 'order', 'course_id')),
+                )
+            else:
+                qs = qs.prefetch_related(
+                    Prefetch('modules', queryset=Module.objects.only('id', 'title', 'order', 'course_id')),
+                    Prefetch('modules__lessons', queryset=VideoLesson.objects.only('id', 'module_id')),
+                )
         else:
             qs = qs.prefetch_related(
                 'modules',
@@ -179,16 +188,9 @@ class CourseViewSet(viewsets.ModelViewSet):
                 accessible_course_ids_for_user(user) | instructor_ids
             )
 
-        # Phase 4.3: same "compute once per request" precedent as the two
-        # context keys above -- ModuleSerializer.get_assessments needs this
-        # user's own attempts to show per-assessment status, and fetching
-        # ALL of it here in one query (there's no realistic number of
-        # attempts a single student accrues that makes this expensive) means
-        # the cost is O(1) regardless of how many courses/modules/
-        # assessments end up in the response, never one query per
-        # assessment. Anonymous requests skip this entirely -- there is
-        # nothing to look up and no reason to touch the DB for them.
-        if user.is_authenticated:
+        is_list_action = (self.action == 'list')
+
+        if user.is_authenticated and not is_list_action:
             from collections import defaultdict
             from .models import AssessmentAttempt
             attempts_by_assessment = defaultdict(list)
@@ -198,13 +200,7 @@ class CourseViewSet(viewsets.ModelViewSet):
         else:
             context['student_attempts_by_assessment_id'] = {}
 
-        # Phase 4.5: same "compute once per request" precedent as the two
-        # context keys above -- module/course completion (see
-        # courses/services/completion.py) needs to know which of THIS
-        # user's lessons are complete, and one query for the whole
-        # request (regardless of how many courses/modules/lessons appear
-        # in the response) is the only way to avoid a query per lesson.
-        if user.is_authenticated:
+        if user.is_authenticated and not (is_list_action and (user.is_superuser or user.is_staff)):
             from .models import LessonProgress
             context['completed_lesson_ids'] = set(
                 LessonProgress.objects.filter(user=user, completed=True).values_list('lesson_id', flat=True)
@@ -212,10 +208,7 @@ class CourseViewSet(viewsets.ModelViewSet):
         else:
             context['completed_lesson_ids'] = set()
 
-        # Phase 4.7: same "compute once per request" precedent as the
-        # three context keys above -- ModuleSerializer.get_assignments
-        # needs this user's own submissions to show per-assignment status.
-        if user.is_authenticated:
+        if user.is_authenticated and not is_list_action:
             from collections import defaultdict
             from .models import AssignmentSubmission
             submissions_by_assignment = defaultdict(list)
@@ -1504,9 +1497,11 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         from datetime import timedelta
         from django.utils import timezone
         now = timezone.now()
-        expired_classes = LiveClass.objects.filter(
-            status__in=[LiveClass.ClassStatus.LIVE, LiveClass.ClassStatus.SCHEDULED],
-            scheduled_start__lt=now
+        expired_classes = list(
+            LiveClass.objects.filter(
+                status__in=[LiveClass.ClassStatus.LIVE, LiveClass.ClassStatus.SCHEDULED],
+                scheduled_start__lt=now
+            ).select_related('batch', 'course', 'instructor')[:20]
         )
         for lc in expired_classes:
             end_time = lc.scheduled_start + timedelta(minutes=lc.duration_minutes or 60)
@@ -1530,36 +1525,27 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                     except Exception:
                         pass
 
-        # Backfill attendance for existing completed classes that have no attendance records yet
-        completed_without_attendance = LiveClass.objects.filter(
-            status=LiveClass.ClassStatus.COMPLETED,
-            attendance_records__isnull=True
-        ).distinct()
-        for lc in completed_without_attendance[:30]:
-            self._auto_populate_attendance(lc)
-
-        # Auto-sync recent completed Zoom classes that are missing recording_url (< 48 hrs)
-        recent_pending_recordings = LiveClass.objects.filter(
-            status=LiveClass.ClassStatus.COMPLETED,
-            meeting_provider=LiveClass.MeetingProvider.ZOOM,
-            recording_url__in=['', None],
-            scheduled_start__gte=now - timedelta(days=2)
-        )[:5]
-        for lc in recent_pending_recordings:
-            try:
-                from courses.services.recording import ZoomRecordingService
-                ZoomRecordingService.auto_sync_live_class_recording(lc.id, max_retries=3, delay_seconds=15)
-            except Exception:
-                pass
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        from .models import AttendanceConfiguration
+        context['default_min_attendance_percentage'] = AttendanceConfiguration.get_default_percentage()
+        return context
 
     def get_queryset(self):
-        self._auto_complete_expired_classes()
+        if self.action in ('list', 'today', 'upcoming', 'history'):
+            self._auto_complete_expired_classes()
         user = self.request.user
         if not user or not user.is_authenticated:
             return LiveClass.objects.none()
 
+        related_fields = (
+            'course', 'instructor', 'recurrence_rule',
+            'batch', 'batch__course', 'batch__instructor', 'batch__mentor',
+            'report', 'report__teacher', 'report__visible_to_students_toggled_by',
+        )
+
         if user.is_superuser or user.is_staff:
-            queryset = LiveClass.objects.all().select_related('course', 'instructor', 'batch', 'batch__course', 'batch__mentor', 'report').prefetch_related('attendance_records')
+            queryset = LiveClass.objects.all().select_related(*related_fields).prefetch_related('attendance_records')
         elif getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False):
             queryset = LiveClass.objects.filter(
                 Q(batch__instructor=user) |
@@ -1567,9 +1553,11 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 Q(instructor=user) |
                 Q(course__instructors__user=user) |
                 Q(batch__course__instructors__user=user)
-            ).distinct().select_related('course', 'instructor', 'batch', 'batch__course', 'batch__mentor', 'report').prefetch_related('attendance_records')
+            ).distinct().select_related(*related_fields).prefetch_related('attendance_records')
         else:
-            queryset = LiveClass.objects.filter(batch__students__student=user).distinct().select_related('course', 'instructor', 'batch', 'batch__course', 'batch__mentor', 'report').prefetch_related('attendance_records')
+            queryset = LiveClass.objects.filter(batch__students__student=user).distinct().select_related(*related_fields).prefetch_related('attendance_records')
+
+        queryset = queryset.annotate(batch_student_count=Count('batch__students', distinct=True))
 
         # Filter by course
         course_id = self.request.query_params.get('course')
@@ -2765,7 +2753,13 @@ class LiveBatchViewSet(viewsets.ModelViewSet):
         # Optimize loading with annotations & select_related
         queryset = queryset.annotate(
             student_count=Count('students')
-        ).select_related('course', 'instructor', 'mentor')
+        ).select_related('course', 'instructor', 'mentor').only(
+            'id', 'course_id', 'instructor_id', 'mentor_id',
+            'batch_type', 'max_participants', 'created_at', 'updated_at',
+            'course__id', 'course__title',
+            'instructor__id', 'instructor__username', 'instructor__first_name', 'instructor__last_name',
+            'mentor__id', 'mentor__username', 'mentor__first_name', 'mentor__last_name',
+        ).order_by('-id')
 
         return queryset
 

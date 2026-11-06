@@ -163,10 +163,21 @@ export default function LiveClassesPage() {
     fetch(`${API}${path}`, { credentials: "include", ...init });
 
   useEffect(() => {
+    try {
+      const cachedUser = sessionStorage.getItem("natya_admin_user");
+      if (cachedUser) {
+        setCurrentUser(JSON.parse(cachedUser));
+      }
+    } catch {}
     authedFetch("/api/auth/user/").then(async (res) => {
-      if (res.ok) setCurrentUser(await res.json());
+      if (res.ok) {
+        const u = await res.json();
+        setCurrentUser(u);
+        try {
+          sessionStorage.setItem("natya_admin_user", JSON.stringify(u));
+        } catch {}
+      }
     });
-    fetchGlobalAttendanceSettings();
   }, []);
 
   const fetchBatches = async () => {
@@ -336,8 +347,15 @@ export default function LiveClassesPage() {
   // ---- Pagination & filter state ----
   const [classesPage, setClassesPage] = useState(1);
   const [classesPageSize, setClassesPageSize] = useState(10);
+  const [classSearch, setClassSearch] = useState("");
+  const [classProviderFilter, setClassProviderFilter] = useState<string>("ALL");
+
   const [batchesPage, setBatchesPage] = useState(1);
   const [batchesPageSize, setBatchesPageSize] = useState(10);
+  const [batchSearch, setBatchSearch] = useState("");
+  const [batchMentorFilter, setBatchMentorFilter] = useState<string>("ALL");
+  const [batchInstructorFilter, setBatchInstructorFilter] = useState<string>("ALL");
+  const [batchTypeFilter, setBatchTypeFilter] = useState<string>("ALL");
   const [batchStudentSearch, setBatchStudentSearch] = useState("");
 
   useEffect(() => {
@@ -348,12 +366,16 @@ export default function LiveClassesPage() {
     }
   }, [tab]);
 
-  useEffect(() => {
-    const safeClasses = Array.isArray(classes) ? classes : [];
-    const hasPendingRecording = safeClasses.some(
+  const hasPendingRecording = useMemo(() => {
+    const list = Array.isArray(classes) ? classes : [];
+    return list.some(
       (c) => c.status === "COMPLETED" && c.meeting_provider === "ZOOM" && !c.recording_url
     );
-    const pollInterval = hasPendingRecording ? 10000 : 30000;
+  }, [classes]);
+
+  useEffect(() => {
+    if (tab === "batches" || tab === "settings") return;
+    const pollInterval = hasPendingRecording ? 15000 : 45000;
     const timer = setInterval(() => {
       fetchClasses();
       if (hasPendingRecording) {
@@ -361,7 +383,7 @@ export default function LiveClassesPage() {
       }
     }, pollInterval);
     return () => clearInterval(timer);
-  }, [classes, tab]);
+  }, [hasPendingRecording, tab]);
   useEffect(() => { fetchBatches(); }, []);
 
   // Calendar view pulls a broader, unfiltered-by-tab window (upcoming +
@@ -686,19 +708,103 @@ export default function LiveClassesPage() {
   );
 
   const safeBatches = Array.isArray(batches) ? batches : [];
-  const batchesTotalPages = Math.max(1, Math.ceil(safeBatches.length / batchesPageSize));
+
+  const uniqueBatchMentors = useMemo(() => {
+    const names = new Set<string>();
+    for (const b of safeBatches) {
+      const m = (b?.mentor_name || b?.mentor_username || "").trim();
+      if (m) names.add(m);
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [safeBatches]);
+
+  const uniqueBatchInstructors = useMemo(() => {
+    const names = new Set<string>();
+    for (const b of safeBatches) {
+      const inst = (b?.instructor_name || b?.instructor_username || "").trim();
+      if (inst) names.add(inst);
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [safeBatches]);
+
+  const filteredBatches = useMemo(() => {
+    const q = batchSearch.trim().toLowerCase();
+    return safeBatches.filter((b: any) => {
+      if (!b) return false;
+      const mentorLabel = (b.mentor_name || b.mentor_username || "").trim();
+      const instructorLabel = (b.instructor_name || b.instructor_username || "").trim();
+
+      if (batchTypeFilter !== "ALL" && b.batch_type !== batchTypeFilter) {
+        return false;
+      }
+      if (batchMentorFilter === "ASSIGNED" && !mentorLabel) {
+        return false;
+      }
+      if (batchMentorFilter === "UNASSIGNED" && mentorLabel) {
+        return false;
+      }
+      if (
+        batchMentorFilter !== "ALL" &&
+        batchMentorFilter !== "ASSIGNED" &&
+        batchMentorFilter !== "UNASSIGNED" &&
+        mentorLabel !== batchMentorFilter
+      ) {
+        return false;
+      }
+
+      if (batchInstructorFilter === "UNASSIGNED" && instructorLabel) {
+        return false;
+      }
+      if (
+        batchInstructorFilter !== "ALL" &&
+        batchInstructorFilter !== "UNASSIGNED" &&
+        instructorLabel !== batchInstructorFilter
+      ) {
+        return false;
+      }
+
+      if (!q) return true;
+      const courseTitle = (b.course_title || `Course #${b.course}`).toLowerCase();
+      return (
+        courseTitle.includes(q) ||
+        mentorLabel.toLowerCase().includes(q) ||
+        instructorLabel.toLowerCase().includes(q) ||
+        String(b.id).includes(q)
+      );
+    });
+  }, [safeBatches, batchSearch, batchMentorFilter, batchInstructorFilter, batchTypeFilter]);
+
+  const batchesTotalPages = Math.max(1, Math.ceil(filteredBatches.length / batchesPageSize));
   const safeBatchesPage = Math.min(batchesPage, batchesTotalPages);
   const paginatedBatches = useMemo(
-    () => safeBatches.slice((safeBatchesPage - 1) * batchesPageSize, safeBatchesPage * batchesPageSize),
-    [safeBatches, safeBatchesPage, batchesPageSize]
+    () => filteredBatches.slice((safeBatchesPage - 1) * batchesPageSize, safeBatchesPage * batchesPageSize),
+    [filteredBatches, safeBatchesPage, batchesPageSize]
   );
 
   const safeClasses = Array.isArray(classes) ? classes : [];
-  const classesTotalPages = Math.max(1, Math.ceil(safeClasses.length / classesPageSize));
+
+  const filteredClasses = useMemo(() => {
+    const q = classSearch.trim().toLowerCase();
+    return safeClasses.filter((lc: any) => {
+      if (!lc) return false;
+      if (classProviderFilter !== "ALL" && lc.meeting_provider !== classProviderFilter) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        (lc.title || "").toLowerCase().includes(q) ||
+        (lc.course_title || "").toLowerCase().includes(q) ||
+        (lc.batch_name || "").toLowerCase().includes(q) ||
+        (lc.instructor_name || "").toLowerCase().includes(q)
+      );
+    });
+  }, [safeClasses, classSearch, classProviderFilter]);
+
+  const classesTotalPages = Math.max(1, Math.ceil(filteredClasses.length / classesPageSize));
   const safeClassesPage = Math.min(classesPage, classesTotalPages);
   const paginatedClasses = useMemo(
-    () => safeClasses.slice((safeClassesPage - 1) * classesPageSize, safeClassesPage * classesPageSize),
-    [safeClasses, safeClassesPage, classesPageSize]
+    () => filteredClasses.slice((safeClassesPage - 1) * classesPageSize, safeClassesPage * classesPageSize),
+    [filteredClasses, safeClassesPage, classesPageSize]
   );
 
   const filteredBatchStudents = useMemo(() => {
@@ -1451,6 +1557,121 @@ export default function LiveClassesPage() {
               </div>
             ) : (
               <>
+              {/* Batches Search & Filter Bar */}
+              <div className="p-4 bg-[#121216] border-b border-white/[0.08] flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div className="relative flex-1 max-w-md">
+                  <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={batchSearch}
+                    onChange={(e) => {
+                      setBatchSearch(e.target.value);
+                      setBatchesPage(1);
+                    }}
+                    placeholder="Search batches by course, mentor, or instructor..."
+                    className="w-full pl-9 pr-8 py-2 bg-black border border-white/10 rounded-xl text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-[#facc15]"
+                  />
+                  {batchSearch && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBatchSearch("");
+                        setBatchesPage(1);
+                      }}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white"
+                      title="Clear search"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <select
+                    value={batchMentorFilter}
+                    onChange={(e) => {
+                      setBatchMentorFilter(e.target.value);
+                      setBatchesPage(1);
+                    }}
+                    className="bg-black border border-white/10 rounded-xl px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-[#facc15]"
+                  >
+                    <option value="ALL">All Mentors</option>
+                    <option value="ASSIGNED">Assigned to Mentor</option>
+                    <option value="UNASSIGNED">Unassigned Mentor</option>
+                    {uniqueBatchMentors.map((m) => (
+                      <option key={m} value={m}>
+                        Mentor: {m}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={batchInstructorFilter}
+                    onChange={(e) => {
+                      setBatchInstructorFilter(e.target.value);
+                      setBatchesPage(1);
+                    }}
+                    className="bg-black border border-white/10 rounded-xl px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-[#facc15]"
+                  >
+                    <option value="ALL">All Instructors</option>
+                    <option value="UNASSIGNED">Unassigned Instructor</option>
+                    {uniqueBatchInstructors.map((inst) => (
+                      <option key={inst} value={inst}>
+                        Instructor: {inst}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={batchTypeFilter}
+                    onChange={(e) => {
+                      setBatchTypeFilter(e.target.value);
+                      setBatchesPage(1);
+                    }}
+                    className="bg-black border border-white/10 rounded-xl px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-[#facc15]"
+                  >
+                    <option value="ALL">All Batch Types</option>
+                    <option value="GROUP">Group</option>
+                    <option value="ONE_TO_ONE">1-on-1</option>
+                  </select>
+
+                  {(batchSearch || batchMentorFilter !== "ALL" || batchInstructorFilter !== "ALL" || batchTypeFilter !== "ALL") && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBatchSearch("");
+                        setBatchMentorFilter("ALL");
+                        setBatchInstructorFilter("ALL");
+                        setBatchTypeFilter("ALL");
+                        setBatchesPage(1);
+                      }}
+                      className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white border border-white/10 text-xs font-semibold transition-colors flex items-center gap-1"
+                    >
+                      <X className="w-3.5 h-3.5" /> Reset
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {filteredBatches.length === 0 ? (
+                <div className="text-center py-16 text-zinc-500 text-xs space-y-2">
+                  <p>No batches match your search or filter criteria.</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBatchSearch("");
+                      setBatchMentorFilter("ALL");
+                      setBatchInstructorFilter("ALL");
+                      setBatchTypeFilter("ALL");
+                      setBatchesPage(1);
+                    }}
+                    className="px-3.5 py-1.5 bg-white/10 hover:bg-white/15 text-white rounded-lg font-semibold transition-colors"
+                  >
+                    Clear Filters
+                  </button>
+                </div>
+              ) : (
+              <>
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-[#141419] border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[11px]">
@@ -1522,9 +1743,12 @@ export default function LiveClassesPage() {
                     </span>{" "}
                     to{" "}
                     <span className="text-white font-semibold">
-                      {Math.min(safeBatchesPage * batchesPageSize, safeBatches.length)}
+                      {Math.min(safeBatchesPage * batchesPageSize, filteredBatches.length)}
                     </span>{" "}
-                    of <span className="text-white font-semibold">{safeBatches.length}</span> batches
+                    of <span className="text-white font-semibold">{filteredBatches.length}</span> batches
+                    {filteredBatches.length !== safeBatches.length && (
+                      <span className="text-zinc-500"> (filtered from {safeBatches.length})</span>
+                    )}
                   </span>
                   <div className="flex items-center gap-1.5">
                     <span className="text-zinc-500">Rows:</span>
@@ -1601,6 +1825,8 @@ export default function LiveClassesPage() {
                   </button>
                 </div>
               </div>
+              </>
+              )}
               </>
             )
           ) : tab === "settings" ? (
@@ -1804,6 +2030,84 @@ export default function LiveClassesPage() {
           ) : safeClasses.length === 0 ? (
             <div className="text-center py-20 text-zinc-500 text-sm">No {tab} live classes found.</div>
           ) : (
+            <>
+            {/* Live Classes Search & Filter Bar */}
+            <div className="p-4 bg-[#121216] border-b border-white/[0.08] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="relative flex-1 max-w-md">
+                <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  value={classSearch}
+                  onChange={(e) => {
+                    setClassSearch(e.target.value);
+                    setClassesPage(1);
+                  }}
+                  placeholder={`Search ${tab} classes by title, course, or batch...`}
+                  className="w-full pl-9 pr-8 py-2 bg-black border border-white/10 rounded-xl text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-[#facc15]"
+                />
+                {classSearch && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setClassSearch("");
+                      setClassesPage(1);
+                    }}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white"
+                    title="Clear search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  value={classProviderFilter}
+                  onChange={(e) => {
+                    setClassProviderFilter(e.target.value);
+                    setClassesPage(1);
+                  }}
+                  className="bg-black border border-white/10 rounded-xl px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-[#facc15]"
+                >
+                  <option value="ALL">All Providers</option>
+                  <option value="ZOOM">Zoom</option>
+                  <option value="GOOGLE_MEET">Google Meet</option>
+                  <option value="TEAMS">Microsoft Teams</option>
+                  <option value="OTHER">Other</option>
+                </select>
+
+                {(classSearch || classProviderFilter !== "ALL") && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setClassSearch("");
+                      setClassProviderFilter("ALL");
+                      setClassesPage(1);
+                    }}
+                    className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white border border-white/10 text-xs font-semibold transition-colors flex items-center gap-1"
+                  >
+                    <X className="w-3.5 h-3.5" /> Reset
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {filteredClasses.length === 0 ? (
+              <div className="text-center py-16 text-zinc-500 text-xs space-y-2">
+                <p>No live classes match your search or filter criteria.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setClassSearch("");
+                    setClassProviderFilter("ALL");
+                    setClassesPage(1);
+                  }}
+                  className="px-3.5 py-1.5 bg-white/10 hover:bg-white/15 text-white rounded-lg font-semibold transition-colors"
+                >
+                  Clear Filters
+                </button>
+              </div>
+            ) : (
             <>
             <table className="w-full text-left border-collapse text-xs">
               <thead>
@@ -2118,9 +2422,12 @@ export default function LiveClassesPage() {
                   </span>{" "}
                   to{" "}
                   <span className="text-white font-semibold">
-                    {Math.min(safeClassesPage * classesPageSize, safeClasses.length)}
+                    {Math.min(safeClassesPage * classesPageSize, filteredClasses.length)}
                   </span>{" "}
-                  of <span className="text-white font-semibold">{safeClasses.length}</span> classes
+                  of <span className="text-white font-semibold">{filteredClasses.length}</span> classes
+                  {filteredClasses.length !== safeClasses.length && (
+                    <span className="text-zinc-500"> (filtered from {safeClasses.length})</span>
+                  )}
                 </span>
                 <div className="flex items-center gap-1.5">
                   <span className="text-zinc-500">Rows:</span>
@@ -2197,6 +2504,8 @@ export default function LiveClassesPage() {
                 </button>
               </div>
             </div>
+            </>
+            )}
             </>
           )}
         </div>
