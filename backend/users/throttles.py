@@ -45,6 +45,13 @@ class LoginRateThrottle(SimpleRateThrottle):
     """
     scope = 'login'
 
+    def allow_request(self, request, view):
+        try:
+            return super().allow_request(request, view)
+        except Exception:
+            # Safe fallback: if cache is slow or temporarily unreachable, do not hang/block login
+            return True
+
     def get_cache_key(self, request, view):
         ident = self.get_ident(request)
         return self.cache_format % {'scope': self.scope, 'ident': ident}

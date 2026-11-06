@@ -10,7 +10,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied as DRFPermissionDenied
 from .models import Course, Module, VideoLesson, Enrollment, LessonProgress, LiveClass, LiveBatch, LiveBatchStudent, LiveClassReport, TranslatedAudio, CourseInstructor, RecurrenceRule, TeacherAvailability, Attendance, VideoProtectionSetting
-from .serializers import CourseSerializer, ModuleSerializer, VideoLessonSerializer, LessonProgressSerializer, LiveClassSerializer, LiveClassReportSerializer, LiveBatchSerializer, LiveBatchStudentSerializer, TranslatedAudioSerializer, TranslatedAudioUploadSerializer, CourseInstructorSerializer, RecurrenceRuleSerializer, TeacherAvailabilitySerializer, AttendanceSerializer, VideoProtectionSettingSerializer, AttendanceConfigurationSerializer
+from .serializers import CourseSerializer, CourseListSerializer, ModuleSerializer, VideoLessonSerializer, LessonProgressSerializer, LiveClassSerializer, LiveClassReportSerializer, LiveBatchSerializer, LiveBatchStudentSerializer, TranslatedAudioSerializer, TranslatedAudioUploadSerializer, CourseInstructorSerializer, RecurrenceRuleSerializer, TeacherAvailabilitySerializer, AttendanceSerializer, VideoProtectionSettingSerializer, AttendanceConfigurationSerializer
 from users.permissions import IsSuperAdminOrTeacherOrReadOnly  # noqa: F401 -- retained for any other reuse; Course/Module/Lesson now use IsSuperAdminOrCourseInstructorOrReadOnly below
 
 
@@ -88,6 +88,11 @@ class CourseViewSet(viewsets.ModelViewSet):
     serializer_class = CourseSerializer
     permission_classes = [IsSuperAdminOrCourseTeacherOrReadOnly]
 
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return CourseListSerializer
+        return CourseSerializer
+
     def get_queryset(self):
         user = self.request.user
         if user.is_authenticated and (user.is_superuser or user.is_staff):
@@ -103,6 +108,8 @@ class CourseViewSet(viewsets.ModelViewSet):
             qs = Course.objects.filter(is_published=True)
 
         if self.action == 'list':
+            qs = qs.prefetch_related('modules', 'modules__lessons')
+        else:
             qs = qs.prefetch_related(
                 'modules',
                 'modules__lessons',

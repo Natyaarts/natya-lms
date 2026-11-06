@@ -315,6 +315,63 @@ class ModuleSerializer(serializers.ModelSerializer):
             data.update(LOCKED_COMPLETION)
         return data
 
+class ModuleListSerializer(serializers.ModelSerializer):
+    """
+    Lightweight module serializer for course catalog listings.
+    Omits heavy nested assessments and assignments to prevent N+1 query storms.
+    """
+    class Meta:
+        model = Module
+        fields = ['id', 'title', 'order', 'course']
+
+
+class CourseListSerializer(serializers.ModelSerializer):
+    """
+    Lightweight serializer for course catalog and admin listings (GET /api/courses/).
+    Does NOT serialize nested assessments/assignments or full question trees.
+    Calculates progress_percentage using prefetched modules and lessons in O(1) time.
+    """
+    modules = ModuleListSerializer(many=True, read_only=True)
+    progress_percentage = serializers.SerializerMethodField()
+    apple_product_id = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Course
+        fields = [
+            'id', 'title', 'description', 'price', 'thumbnail', 
+            'is_published', 'created_at', 'course_type', 
+            'modules', 'progress_percentage', 'apple_product_id'
+        ]
+
+    def get_apple_product_id(self, obj):
+        bundle_id = getattr(settings, 'APPLE_BUNDLE_ID', 'com.natyaarts.academy')
+        return getattr(obj, 'apple_product_id', None) or f"{bundle_id}.course.{obj.id}"
+
+    def get_progress_percentage(self, obj):
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated:
+            return None
+
+        if hasattr(obj, '_prefetched_objects_cache') and 'modules' in obj._prefetched_objects_cache:
+            lessons = [lesson for module in obj.modules.all() for lesson in getattr(module, '_prefetched_objects_cache', {}).get('lessons', module.lessons.all())]
+            total_lessons = len(lessons)
+            if total_lessons == 0:
+                return 0
+            completed_lesson_ids = self.context.get('completed_lesson_ids')
+            if completed_lesson_ids is not None:
+                completed_lessons = sum(1 for lesson in lessons if lesson.id in completed_lesson_ids)
+                return round((completed_lessons / total_lessons) * 100)
+
+        total_lessons = VideoLesson.objects.filter(module__course=obj).count()
+        if total_lessons == 0:
+            return 0
+        completed_lessons = LessonProgress.objects.filter(
+            user=user, lesson__module__course=obj, completed=True,
+        ).count()
+        return round((completed_lessons / total_lessons) * 100)
+
+
 class CourseSerializer(serializers.ModelSerializer):
     modules = ModuleSerializer(many=True, read_only=True)
     progress_percentage = serializers.SerializerMethodField()

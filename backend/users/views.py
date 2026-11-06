@@ -991,6 +991,12 @@ class AdminStatsView(APIView):
     permission_classes = [IsSuperAdminOrAdmin]
 
     def get(self, request):
+        from django.core.cache import cache
+        cache_key = 'admin_overview_stats_v2'
+        cached_data = cache.get(cache_key)
+        if cached_data is not None:
+            return Response(cached_data)
+
         from django.utils import timezone
         import datetime
         from django.db.models import Sum, Count, OuterRef, Exists
@@ -1056,13 +1062,11 @@ class AdminStatsView(APIView):
         total_enrollments = Enrollment.objects.count()
         new_enrollments_month = Enrollment.objects.filter(enrolled_at__gte=start_of_month).count()
         
-        purchases = billable_purchases.filter(
-            user_id=OuterRef('user_id'),
-            course_id=OuterRef('course_id'),
-            status='SUCCESS'
-        )
-        paid_enrollments_count = Enrollment.objects.filter(Exists(purchases)).count()
-        manual_enrollments_count = Enrollment.objects.filter(~Exists(purchases)).count()
+        paid_enrollments_count = billable_purchases.filter(
+            status='SUCCESS',
+            course_id__isnull=False
+        ).values('user_id', 'course_id').distinct().count()
+        manual_enrollments_count = max(0, total_enrollments - paid_enrollments_count)
 
         # Recent Activity
         recent_reg_qs = User.objects.filter(is_student=True, is_teacher=False, is_superuser=False).order_by('-date_joined')[:5]
@@ -1137,7 +1141,7 @@ class AdminStatsView(APIView):
                 "scheduled_start": lc.scheduled_start,
             })
 
-        return Response({
+        payload = {
             "total_students": total_students,
             "new_students_week": new_students_week,
             "new_students_month": new_students_month,
@@ -1176,7 +1180,12 @@ class AdminStatsView(APIView):
             "upcoming_live_classes_count": upcoming_live_classes_count,
             "recent_refunds": recent_refunds,
             "upcoming_live_classes": upcoming_live_classes,
-        })
+        }
+        try:
+            cache.set(cache_key, payload, timeout=60)
+        except Exception:
+            pass
+        return Response(payload)
 
 @method_decorator(ensure_csrf_cookie, name='get')
 class CurrentUserView(APIView):

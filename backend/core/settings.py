@@ -694,7 +694,14 @@ CACHES = {
     'default': (
         {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}
         if DEBUG else
-        {'BACKEND': 'django.core.cache.backends.redis.RedisCache', 'LOCATION': CELERY_BROKER_URL}
+        {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': CELERY_BROKER_URL,
+            'OPTIONS': {
+                'socket_connect_timeout': 2.0,
+                'socket_timeout': 2.0,
+            }
+        }
     )
 }
 
