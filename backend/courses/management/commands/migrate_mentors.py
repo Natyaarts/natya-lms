@@ -51,13 +51,16 @@ class Command(BaseCommand):
         self.stdout.write(f"Default Mentor Password: {password}")
         self.stdout.write(f"Execution Mode: {mode_str}\n")
 
+        def handle_log(msg):
+            self.stdout.write(f"  {msg}")
+
         try:
             stats = execute_mentor_migration(
                 file_path=resolved,
                 default_password=password,
                 is_commit=is_commit,
                 verbose=verbose,
-                log_callback=lambda msg: self.stdout.write(f"  [INFO] {msg}") if verbose else None
+                log_callback=handle_log
             )
         except Exception as e:
             self.stderr.write(self.style.ERROR(f"Migration error: {e}"))
@@ -92,3 +95,4 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(
                 "\nSUCCESS: Mentors created/updated with password and assigned to courses successfully!\n"
             ))
+
