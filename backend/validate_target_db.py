@@ -12,11 +12,15 @@ Fails closed if ENVIRONMENT is missing, empty, misspelled, or unexpected.
 
 import os
 import sys
+import socket
+from urllib.parse import urlparse
 
 REQUIRED_STAGING_DB_NAME = 'natyalms_staging_db'
 PROD_DB_NAMES = {'natyalms', 'natyalms_prod', 'natyalms_production', 'production'}
 PROD_S3_BUCKETS = {'natyalms-media-2026'}
 RECOGNIZED_ENVIRONMENTS = {'staging', 'stage', 'production', 'local-dev', 'development', 'test'}
+ALLOWED_LOCAL_IPS = {'127.0.0.1', '::1'}
+ALLOWED_LOCAL_HOSTNAMES = {'localhost', '127.0.0.1', '::1'}
 
 
 def evaluate_staging_target(
@@ -143,7 +147,65 @@ def evaluate_staging_target(
     elif environment in ('local-dev', 'development', 'test'):
         if not (env.get('DEBUG', 'False') == 'True' or 'test' in sys.argv or environment == 'test'):
             return False, f"Environment '{environment}' is only permitted when DEBUG=True or during automated tests."
-        return True, f"Environment '{environment}' target checks PASSED."
+
+        # Host validation - must not be empty/missing
+        if not active_db_host or not str(active_db_host).strip():
+            return False, f"CRITICAL TARGET HAZARD: Database host is missing or empty in '{environment}' environment."
+
+        host_str = str(active_db_host).strip()
+
+        # Reject remote AWS RDS hostnames immediately
+        if 'rds.amazonaws.com' in host_str.lower() or 'amazonaws.com' in host_str.lower():
+            return False, f"CRITICAL TARGET HAZARD: Remote AWS RDS database host '{host_str}' is strictly forbidden in '{environment}' environment!"
+
+        # Resolve hostname and verify it maps strictly to local loopback
+        try:
+            addr_info = socket.getaddrinfo(host_str, None)
+            resolved_ips = {item[4][0] for item in addr_info}
+            if not resolved_ips or not resolved_ips.issubset(ALLOWED_LOCAL_IPS):
+                return False, f"CRITICAL TARGET HAZARD: Database host '{host_str}' resolved to non-local IP(s): {resolved_ips - ALLOWED_LOCAL_IPS}."
+        except Exception as exc:
+            return False, f"CRITICAL TARGET HAZARD: Failed to resolve database host '{host_str}': {exc}"
+
+        # Reject production or staging database names
+        if not active_db_name or not str(active_db_name).strip():
+            return False, f"CRITICAL TARGET HAZARD: Database name is missing or empty in '{environment}' environment."
+
+        clean_db_name = str(active_db_name).strip().lower()
+        if clean_db_name in PROD_DB_NAMES or 'prod' in clean_db_name:
+            return False, f"CRITICAL TARGET HAZARD: Database name '{active_db_name}' matches production naming in '{environment}' environment!"
+
+        if clean_db_name == REQUIRED_STAGING_DB_NAME or 'staging' in clean_db_name:
+            return False, f"CRITICAL TARGET HAZARD: Database name '{active_db_name}' matches staging naming in '{environment}' environment!"
+
+        # Check for environment variable mismatches with active connection
+        db_url = env.get('DATABASE_URL', '').strip()
+        if db_url:
+            try:
+                parsed = urlparse(db_url)
+                parsed_host = parsed.hostname
+                parsed_db = parsed.path.lstrip('/')
+                if parsed_host and host_str and str(parsed_host).strip().lower() != host_str.lower():
+                    return False, (
+                        f"CRITICAL TARGET HAZARD: Environment variable DATABASE_URL host '{parsed_host}' "
+                        f"does not match active database host '{host_str}'!"
+                    )
+                if parsed_db and clean_db_name and str(parsed_db).strip().lower() != clean_db_name:
+                    return False, (
+                        f"CRITICAL TARGET HAZARD: Environment variable DATABASE_URL database '{parsed_db}' "
+                        f"does not match active database name '{clean_db_name}'!"
+                    )
+            except Exception as exc:
+                return False, f"CRITICAL TARGET HAZARD: Could not parse DATABASE_URL: {exc}"
+
+        # Live connection check if provided
+        if connection_test_fn is not None:
+            try:
+                connection_test_fn()
+            except Exception as exc:
+                return False, f"Live connection verification to local database '{active_db_name}' on '{active_db_host}' failed: {exc}"
+
+        return True, f"Environment '{environment}' target checks PASSED for '{clean_db_name}' on '{host_str}'."
 
     return False, f"Unhandled environment '{environment}'."
 

@@ -380,12 +380,50 @@ class LiveClass(models.Model):
         validators=[MinValueValidator(1), MaxValueValidator(100)],
         help_text="Optional attendance percentage threshold override (1-100) for this class. If null, inherits global default."
     )
+    substitute_instructor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="substituted_live_classes",
+        db_index=True,
+        help_text="Optional substitute instructor conducting this specific class instance."
+    )
+    is_substitute_instructor = models.BooleanField(
+        default=False,
+        help_text="Flag indicating whether a substitute instructor is assigned."
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["scheduled_start"]
         verbose_name_plural = "Live Classes"
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(duration_minutes__gt=0),
+                name="check_liveclass_positive_duration"
+            ),
+            models.CheckConstraint(
+                check=models.Q(
+                    models.Q(is_substitute_instructor=True, substitute_instructor__isnull=False) |
+                    models.Q(is_substitute_instructor=False, substitute_instructor__isnull=True)
+                ),
+                name="check_liveclass_substitute_flag_parity"
+            ),
+        ]
+
+    @property
+    def effective_instructor(self):
+        """
+        Precedence: substitute_instructor takes priority if assigned,
+        falling back to the primary assigned instructor.
+        """
+        return self.substitute_instructor or self.instructor
+
+    @property
+    def effective_instructor_id(self):
+        return self.substitute_instructor_id or self.instructor_id
 
     def clean(self):
         super().clean()
@@ -395,15 +433,33 @@ class LiveClass(models.Model):
             if self.min_attendance_percentage < 1 or self.min_attendance_percentage > 100:
                 raise ValidationError({"min_attendance_percentage": "Percentage must be between 1 and 100."})
         if self.batch:
+            if not self.instructor_id:
+                self.instructor = self.batch.instructor
             if self.course and self.course != self.batch.course:
                 raise ValidationError({"course": "LiveClass course must match batch course."})
             if self.instructor and self.instructor != self.batch.instructor:
                 raise ValidationError({"instructor": "LiveClass instructor must match batch instructor."})
 
+        # Validate substitute instructor eligibility and non-identity with primary
+        effective_primary_id = self.instructor_id or (self.batch.instructor_id if self.batch else None)
+        if self.substitute_instructor:
+            if not getattr(self.substitute_instructor, 'is_active', True):
+                raise ValidationError({"substitute_instructor": "The substitute instructor must be an active user."})
+            if not (
+                self.substitute_instructor.is_superuser or self.substitute_instructor.is_staff
+                or getattr(self.substitute_instructor, 'is_teacher', False)
+                or getattr(self.substitute_instructor, 'is_mentor', False)
+            ):
+                raise ValidationError({"substitute_instructor": "The substitute instructor must be a teacher, mentor, or administrator."})
+            if effective_primary_id and self.substitute_instructor_id == effective_primary_id:
+                raise ValidationError({"substitute_instructor": "Substitute instructor cannot be the same as the assigned primary instructor."})
+
     def save(self, *args, **kwargs):
         if self.batch:
             self.course = self.batch.course
-            self.instructor = self.batch.instructor
+            if not self.instructor_id:
+                self.instructor = self.batch.instructor
+        self.is_substitute_instructor = bool(self.substitute_instructor_id)
         self.full_clean()
         super().save(*args, **kwargs)
 
@@ -1855,3 +1911,183 @@ class ZoomWebhookEvent(models.Model):
 
     def __str__(self):
         return f"{self.event_type} ({self.event_id}) - {self.status}"
+
+
+class LiveClassDurableOperation(models.Model):
+    """
+    Durable operation ledger for distributed sagas and stateful Zoom lifecycle operations.
+    Guarantees at-least-once execution with idempotency, fencing leases, and state tracking.
+    """
+    class OperationType(models.TextChoices):
+        ZOOM_PROVISION = "ZOOM_PROVISION", "Zoom Provisioning"
+        ZOOM_CANCEL = "ZOOM_CANCEL", "Zoom Cancellation"
+        ZOOM_RESCHEDULE = "ZOOM_RESCHEDULE", "Zoom Reschedule"
+        ZOOM_RECOVERY = "ZOOM_RECOVERY", "Zoom Recovery"
+
+    class Status(models.TextChoices):
+        IN_PROGRESS = "IN_PROGRESS", "In Progress"
+        COMPLETED = "COMPLETED", "Completed"
+        FAILED = "FAILED", "Failed"
+        OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN", "Outcome Unknown"
+        COMPENSATION_REQUIRED = "COMPENSATION_REQUIRED", "Compensation Required"
+        COMPENSATING = "COMPENSATING", "Compensating"
+        COMPENSATED = "COMPENSATED", "Compensated"
+        MANUAL_REVIEW_REQUIRED = "MANUAL_REVIEW_REQUIRED", "Manual Review Required"
+
+    idempotency_key = models.CharField(max_length=128, unique=True, db_index=True)
+    operation_type = models.CharField(
+        max_length=32,
+        choices=OperationType.choices,
+        default=OperationType.ZOOM_PROVISION,
+        db_index=True
+    )
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.IN_PROGRESS,
+        db_index=True
+    )
+    live_class = models.ForeignKey(
+        LiveClass,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="durable_operations",
+        db_index=True
+    )
+    payload = models.JSONField(default=dict, blank=True)
+    payload_hash = models.CharField(max_length=64, blank=True, default='')
+    response_payload = models.JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True, default='')
+    lease_worker = models.UUIDField(null=True, blank=True, db_index=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Live Class Durable Operation"
+        verbose_name_plural = "Live Class Durable Operations"
+
+    def __str__(self):
+        return f"{self.operation_type} ({self.idempotency_key[:16]}) - {self.status}"
+
+
+class HistoricalZoomConflict(models.Model):
+    """
+    Immutable audit log for historical meeting ID collisions, length overflows,
+    and malformed meeting identifiers discovered during migration or operation.
+    Soft-links to LiveClass to guarantee audit evidence survives class deletions.
+    """
+    live_class = models.ForeignKey(
+        LiveClass,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="zoom_conflicts",
+        db_index=True,
+        help_text="Soft pointer to LiveClass; preserved as null if LiveClass is removed."
+    )
+    historical_live_class_id = models.BigIntegerField(
+        db_index=True,
+        help_text="Immutable snapshot of the LiveClass primary key at conflict recording time."
+    )
+    live_class_snapshot = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Immutable snapshot of class title, scheduled_start, status, and instructor at conflict time."
+    )
+    zoom_meeting_id_raw = models.TextField(
+        help_text="Unbounded text preserving the exact raw meeting ID string without truncation."
+    )
+    conflict_type = models.CharField(
+        max_length=64,
+        db_index=True,
+        help_text="Category of conflict: DUPLICATE_COLLISION, MALFORMED_ID, LENGTH_OVERFLOW, etc."
+    )
+    details = models.JSONField(default=dict, blank=True)
+    resolved = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Historical Zoom Conflict"
+        verbose_name_plural = "Historical Zoom Conflicts"
+
+    def __str__(self):
+        return f"Conflict {self.conflict_type} on LC {self.historical_live_class_id} (raw: {self.zoom_meeting_id_raw[:20]})"
+
+
+class ZoomMeetingRecord(models.Model):
+    """
+    Central global meeting ownership registry and lifecycle state machine.
+    Enforces 1:1 LiveClass meeting assignment, strict numeric validation, and
+    compensation fencing across workers.
+    """
+    class State(models.TextChoices):
+        RESERVED = "RESERVED", "Reserved"
+        ASSIGNED = "ASSIGNED", "Assigned"
+        RELEASED = "RELEASED", "Released"
+        REASSIGNED = "REASSIGNED", "Reassigned"
+        COMPENSATING = "COMPENSATING", "Compensating"
+        COMPENSATED = "COMPENSATED", "Compensated"
+        POISONED = "POISONED", "Poisoned"
+
+    zoom_meeting_id = models.CharField(max_length=64, unique=True, db_index=True)
+    topic = models.CharField(max_length=255, blank=True, default='')
+    state = models.CharField(
+        max_length=32,
+        choices=State.choices,
+        default=State.RESERVED,
+        db_index=True
+    )
+    live_class = models.OneToOneField(
+        LiveClass,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="zoom_meeting_record"
+    )
+    historical_live_class_id = models.BigIntegerField(null=True, blank=True, db_index=True)
+    durable_operation = models.ForeignKey(
+        LiveClassDurableOperation,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="zoom_records"
+    )
+    owner_token = models.UUIDField(default=uuid.uuid4, db_index=True)
+    lease_worker = models.UUIDField(null=True, blank=True, db_index=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    retry_count = models.PositiveSmallIntegerField(default=0)
+    quarantine_reason = models.TextField(blank=True, default='')
+    version = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Zoom Meeting Record"
+        verbose_name_plural = "Zoom Meeting Records"
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(models.Q(state="ASSIGNED", _negated=True) | models.Q(live_class__isnull=False)),
+                name="check_zmr_assigned_has_live_class"
+            ),
+            models.CheckConstraint(
+                check=models.Q(models.Q(state="COMPENSATING", _negated=True) | models.Q(live_class__isnull=True)),
+                name="check_zmr_compensating_no_live_class"
+            ),
+            models.CheckConstraint(
+                check=models.Q(models.Q(state="COMPENSATED", _negated=True) | models.Q(live_class__isnull=True)),
+                name="check_zmr_compensated_no_live_class"
+            ),
+            models.CheckConstraint(
+                check=models.Q(state="POISONED") | models.Q(zoom_meeting_id__regex=r"^\d{9,11}$"),
+                name="check_zmr_numeric_meeting_id"
+            ),
+        ]
+
+    def __str__(self):
+        lc_id = self.live_class_id or self.historical_live_class_id or "None"
+        return f"{self.zoom_meeting_id} [{self.state}] -> LC {lc_id}"
