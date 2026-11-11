@@ -915,3 +915,26 @@ def reconcile_zoom_attendance_task(self, live_class_id):
             raise self.retry(exc=exc)
         logger.error(f"[ReconcileAttendanceTask] Reconciliation failed permanently for LiveClass #{live_class_id}: {exc}")
         return {"status": "failed", "error": str(exc)}
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def process_zoom_lifecycle_outbox_task(self, batch_size=50):
+    """
+    Celery task: processes pending and retrying ZoomLifecycleOutbox messages with durable leases.
+    Resolves DEF-04.
+    """
+    from courses.services.zoom_lifecycle import process_outbox_queue
+    processed = process_outbox_queue(batch_size=batch_size)
+    return {"status": "ok", "processed": processed}
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def recover_stale_zoom_outbox_task(self, stale_seconds=300):
+    """
+    Celery watchdog task: reclaims crashed or expired IN_FLIGHT ZoomLifecycleOutbox messages.
+    Resolves DEF-04.
+    """
+    from courses.services.zoom_lifecycle import recover_stale_outbox_messages
+    recovered = recover_stale_outbox_messages(stale_seconds=stale_seconds)
+    return {"status": "ok", "recovered": recovered}
+

@@ -3358,6 +3358,447 @@ class AdminZoomMeetingCreateView(APIView):
             return Response({"error": f"Zoom API Error: {str(e)}"}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+OTP_MANUAL_RELEASE_PURPOSE = 'MANUAL_RELEASE'
+
+
+class AdminZoomManualReviewRequestOTPView(APIView):
+    """
+    Stage 5: Dedicated administrative endpoint for requesting a manual-release MFA challenge.
+    Resolves DEF-02:
+    - Enforces staff/superuser authorization
+    - Issues a cryptographically random 6-digit challenge specifically with purpose='MANUAL_RELEASE'
+    - Strictly isolates manual release from ordinary login or account deletion OTPs
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if not (user.is_superuser or user.is_staff):
+            return Response(
+                {"error": "Forbidden: Administrative staff access required."},
+                status=drf_status.HTTP_403_FORBIDDEN
+            )
+
+        from users.models import OTPVerification
+        import secrets
+
+        # Invalidate previous unverified manual-release OTPs for this user
+        OTPVerification.objects.filter(
+            identifier__in=[user.email, getattr(user, 'phone', None)],
+            purpose=OTP_MANUAL_RELEASE_PURPOSE,
+            is_verified=False
+        ).update(attempts=OTPVerification.MAX_VERIFY_ATTEMPTS)
+
+        code = f"{secrets.randbelow(900000) + 100000}"
+        OTPVerification.objects.create(
+            identifier=user.email,
+            otp=code,
+            purpose=OTP_MANUAL_RELEASE_PURPOSE
+        )
+
+        logger.info(f"[AdminManualRelease] Generated MANUAL_RELEASE challenge for admin {user.username} ({user.email})")
+        return Response(
+            {
+                "message": "Manual release MFA verification challenge generated.",
+                "destination": user.email,
+                "expires_in_minutes": 5
+            },
+            status=drf_status.HTTP_200_OK
+        )
+
+
+class AdminZoomManualReviewReleaseView(APIView):
+    """
+    Stage 5: Authenticated administrative endpoint for manual-review resolution.
+    Strict requirements:
+    1. Staff/Superuser authentication + permission check
+    2. Server-side MFA verification via OTPVerification model (dedicated MANUAL_RELEASE purpose)
+    3. Strict ResolutionType validation: CONFIRMED_NEVER_CREATED or CONFIRMED_TERMINATED_EXTERNALLY
+    4. Audited reason (min 20 characters)
+    5. Phase 1 remote Zoom verification (paginated meetings lookup) OUTSIDE database transaction
+       - If Zoom unreachable (429, 5xx, timeout): ABORTS with 503
+       - If meeting active on Zoom: ABORTS with 409
+    6. Phase 2 atomic database transaction with Level 1-5 locks:
+       - Revalidates DOP version & status (MANUAL_REVIEW_REQUIRED, OUTCOME_UNKNOWN, FAILED)
+       - Updates DOP, HostReservation, ZoomMeetingRecord
+       - Creates immutable ZoomAdminAuditLog entry
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if not (user.is_superuser or user.is_staff):
+            return Response(
+                {"error": "Forbidden: Administrative staff access required."},
+                status=drf_status.HTTP_403_FORBIDDEN
+            )
+
+        # 1. Server-side MFA Verification (Resolves DEF-02: Isolated purpose, atomic attempt counter)
+        mfa_otp = str(request.data.get('mfa_otp', '')).strip()
+        if not mfa_otp:
+            return Response(
+                {"error": "MFA verification code required (mfa_otp parameter)."},
+                status=drf_status.HTTP_401_UNAUTHORIZED
+            )
+
+        from users.models import OTPVerification
+        from django.utils import timezone
+        import datetime
+        import requests
+        from django.db import transaction
+
+        otp_cutoff = timezone.now() - datetime.timedelta(minutes=5)
+        with transaction.atomic():
+            otp_record = (
+                OTPVerification.objects.select_for_update()
+                .filter(
+                    identifier__in=[user.email, getattr(user, 'phone', None)],
+                    purpose=OTP_MANUAL_RELEASE_PURPOSE,
+                    is_verified=False,
+                    created_at__gte=otp_cutoff
+                )
+                .order_by('-created_at')
+                .first()
+            )
+
+            if not otp_record:
+                return Response(
+                    {"error": "Unauthorized: No active manual-release MFA challenge found. Request a new challenge first."},
+                    status=drf_status.HTTP_401_UNAUTHORIZED
+                )
+
+            if otp_record.attempts >= OTPVerification.MAX_VERIFY_ATTEMPTS:
+                return Response(
+                    {"error": "Unauthorized: Maximum verification attempts exceeded. Challenge locked."},
+                    status=drf_status.HTTP_401_UNAUTHORIZED
+                )
+
+            if otp_record.otp != mfa_otp:
+                otp_record.attempts += 1
+                otp_record.save(update_fields=['attempts'])
+                remaining = max(0, OTPVerification.MAX_VERIFY_ATTEMPTS - otp_record.attempts)
+                return Response(
+                    {"error": f"Unauthorized: Invalid verification code. {remaining} attempt(s) remaining."},
+                    status=drf_status.HTTP_401_UNAUTHORIZED
+                )
+
+            # Mark verified and immediately consume to prevent replay
+            otp_record.is_verified = True
+            otp_record.attempts = OTPVerification.MAX_VERIFY_ATTEMPTS
+            otp_record.save(update_fields=['is_verified', 'attempts'])
+
+        # 2. Input Parameter Validation
+        dop_id = request.data.get('dop_id')
+        resolution_type = str(request.data.get('resolution_type', '')).strip()
+        reason = str(request.data.get('reason', '')).strip()
+
+        if not dop_id:
+            return Response({"error": "dop_id is required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        from courses.models import (
+            LiveClass,
+            LiveClassDurableOperation,
+            ZoomHostAccount,
+            HostReservation,
+            ZoomMeetingRecord,
+            ZoomAdminAuditLog
+        )
+
+        valid_resolutions = [
+            ZoomAdminAuditLog.ResolutionType.CONFIRMED_NEVER_CREATED,
+            ZoomAdminAuditLog.ResolutionType.CONFIRMED_TERMINATED_EXTERNALLY,
+        ]
+        if resolution_type not in valid_resolutions:
+            return Response(
+                {"error": f"Invalid resolution_type. Must be one of: {valid_resolutions}"},
+                status=drf_status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(reason) < 20:
+            return Response(
+                {"error": "Administrative reason must be at least 20 characters in length."},
+                status=drf_status.HTTP_400_BAD_REQUEST
+            )
+
+        from courses.services.zoom import (
+            ZoomService,
+            ZoomAPIError,
+            ZoomNotFoundError,
+            ZoomRateLimitError,
+            ZoomTransientError
+        )
+
+        # Inspect current DB state without mutating
+        try:
+            dop = LiveClassDurableOperation.objects.get(id=dop_id)
+        except LiveClassDurableOperation.DoesNotExist:
+            return Response({"error": f"DurableOperation {dop_id} not found."}, status=drf_status.HTTP_404_NOT_FOUND)
+
+        if dop.status not in (
+            LiveClassDurableOperation.Status.MANUAL_REVIEW_REQUIRED,
+            LiveClassDurableOperation.Status.OUTCOME_UNKNOWN,
+            LiveClassDurableOperation.Status.FAILED
+        ):
+            return Response(
+                {"error": f"Operation {dop_id} is in status '{dop.status}'; manual release only permits MANUAL_REVIEW_REQUIRED, OUTCOME_UNKNOWN, or FAILED."},
+                status=drf_status.HTTP_409_CONFLICT
+            )
+
+        reservation = HostReservation.objects.filter(durable_operation=dop).first()
+        zmr = ZoomMeetingRecord.objects.filter(durable_operation=dop).first()
+        meeting_id = (zmr.zoom_meeting_id if zmr else dop.payload.get('meeting_id')) or ''
+        host_user_id = reservation.host_account.zoom_user_id if (reservation and reservation.host_account) else None
+        expected_title = (dop.payload.get('title') or (zmr.topic if zmr else '')).strip()
+        expected_start = (dop.payload.get('scheduled_start') or '').strip()
+
+        # 3. Phase 1: Remote Zoom Cloud Verification OUTSIDE Database Transaction
+        remote_evidence = {}
+
+        # Direct meeting lookup if meeting_id is known
+        if meeting_id:
+            try:
+                remote_meeting = ZoomService.get_meeting(meeting_id)
+                # If get_meeting succeeds (HTTP 200), the meeting is still active!
+                return Response(
+                    {
+                        "error": f"Conflict: Meeting {meeting_id} is ACTIVE on Zoom cloud (topic: '{remote_meeting.get('topic')}'). It must be deleted from Zoom web console first.",
+                        "matched_on_zoom": True
+                    },
+                    status=drf_status.HTTP_409_CONFLICT
+                )
+            except ZoomNotFoundError:
+                # 404 is authoritative proof that the meeting does not exist
+                remote_evidence["direct_meeting_lookup_404"] = True
+            except (ZoomTransientError, requests.Timeout, requests.ConnectionError) as conn_err:
+                logger.error(f"[AdminManualRelease] Zoom API unreachable during meeting check: {conn_err}")
+                return Response(
+                    {"error": f"Service Unavailable: Zoom API unreachable ({str(conn_err)}). Host release strictly forbidden during network failure."},
+                    status=drf_status.HTTP_503_SERVICE_UNAVAILABLE
+                )
+            except ZoomRateLimitError as rate_err:
+                return Response(
+                    {"error": f"Service Unavailable: Zoom API rate limit encountered. Retry after {rate_err.retry_after}s. Host release forbidden."},
+                    status=drf_status.HTTP_503_SERVICE_UNAVAILABLE
+                )
+            except ZoomAPIError as api_err:
+                logger.error(f"[AdminManualRelease] Zoom API error during meeting check: {api_err}")
+                return Response(
+                    {"error": f"Zoom API Error during verification: {str(api_err)}. Host release aborted."},
+                    status=drf_status.HTTP_502_BAD_GATEWAY
+                )
+
+        # Host meetings scan across all pages (Resolves DEF-03)
+        if not host_user_id:
+            return Response(
+                {"error": "Precondition failed: Host account on reservation is missing or unassigned. Cannot verify cloud state."},
+                status=drf_status.HTTP_409_CONFLICT
+            )
+
+        try:
+            active_meetings = ZoomService.list_user_meetings(
+                host_id=host_user_id,
+                meeting_type="scheduled",
+                page_size=300
+            )
+            remote_evidence["meetings_scanned_count"] = len(active_meetings)
+            remote_evidence["host_verified"] = host_user_id
+            remote_evidence["pagination_complete"] = True
+
+            if meeting_id:
+                matched = any(m["meeting_id"] == str(meeting_id) or m["uuid"] == str(meeting_id) for m in active_meetings)
+                if matched:
+                    return Response(
+                        {
+                            "error": f"Conflict: Meeting {meeting_id} was found ACTIVE on Zoom for host {host_user_id}. Terminate meeting on Zoom web console first.",
+                            "matched_on_zoom": True
+                        },
+                        status=drf_status.HTTP_409_CONFLICT
+                    )
+                remote_evidence["confirmed_absent_from_host_pool"] = True
+            else:
+                # DEF-03: Correlate using durable operation metadata (title, start_time)
+                plausible_matches = []
+                for m in active_meetings:
+                    m_topic = (m.get("topic") or "").strip().lower()
+                    m_start = (m.get("start_time") or "").strip()
+
+                    topic_match = bool(expected_title and (m_topic == expected_title.lower()))
+                    time_match = False
+                    if expected_start and m_start:
+                        time_match = m_start[:13] == expected_start[:13]
+
+                    if topic_match or (expected_title and expected_title.lower() in m_topic and time_match):
+                        plausible_matches.append(m)
+
+                if len(plausible_matches) == 1:
+                    matched_m = plausible_matches[0]
+                    return Response(
+                        {
+                            "error": f"Conflict: Plausible meeting matching class title '{expected_title}' was found ACTIVE on Zoom for host {host_user_id} (meeting ID: {matched_m['meeting_id']}). It must be terminated on Zoom before host release.",
+                            "matched_on_zoom": True,
+                            "matched_meeting_id": matched_m['meeting_id']
+                        },
+                        status=drf_status.HTTP_409_CONFLICT
+                    )
+                elif len(plausible_matches) > 1:
+                    match_ids = [m['meeting_id'] for m in plausible_matches]
+                    return Response(
+                        {
+                            "error": f"Conflict: Multiple plausible meetings ({len(plausible_matches)}) matching class title '{expected_title}' found on host {host_user_id} ({match_ids}). Manual inspection on Zoom web console required.",
+                            "ambiguous_matches": True
+                        },
+                        status=drf_status.HTTP_409_CONFLICT
+                    )
+                else:
+                    # DEF-03 Fail-Closed: When meeting ID is unknown, a zero-match listing
+                    # CANNOT conclusively establish remote absence. The meeting could be ongoing
+                    # past scheduled_end, delayed by replica lag, or created with title discrepancy.
+                    # Host reservation MUST remain quarantined in MANUAL_REVIEW.
+                    remote_evidence["confirmed_absent_from_host_pool"] = False
+                    remote_evidence["absence_verification_possible"] = False
+                    remote_evidence["rejection_reason"] = "Zero-match host listing cannot conclusively prove non-existence for unknown meeting ID."
+
+                    ZoomAdminAuditLog.objects.create(
+                        admin_user=user,
+                        action="MANUAL_RELEASE_REJECTED",
+                        target_live_class=LiveClass.objects.filter(id=dop.live_class_id).first() if dop.live_class_id else None,
+                        target_dop=dop,
+                        target_meeting_id="",
+                        target_host=reservation.host_account if reservation else None,
+                        resolution_type=resolution_type,
+                        reason=reason,
+                        evidence=remote_evidence,
+                        before_state={
+                            "dop_status": dop.status,
+                            "dop_version": dop.version,
+                            "reservation_status": reservation.status if reservation else None,
+                            "zmr_state": zmr.state if zmr else None,
+                        },
+                        after_state={
+                            "dop_status": dop.status,
+                            "dop_version": dop.version,
+                            "reservation_status": reservation.status if reservation else None,
+                            "zmr_state": zmr.state if zmr else None,
+                            "rejection_reason": "DEF-03: Zero-match listing cannot conclusively establish remote absence for unknown meeting ID."
+                        },
+                        ip_address=request.META.get('REMOTE_ADDR')
+                    )
+
+                    return Response(
+                        {
+                            "error": (
+                                "Conflict: Meeting identifier is unknown and zero matching meetings were detected "
+                                f"on host {host_user_id}. Remote absence cannot be established automatically; "
+                                "a zero-match listing does not prove non-existence. Host reservation remains in "
+                                "MANUAL_REVIEW to prevent double-booking."
+                            ),
+                            "absence_unverifiable": True,
+                            "host_retained_in_manual_review": True
+                        },
+                        status=drf_status.HTTP_409_CONFLICT
+                    )
+
+        except (ZoomTransientError, requests.Timeout, requests.ConnectionError) as conn_err:
+            logger.error(f"[AdminManualRelease] Zoom API unreachable during host audit: {conn_err}")
+            return Response(
+                {"error": f"Service Unavailable: Zoom API unreachable ({str(conn_err)}). Host release strictly forbidden during network failure."},
+                status=drf_status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        except ZoomRateLimitError as rate_err:
+            return Response(
+                {"error": f"Service Unavailable: Zoom API rate limit encountered. Retry after {rate_err.retry_after}s. Host release forbidden."},
+                status=drf_status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        except ZoomAPIError as api_err:
+            logger.error(f"[AdminManualRelease] Zoom API error during host audit: {api_err}")
+            return Response(
+                {"error": f"Zoom API Error during verification: {str(api_err)}. Host release aborted."},
+                status=drf_status.HTTP_502_BAD_GATEWAY
+            )
+
+        # 4. Phase 2: In-Transaction Atomic Cleanup under Strict Level 1-5 Locks
+        from django.db import transaction
+        with transaction.atomic():
+            live_class = None
+            if dop.live_class_id:
+                live_class = LiveClass.objects.select_for_update().get(id=dop.live_class_id)
+
+            dop = LiveClassDurableOperation.objects.select_for_update().get(id=dop_id)
+            if dop.status not in (
+                LiveClassDurableOperation.Status.MANUAL_REVIEW_REQUIRED,
+                LiveClassDurableOperation.Status.OUTCOME_UNKNOWN,
+                LiveClassDurableOperation.Status.FAILED
+            ):
+                return Response(
+                    {"error": "Precondition failed: Operation status changed concurrently."},
+                    status=drf_status.HTTP_409_CONFLICT
+                )
+
+            before_state = {
+                "dop_status": dop.status,
+                "dop_version": dop.version,
+                "reservation_status": reservation.status if reservation else None,
+                "zmr_state": zmr.state if zmr else None,
+            }
+
+            dop.status = LiveClassDurableOperation.Status.COMPENSATED
+            dop.version += 1
+            dop.save(update_fields=['status', 'version', 'updated_at'])
+
+            if reservation:
+                res = HostReservation.objects.select_for_update().get(id=reservation.id)
+                res.status = HostReservation.Status.RELEASED
+                res.release_reason = f"Manual administrative release: {resolution_type} - {reason}"
+                res.save(update_fields=['status', 'release_reason', 'updated_at'])
+
+            if zmr:
+                record = ZoomMeetingRecord.objects.select_for_update().get(id=zmr.id)
+                record.state = ZoomMeetingRecord.State.COMPENSATED
+                if record.live_class_id:
+                    record.historical_live_class_id = record.live_class_id
+                record.live_class = None
+                record.is_current = False
+                record.save(update_fields=['state', 'historical_live_class_id', 'live_class', 'is_current', 'updated_at'])
+
+            if live_class and live_class.zoom_meeting_id == meeting_id:
+                live_class.zoom_meeting_id = ''
+                live_class.zoom_uuid = ''
+                live_class.save(update_fields=['zoom_meeting_id', 'zoom_uuid'])
+
+            after_state = {
+                "dop_status": dop.status,
+                "dop_version": dop.version,
+                "reservation_status": "RELEASED" if reservation else None,
+                "zmr_state": "COMPENSATED" if zmr else None,
+            }
+
+            audit_entry = ZoomAdminAuditLog.objects.create(
+                admin_user=user,
+                action="MANUAL_RELEASE",
+                target_live_class=live_class,
+                target_dop=dop,
+                target_meeting_id=meeting_id,
+                target_host=reservation.host_account if reservation else None,
+                resolution_type=resolution_type,
+                reason=reason,
+                evidence=remote_evidence,
+                before_state=before_state,
+                after_state=after_state,
+                ip_address=request.META.get('REMOTE_ADDR')
+            )
+
+        return Response(
+            {
+                "status": "RELEASED",
+                "audit_id": audit_entry.id,
+                "dop_id": dop.id,
+                "resolution_type": resolution_type,
+                "message": "Host reservation safely released under verified administrative audit."
+            },
+            status=drf_status.HTTP_200_OK
+        )
+
+
 @method_decorator(csrf_exempt, name='dispatch')
 class ZoomWebhookView(APIView):
     """

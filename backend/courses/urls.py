@@ -6,6 +6,8 @@ from .views import (
     AssignmentSubmissionViewSet, AdminCertificateListView, AdminAssignmentListView,
     CertificateTemplateView,
     AdminZoomMeetingCreateView,
+    AdminZoomManualReviewRequestOTPView,
+    AdminZoomManualReviewReleaseView,
     ZoomWebhookView,
     VideoProtectionSettingView,
     AttendanceConfigurationView,
@@ -31,7 +33,7 @@ router.register(r'certificates', CertificateViewSet, basename='certificate')
 # Phase 4.7: no list/create/update/destroy on AssignmentViewSet (only
 # `retrieve`/`submit`); `retrieve`/`my`/`assignment/<id>`/`grade`/
 # `return-for-revision` on AssignmentSubmissionViewSet -- see each
-# viewset's own docstring in courses/views.py.
+# viewset's own docstring in courses/views.py for why.
 router.register(r'assignments', AssignmentViewSet, basename='assignment')
 router.register(r'assignment-submissions', AssignmentSubmissionViewSet, basename='assignment-submission')
 router.register(r'', CourseViewSet, basename='course')
@@ -44,6 +46,8 @@ urlpatterns = [
     # pitfall already hit and fixed elsewhere in this codebase, e.g.
     # notifications/urls.py's device-token/ override).
     path('admin/zoom/create-meeting/', AdminZoomMeetingCreateView.as_view(), name='admin-zoom-create-meeting'),
+    path('admin/zoom/manual-review/request-otp/', AdminZoomManualReviewRequestOTPView.as_view(), name='admin-zoom-manual-review-request-otp'),
+    path('admin/zoom/manual-review/release/', AdminZoomManualReviewReleaseView.as_view(), name='admin-zoom-manual-review-release'),
     path('zoom/webhook/', ZoomWebhookView.as_view(), name='zoom-webhook'),
     path('certificate-template/', CertificateTemplateView.as_view(), name='certificate-template'),
     path('admin/certificate-template/', CertificateTemplateView.as_view(), name='admin-certificate-template'),

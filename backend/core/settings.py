@@ -655,6 +655,14 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'courses.tasks.recover_stale_zoom_recordings',
         'schedule': crontab(minute='*/30'),  # Run every 30 minutes
     },
+    'process-zoom-lifecycle-outbox': {
+        'task': 'courses.tasks.process_zoom_lifecycle_outbox_task',
+        'schedule': crontab(minute='*/2'),  # Run every 2 minutes
+    },
+    'recover-stale-zoom-outbox': {
+        'task': 'courses.tasks.recover_stale_zoom_outbox_task',
+        'schedule': crontab(minute='*/10'),  # Run every 10 minutes
+    },
 }
 if not (IS_STAGING and not (os.environ.get('ENABLE_STAGING_BILLING_AUTOMATION', 'False').lower() in ('true', '1', 'yes'))):
     CELERY_BEAT_SCHEDULE['billing-daily-automation'] = {

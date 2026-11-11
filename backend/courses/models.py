@@ -506,6 +506,11 @@ class LiveClass(models.Model):
             "attended_duration_minutes": int(zoom_sec // 60),
         }
 
+    @property
+    def zoom_meeting_record(self):
+        """Backwards-compatibility property returning the current ZoomMeetingRecord for this LiveClass."""
+        return self.zoom_meeting_records.filter(is_current=True).first()
+
     def __str__(self):
         return f"{self.title} - {self.course.title} ({self.scheduled_start})"
 
@@ -1961,6 +1966,7 @@ class LiveClassDurableOperation(models.Model):
     error_message = models.TextField(blank=True, default='')
     lease_worker = models.UUIDField(null=True, blank=True, db_index=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    version = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -2018,11 +2024,110 @@ class HistoricalZoomConflict(models.Model):
         return f"Conflict {self.conflict_type} on LC {self.historical_live_class_id} (raw: {self.zoom_meeting_id_raw[:20]})"
 
 
+class ZoomHostAccount(models.Model):
+    """
+    Managed Zoom host account in the dedicated pool for live class routing.
+    Tracks host capacity, concurrency constraints, and operational health.
+    """
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        DRAINING = "DRAINING", "Draining"
+        INACTIVE = "INACTIVE", "Inactive"
+        SUSPENDED = "SUSPENDED", "Suspended"
+
+    zoom_user_id = models.CharField(max_length=64, unique=True, db_index=True)
+    email = models.EmailField(unique=True, db_index=True)
+    display_name = models.CharField(max_length=255, blank=True, default='')
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        db_index=True
+    )
+    max_concurrency = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["id"]
+        verbose_name = "Zoom Host Account"
+        verbose_name_plural = "Zoom Host Accounts"
+
+    def __str__(self):
+        return f"{self.display_name or self.email} ({self.zoom_user_id}) [{self.status}]"
+
+
+class HostReservation(models.Model):
+    """
+    Deterministic host allocation slot binding a LiveClass to a ZoomHostAccount.
+    Protects host concurrency and guarantees zero-teardown during provisioning.
+    """
+    class Status(models.TextChoices):
+        PROVISIONAL = "PROVISIONAL", "Provisional"
+        ACTIVE = "ACTIVE", "Active"
+        DRAINING = "DRAINING", "Draining"
+        MANUAL_REVIEW = "MANUAL_REVIEW", "Manual Review"
+        RELEASED = "RELEASED", "Released"
+        COMPLETED = "COMPLETED", "Completed"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    live_class = models.ForeignKey(
+        LiveClass,
+        on_delete=models.CASCADE,
+        related_name="host_reservations",
+        db_index=True
+    )
+    host_account = models.ForeignKey(
+        ZoomHostAccount,
+        on_delete=models.PROTECT,
+        related_name="reservations",
+        db_index=True
+    )
+    scheduled_start = models.DateTimeField(db_index=True)
+    scheduled_end = models.DateTimeField(db_index=True)
+    generation = models.PositiveIntegerField(default=1)
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.PROVISIONAL,
+        db_index=True
+    )
+    durable_operation = models.ForeignKey(
+        LiveClassDurableOperation,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="host_reservations"
+    )
+    release_reason = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Host Reservation"
+        verbose_name_plural = "Host Reservations"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["live_class", "host_account", "scheduled_start", "scheduled_end", "generation"],
+                name="uq_host_res_composite_key"
+            ),
+            models.UniqueConstraint(
+                fields=["live_class"],
+                condition=models.Q(status="ACTIVE"),
+                name="uq_host_res_single_active_per_class"
+            ),
+        ]
+
+    def __str__(self):
+        return f"Res {self.id}: LC {self.live_class_id} -> Host {self.host_account_id} [{self.status}] (gen {self.generation})"
+
+
 class ZoomMeetingRecord(models.Model):
     """
     Central global meeting ownership registry and lifecycle state machine.
-    Enforces 1:1 LiveClass meeting assignment, strict numeric validation, and
-    compensation fencing across workers.
+    Enforces partial unique LiveClass active meeting assignment, flexible meeting ID formats,
+    composite reservation relationship, and compensation fencing across workers.
     """
     class State(models.TextChoices):
         RESERVED = "RESERVED", "Reserved"
@@ -2032,8 +2137,10 @@ class ZoomMeetingRecord(models.Model):
         COMPENSATING = "COMPENSATING", "Compensating"
         COMPENSATED = "COMPENSATED", "Compensated"
         POISONED = "POISONED", "Poisoned"
+        ADOPTED_PENDING_COMMIT = "ADOPTED_PENDING_COMMIT", "Adopted Pending Commit"
+        COMMITTED_PENDING_TEARDOWN = "COMMITTED_PENDING_TEARDOWN", "Committed Pending Teardown"
 
-    zoom_meeting_id = models.CharField(max_length=64, unique=True, db_index=True)
+    zoom_meeting_id = models.CharField(max_length=128, db_index=True)
     topic = models.CharField(max_length=255, blank=True, default='')
     state = models.CharField(
         max_length=32,
@@ -2041,13 +2148,24 @@ class ZoomMeetingRecord(models.Model):
         default=State.RESERVED,
         db_index=True
     )
-    live_class = models.OneToOneField(
+    live_class = models.ForeignKey(
         LiveClass,
         on_delete=models.PROTECT,
         null=True,
         blank=True,
-        related_name="zoom_meeting_record"
+        related_name="zoom_meeting_records"
     )
+    host_account = models.ForeignKey(
+        ZoomHostAccount,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="zoom_records"
+    )
+    scheduled_start = models.DateTimeField(null=True, blank=True, db_index=True)
+    scheduled_end = models.DateTimeField(null=True, blank=True, db_index=True)
+    is_current = models.BooleanField(default=True, db_index=True)
+    generation = models.PositiveIntegerField(default=1)
     historical_live_class_id = models.BigIntegerField(null=True, blank=True, db_index=True)
     durable_operation = models.ForeignKey(
         LiveClassDurableOperation,
@@ -2083,11 +2201,102 @@ class ZoomMeetingRecord(models.Model):
                 name="check_zmr_compensated_no_live_class"
             ),
             models.CheckConstraint(
-                check=models.Q(state="POISONED") | models.Q(zoom_meeting_id__regex=r"^\d{9,11}$"),
-                name="check_zmr_numeric_meeting_id"
+                check=models.Q(state="POISONED") |
+                      models.Q(zoom_meeting_id__regex=r"^\d{8,15}$") |
+                      models.Q(zoom_meeting_id__regex=r"^[a-zA-Z0-9+/=_-]{16,128}$"),
+                name="check_zmr_meeting_id_format"
+            ),
+            models.UniqueConstraint(
+                fields=["live_class"],
+                condition=models.Q(is_current=True),
+                name="idx_zmr_active_live_class"
+            ),
+            models.UniqueConstraint(
+                fields=["zoom_meeting_id"],
+                condition=models.Q(is_current=True),
+                name="idx_zmr_active_meeting_id"
             ),
         ]
 
     def __str__(self):
         lc_id = self.live_class_id or self.historical_live_class_id or "None"
-        return f"{self.zoom_meeting_id} [{self.state}] -> LC {lc_id}"
+        curr = "CURRENT" if self.is_current else "HISTORICAL"
+        return f"{self.zoom_meeting_id} [{self.state}|{curr}] -> LC {lc_id}"
+
+
+class ZoomAdminAuditLog(models.Model):
+    """
+    Immutable audit trail for manual review releases and administrative overrides.
+    Records administrative identity, verified MFA status, Zoom verification evidence,
+    and before/after system state.
+    """
+    class ResolutionType(models.TextChoices):
+        CONFIRMED_NEVER_CREATED = "CONFIRMED_NEVER_CREATED", "Confirmed Never Created"
+        CONFIRMED_TERMINATED_EXTERNALLY = "CONFIRMED_TERMINATED_EXTERNALLY", "Confirmed Terminated Externally"
+
+    admin_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="zoom_admin_actions"
+    )
+    action = models.CharField(max_length=64, default="MANUAL_RELEASE")
+    target_live_class = models.ForeignKey(LiveClass, on_delete=models.SET_NULL, null=True, blank=True)
+    target_dop = models.ForeignKey(LiveClassDurableOperation, on_delete=models.SET_NULL, null=True, blank=True)
+    target_meeting_id = models.CharField(max_length=128, blank=True, default='')
+    target_host = models.ForeignKey(ZoomHostAccount, on_delete=models.SET_NULL, null=True, blank=True)
+    resolution_type = models.CharField(max_length=64, choices=ResolutionType.choices)
+    reason = models.TextField()
+    evidence = models.JSONField(default=dict, blank=True)
+    before_state = models.JSONField(default=dict, blank=True)
+    after_state = models.JSONField(default=dict, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Zoom Admin Audit Log"
+        verbose_name_plural = "Zoom Admin Audit Logs"
+
+    def __str__(self):
+        return f"AdminAction {self.action} by User {self.admin_user_id} on {self.created_at}"
+
+
+class ZoomLifecycleOutbox(models.Model):
+    """
+    Transactional outbox for durable asynchronous lifecycle events, webhook notifications,
+    and background compensation dispatch.
+    """
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        IN_FLIGHT = "IN_FLIGHT", "In Flight"
+        COMPLETED = "COMPLETED", "Completed"
+        RETRYING = "RETRYING", "Retrying"
+        FAILED = "FAILED", "Failed"
+        DEAD_LETTER = "DEAD_LETTER", "Dead Letter"
+
+    aggregate_id = models.BigIntegerField(db_index=True)
+    event_type = models.CharField(max_length=64, db_index=True)
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True
+    )
+    payload = models.JSONField(default=dict, blank=True)
+    retry_count = models.PositiveSmallIntegerField(default=0)
+    max_retries = models.PositiveSmallIntegerField(default=5)
+    next_retry_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    error_message = models.TextField(blank=True, default='')
+    lease_worker = models.UUIDField(null=True, blank=True, db_index=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    version = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        verbose_name = "Zoom Lifecycle Outbox"
+        verbose_name_plural = "Zoom Lifecycle Outbox Messages"
+
+    def __str__(self):
+        return f"Outbox {self.id}: {self.event_type} on {self.aggregate_id} [{self.status}]"
