@@ -206,12 +206,12 @@ class ZoomPhaseADatabaseConstraintTests(TransactionTestCase):
                 )
 
     def test_constraint_numeric_meeting_id_enforcement(self):
-        """CHECK check_zmr_numeric_meeting_id: Non-numeric allowed ONLY if state='POISONED'."""
-        # Non-numeric with state RESERVED -> must fail
+        """CHECK check_zmr_meeting_id_format: Malformed identifier allowed ONLY if state='POISONED'."""
+        # Non-numeric invalid format with state RESERVED -> must fail
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 ZoomMeetingRecord.objects.create(
-                    zoom_meeting_id="malformed-alpha-id",
+                    zoom_meeting_id="bad-id",
                     state=ZoomMeetingRecord.State.RESERVED
                 )
 
