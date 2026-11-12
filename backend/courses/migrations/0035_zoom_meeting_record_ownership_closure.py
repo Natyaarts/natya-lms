@@ -326,14 +326,14 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name='liveclass',
             constraint=models.CheckConstraint(
-                check=models.Q(duration_minutes__gt=0),
+                condition=models.Q(duration_minutes__gt=0),
                 name='check_liveclass_positive_duration'
             ),
         ),
         migrations.AddConstraint(
             model_name='liveclass',
             constraint=models.CheckConstraint(
-                check=models.Q(
+                condition=models.Q(
                     models.Q(is_substitute_instructor=True, substitute_instructor__isnull=False) |
                     models.Q(is_substitute_instructor=False, substitute_instructor__isnull=True)
                 ),
@@ -375,28 +375,28 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name='zoommeetingrecord',
             constraint=models.CheckConstraint(
-                check=models.Q(models.Q(state='ASSIGNED', _negated=True) | models.Q(live_class__isnull=False)),
+                condition=models.Q(models.Q(state='ASSIGNED', _negated=True) | models.Q(live_class__isnull=False)),
                 name='check_zmr_assigned_has_live_class'
             ),
         ),
         migrations.AddConstraint(
             model_name='zoommeetingrecord',
             constraint=models.CheckConstraint(
-                check=models.Q(models.Q(state='COMPENSATING', _negated=True) | models.Q(live_class__isnull=True)),
+                condition=models.Q(models.Q(state='COMPENSATING', _negated=True) | models.Q(live_class__isnull=True)),
                 name='check_zmr_compensating_no_live_class'
             ),
         ),
         migrations.AddConstraint(
             model_name='zoommeetingrecord',
             constraint=models.CheckConstraint(
-                check=models.Q(models.Q(state='COMPENSATED', _negated=True) | models.Q(live_class__isnull=True)),
+                condition=models.Q(models.Q(state='COMPENSATED', _negated=True) | models.Q(live_class__isnull=True)),
                 name='check_zmr_compensated_no_live_class'
             ),
         ),
         migrations.AddConstraint(
             model_name='zoommeetingrecord',
             constraint=models.CheckConstraint(
-                check=models.Q(state='POISONED') | models.Q(zoom_meeting_id__regex=r'^\d{9,11}$'),
+                condition=models.Q(state='POISONED') | models.Q(zoom_meeting_id__regex=r'^\d{9,11}$'),
                 name='check_zmr_numeric_meeting_id'
             ),
         ),

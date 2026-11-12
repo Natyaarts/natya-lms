@@ -401,11 +401,11 @@ class LiveClass(models.Model):
         verbose_name_plural = "Live Classes"
         constraints = [
             models.CheckConstraint(
-                check=models.Q(duration_minutes__gt=0),
+                condition=models.Q(duration_minutes__gt=0),
                 name="check_liveclass_positive_duration"
             ),
             models.CheckConstraint(
-                check=models.Q(
+                condition=models.Q(
                     models.Q(is_substitute_instructor=True, substitute_instructor__isnull=False) |
                     models.Q(is_substitute_instructor=False, substitute_instructor__isnull=True)
                 ),
@@ -2189,21 +2189,21 @@ class ZoomMeetingRecord(models.Model):
         verbose_name_plural = "Zoom Meeting Records"
         constraints = [
             models.CheckConstraint(
-                check=models.Q(models.Q(state="ASSIGNED", _negated=True) | models.Q(live_class__isnull=False)),
+                condition=models.Q(models.Q(state="ASSIGNED", _negated=True) | models.Q(live_class__isnull=False)),
                 name="check_zmr_assigned_has_live_class"
             ),
             models.CheckConstraint(
-                check=models.Q(models.Q(state="COMPENSATING", _negated=True) | models.Q(live_class__isnull=True)),
+                condition=models.Q(models.Q(state="COMPENSATING", _negated=True) | models.Q(live_class__isnull=True)),
                 name="check_zmr_compensating_no_live_class"
             ),
             models.CheckConstraint(
-                check=models.Q(models.Q(state="COMPENSATED", _negated=True) | models.Q(live_class__isnull=True)),
+                condition=models.Q(models.Q(state="COMPENSATED", _negated=True) | models.Q(live_class__isnull=True)),
                 name="check_zmr_compensated_no_live_class"
             ),
             models.CheckConstraint(
-                check=models.Q(state="POISONED") |
-                      models.Q(zoom_meeting_id__regex=r"^\d{8,15}$") |
-                      models.Q(zoom_meeting_id__regex=r"^[a-zA-Z0-9+/=_-]{16,128}$"),
+                condition=models.Q(state="POISONED") |
+                          models.Q(zoom_meeting_id__regex=r"^\d{8,15}$") |
+                          models.Q(zoom_meeting_id__regex=r"^[a-zA-Z0-9+/=_-]{16,128}$"),
                 name="check_zmr_meeting_id_format"
             ),
             models.UniqueConstraint(

@@ -276,7 +276,7 @@ class Migration(migrations.Migration):
         # Op 13: Add new constraints to ZoomMeetingRecord
         migrations.AddConstraint(
             model_name='zoommeetingrecord',
-            constraint=models.CheckConstraint(check=models.Q(('state', 'POISONED'), ('zoom_meeting_id__regex', '^\\d{8,15}$'), ('zoom_meeting_id__regex', '^[a-zA-Z0-9+/=_-]{16,128}$'), _connector='OR'), name='check_zmr_meeting_id_format'),
+            constraint=models.CheckConstraint(condition=models.Q(('state', 'POISONED'), ('zoom_meeting_id__regex', '^\\d{8,15}$'), ('zoom_meeting_id__regex', '^[a-zA-Z0-9+/=_-]{16,128}$'), _connector='OR'), name='check_zmr_meeting_id_format'),
         ),
         migrations.AddConstraint(
             model_name='zoommeetingrecord',
