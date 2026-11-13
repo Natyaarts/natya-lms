@@ -760,6 +760,74 @@ class ZoomService:
         return all_meetings
 
     @classmethod
+    def list_users(cls, status="active", page_size=300):
+        """
+        Lists all users in the Zoom tenant across all pages using next_page_token pagination.
+        Returns a list of user summary dictionaries:
+        [{'id': str, 'email': str, 'first_name': str, 'last_name': str,
+          'display_name': str, 'type': int, 'status': str}, ...]
+        """
+        token = cls.get_access_token()
+        headers = {"Authorization": f"Bearer {token}"}
+
+        all_users = []
+        next_page_token = None
+
+        while True:
+            params = {
+                "status": status,
+                "page_size": min(page_size, 300)
+            }
+            if next_page_token:
+                params["next_page_token"] = next_page_token
+
+            url = "https://api.zoom.us/v2/users"
+            try:
+                res = requests.get(url, headers=headers, params=params, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+            except (requests.Timeout, requests.ConnectionError) as conn_err:
+                clean_err = cls._sanitize_string(str(conn_err))
+                logger.error(f"[ZoomService] Network error listing users: {clean_err}")
+                raise ZoomTransientError(f"Network error listing users: {clean_err}") from conn_err
+
+            if res.status_code == 401:
+                logger.info("[ZoomService] Received 401 listing users; refreshing token and retrying")
+                cls._invalidate_cached_token(token)
+                token = cls.get_access_token(force_refresh=True, rejected_token=token)
+                headers["Authorization"] = f"Bearer {token}"
+                try:
+                    res = requests.get(url, headers=headers, params=params, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+                except (requests.Timeout, requests.ConnectionError) as conn_err:
+                    clean_err = cls._sanitize_string(str(conn_err))
+                    logger.error(f"[ZoomService] Network error listing users: {clean_err}")
+                    raise ZoomTransientError(f"Network error listing users: {clean_err}") from conn_err
+
+            if res.status_code != 200:
+                cls._handle_error_response(res, context="list_users")
+
+            data = res.json()
+            if not isinstance(data, dict):
+                raise ZoomAPIError(f"Invalid JSON response listing users: expected dict, got {type(data).__name__}")
+            users = data.get("users", [])
+            if not isinstance(users, list):
+                raise ZoomAPIError(f"Invalid users list in response: expected list, got {type(users).__name__}")
+            for u in users:
+                all_users.append({
+                    "id": str(u.get("id")),
+                    "email": str(u.get("email") or "").strip().lower(),
+                    "first_name": str(u.get("first_name") or "").strip(),
+                    "last_name": str(u.get("last_name") or "").strip(),
+                    "display_name": f"{u.get('first_name', '')} {u.get('last_name', '')}".strip() or str(u.get("display_name") or "").strip(),
+                    "type": int(u.get("type", 1)),
+                    "status": str(u.get("status") or "active").lower(),
+                })
+
+            next_page_token = data.get("next_page_token")
+            if not next_page_token:
+                break
+
+        return all_users
+
+    @classmethod
     def sanitize_meeting_response(cls, meeting_data):
         """
         Recursively strips host_url, start_url, password, and zak tokens from meeting
