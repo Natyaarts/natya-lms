@@ -22,6 +22,7 @@ from courses.services.zoom import ZoomService, ZoomAPIError
 
 CONFIRMATION_PHRASE = "CONFIRM-ZOOM-HOST-SYNC"
 EXPECTED_LICENSED_SEATS = 40
+EXCLUDED_TEACHER_IDS = frozenset({39})  # Permanently excluded test/admin accounts (Teacher #39: Vijay Pn)
 
 
 class Command(BaseCommand):
@@ -152,16 +153,23 @@ class Command(BaseCommand):
     # -------------------------------------------------------------------------
     def _fetch_zoom_inventory(self) -> Dict[str, Any]:
         try:
-            raw_users = ZoomService.list_users(status="active", page_size=300)
+            raw_active = ZoomService.list_users(status="active", page_size=300)
         except Exception as exc:
             raise CommandError(f"Fail-Closed: Could not retrieve Zoom user inventory from API: {exc}") from exc
+
+        raw_pending = []
+        try:
+            raw_pending = ZoomService.list_users(status="pending", page_size=300)
+        except Exception as exc:
+            # Diagnostic inspection of pending invitations is non-blocking
+            pass
 
         licensed_users = []
         basic_users = []
         other_users = []
         email_counts = defaultdict(list)
 
-        for u in raw_users:
+        for u in raw_active:
             u_id = str(u.get("id") or "").strip()
             u_email = str(u.get("email") or "").strip().lower()
             u_type = int(u.get("type", 1))
@@ -190,12 +198,27 @@ class Command(BaseCommand):
 
         duplicate_zoom_emails = {e: recs for e, recs in email_counts.items() if len(recs) > 1}
 
+        pending_users = []
+        for u in raw_pending:
+            u_id = str(u.get("id") or "").strip()
+            u_email = str(u.get("email") or "").strip().lower()
+            if u_id and u_email:
+                pending_users.append({
+                    "id": u_id,
+                    "email": u_email,
+                    "display_name": u.get("display_name", ""),
+                    "type": int(u.get("type", 1)),
+                    "status": "pending",
+                })
+
         return {
-            "total_raw": len(raw_users),
+            "total_active": len(raw_active),
+            "total_raw": len(raw_active),
             "licensed_users": licensed_users,
             "basic_users": basic_users,
             "other_users": other_users,
             "duplicate_zoom_emails": duplicate_zoom_emails,
+            "pending_users": pending_users,
         }
 
     # -------------------------------------------------------------------------
@@ -209,12 +232,16 @@ class Command(BaseCommand):
     ) -> Dict[str, Any]:
         User = get_user_model()
 
-        # 1. Index LMS Teachers and detect duplicate emails
-        teachers = list(
+        # 1. Index LMS Teachers and detect duplicate emails (excluding EXCLUDED_TEACHER_IDS)
+        raw_teachers = list(
             User.objects.filter(is_teacher=True)
             .exclude(email__isnull=True)
             .exclude(email__exact="")
         )
+        total_lms_teachers_raw = len(raw_teachers)
+
+        teachers = [t for t in raw_teachers if t.id not in EXCLUDED_TEACHER_IDS]
+
         lms_email_to_teachers = defaultdict(list)
         for t in teachers:
             norm_e = t.email.strip().lower()
@@ -232,7 +259,8 @@ class Command(BaseCommand):
 
         # Track teachers already assigned to dedicated hosts in DB or planned in this run
         claimed_teacher_to_host = {
-            h.assigned_instructor_id: h for h in db_snapshot["hosts"] if h.assigned_instructor_id
+            h.assigned_instructor_id: h for h in db_snapshot["hosts"]
+            if h.assigned_instructor_id and h.assigned_instructor_id not in EXCLUDED_TEACHER_IDS
         }
 
         proposed_creates = []
@@ -269,9 +297,30 @@ class Command(BaseCommand):
             lms_teachers = lms_email_to_teachers.get(z_email, [])
             target_teacher = lms_teachers[0] if lms_teachers else None
 
+            # Hard safety invariant: Never allow an excluded teacher to be target
+            if target_teacher and target_teacher.id in EXCLUDED_TEACHER_IDS:
+                target_teacher = None
+
             # Dual-key lookup in existing database records
             existing_host_by_id = existing_by_uid.get(z_uid)
             existing_hosts_by_email = existing_by_email.get(z_email, [])
+
+            # Safety Guard: Existing host bound to an excluded teacher (matched by Zoom ID OR email)
+            excluded_host = None
+            if existing_host_by_id and existing_host_by_id.assigned_instructor_id in EXCLUDED_TEACHER_IDS:
+                excluded_host = existing_host_by_id
+            elif existing_hosts_by_email and any(h.assigned_instructor_id in EXCLUDED_TEACHER_IDS for h in existing_hosts_by_email):
+                excluded_host = next(h for h in existing_hosts_by_email if h.assigned_instructor_id in EXCLUDED_TEACHER_IDS)
+
+            if excluded_host:
+                conflicts.append({
+                    "type": "CONFLICT_EXCLUDED_TEACHER",
+                    "zoom_user_id": z_uid,
+                    "email": z_email,
+                    "host_id": excluded_host.id,
+                    "detail": f"Existing host #{excluded_host.id} is bound to excluded Teacher #{excluded_host.assigned_instructor_id}; will not touch."
+                })
+                continue
 
             # Check for multi-key database integrity conflict: multiple hosts with same email
             if len(existing_hosts_by_email) > 1:
@@ -410,7 +459,9 @@ class Command(BaseCommand):
             "unmatched_zoom_licensed": unmatched_zoom_licensed,
             "missing_lms_teachers": missing_lms_teachers,
             "duplicate_lms_teacher_emails": duplicate_lms_teacher_emails,
+            "total_lms_teachers_raw": total_lms_teachers_raw,
             "total_lms_teachers": len(teachers),
+            "excluded_teacher_ids": sorted(list(EXCLUDED_TEACHER_IDS)),
             "matched_teacher_count": len(matched_zoom_emails),
         }
 
@@ -435,13 +486,16 @@ class Command(BaseCommand):
         self.stdout.write(f"  - Types:   {db_snapshot['type_counts']}")
         self.stdout.write(f"  - Mapped:  {db_snapshot['assigned_count']}")
         self.stdout.write(f"\nZoom API User Inventory:")
-        self.stdout.write(f"  - Total Active Users:         {zoom_inventory['total_raw']}")
+        self.stdout.write(f"  - Total Active Users:         {zoom_inventory.get('total_active', zoom_inventory['total_raw'])}")
         self.stdout.write(f"  - Licensed (type=2):          {licensed_count} (Expected: ~{expected_seats})")
         self.stdout.write(f"  - Basic / Ineligible (type=1): {basic_count}")
+        self.stdout.write(f"  - Pending Invitations:        {len(zoom_inventory.get('pending_users', []))} (Invited in Zoom, awaiting acceptance)")
         self.stdout.write(f"\nLMS Teachers:")
-        self.stdout.write(f"  - Registered Teachers:        {recon['total_lms_teachers']}")
+        self.stdout.write(f"  - Registered Teachers (Total): {recon.get('total_lms_teachers_raw', recon['total_lms_teachers'])}")
+        self.stdout.write(f"  - Permanently Excluded:       {recon.get('excluded_teacher_ids', sorted(list(EXCLUDED_TEACHER_IDS)))} (Teacher ID 39: Vijay Pn)")
+        self.stdout.write(f"  - Net Eligible Teachers:       {recon['total_lms_teachers']}")
         self.stdout.write(f"  - Exactly Matched with Zoom:  {recon['matched_teacher_count']}")
-        self.stdout.write(f"  - Unmatched Teachers:         {len(recon['missing_lms_teachers'])}")
+        self.stdout.write(f"  - Unmatched Eligible Teachers: {len(recon['missing_lms_teachers'])}")
         self.stdout.write(f"\nProposed Actions:")
         self.stdout.write(f"  - New Host Records to Create: {len(recon['proposed_creates'])}")
         self.stdout.write(f"  - Existing Records to Update: {len(recon['proposed_updates'])}")
@@ -501,6 +555,13 @@ class Command(BaseCommand):
         with transaction.atomic():
             # 1. Execute safe creates
             for item in recon["proposed_creates"]:
+                target_teacher = item.get("target_teacher")
+                target_id = target_teacher.id if target_teacher else item.get("assigned_instructor_id")
+                if target_id in EXCLUDED_TEACHER_IDS:
+                    self.stdout.write(self.style.ERROR(
+                        f"BLOCKED Creation: Teacher #{target_id} is in EXCLUDED_TEACHER_IDS."
+                    ))
+                    continue
                 host = ZoomHostAccount.objects.create(
                     zoom_user_id=item["zoom_user_id"],
                     email=item["email"],
@@ -515,7 +576,20 @@ class Command(BaseCommand):
 
             # 2. Execute safe updates
             for item in recon["proposed_updates"]:
+                target_teacher = item.get("target_teacher")
+                target_id = target_teacher.id if target_teacher else (item.get("new_assigned_instructor_id") or item.get("assigned_instructor_id"))
+                if target_id in EXCLUDED_TEACHER_IDS:
+                    self.stdout.write(self.style.ERROR(
+                        f"BLOCKED Update: Teacher #{target_id} is in EXCLUDED_TEACHER_IDS."
+                    ))
+                    continue
                 host = ZoomHostAccount.objects.select_for_update().get(id=item["host"].id)
+
+                if host.assigned_instructor_id in EXCLUDED_TEACHER_IDS:
+                    self.stdout.write(self.style.ERROR(
+                        f"BLOCKED Update: Existing host #{host.id} is already bound to excluded Teacher #{host.assigned_instructor_id}."
+                    ))
+                    continue
 
                 # Re-verify conflict under lock: Never overwrite conflicting instructor
                 if host.assigned_instructor_id and host.assigned_instructor_id != item["target_teacher"].id:

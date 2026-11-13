@@ -459,6 +459,196 @@ class SyncZoomHostAccountsCommandTests(TestCase):
         self.assertIn("Fail-Closed: Could not retrieve Zoom user inventory", str(ctx.exception))
         self.assertEqual(ZoomHostAccount.objects.count(), 0)
 
+    # -------------------------------------------------------------------------
+    # 8. Permanent Exclusion of Teacher ID 39 (Vijay Pn)
+    # -------------------------------------------------------------------------
+    @mock.patch.object(ZoomService, "list_users")
+    def test_teacher_39_is_permanently_excluded_from_matching_and_creation(self, mock_list_users):
+        # Create Teacher 39 (Vijay Pn test account)
+        teacher_39 = User.objects.create_user(
+            id=39,
+            username="vijay_test_39",
+            email="vijay_test@natyaarts.com",
+            first_name="Vijay",
+            last_name="Pn",
+            is_teacher=True
+        )
+
+        users = self._sample_zoom_users()
+        # Add Zoom user matching teacher 39's email
+        users.append({
+            "id": "zoom_t39",
+            "email": "vijay_test@natyaarts.com",
+            "first_name": "Vijay",
+            "last_name": "Pn",
+            "display_name": "Vijay Pn",
+            "type": 2,
+            "status": "active",
+        })
+
+        def side_effect(status="active", page_size=300):
+            if status == "active":
+                return users
+            return []
+        mock_list_users.side_effect = side_effect
+
+        out = StringIO()
+        call_command(
+            "sync_zoom_host_accounts",
+            commit=True,
+            confirm="CONFIRM-ZOOM-HOST-SYNC",
+            stdout=out
+        )
+
+        output = out.getvalue()
+        # 1. Output clearly states Teacher ID 39 is permanently excluded
+        self.assertIn("Permanently Excluded:", output)
+        self.assertIn("39", output)
+
+        # 2. Teacher 39 is NOT in missing LMS teachers
+        self.assertNotIn("Teacher #39", output)
+
+        # 3. Teacher 39 is NOT in proposed creates
+        self.assertNotIn("Teacher #39 (Vijay Pn)", output)
+
+        # 4. Zoom user for teacher 39 is treated as unmatched
+        self.assertIn("vijay_test@natyaarts.com", output)
+        self.assertIn("Ineligible for dedicated mapping", output)
+
+        # 5. Zero host accounts created for teacher 39
+        self.assertFalse(ZoomHostAccount.objects.filter(assigned_instructor_id=39).exists())
+        self.assertFalse(ZoomHostAccount.objects.filter(email="vijay_test@natyaarts.com").exists())
+
+    @mock.patch.object(ZoomService, "list_users")
+    def test_teacher_39_is_excluded_from_existing_host_updates(self, mock_list_users):
+        teacher_39 = User.objects.create_user(
+            id=39,
+            username="vijay_test_39",
+            email="vijay_test@natyaarts.com",
+            first_name="Vijay",
+            last_name="Pn",
+            is_teacher=True
+        )
+        # Pre-create host bound to teacher 39
+        h = ZoomHostAccount.objects.create(
+            zoom_user_id="zoom_t39",
+            email="vijay_test@natyaarts.com",
+            status=ZoomHostAccount.Status.ACTIVE,
+            account_type=ZoomHostAccount.AccountType.DEDICATED,
+            assigned_instructor=teacher_39
+        )
+
+        users = self._sample_zoom_users()
+        users.append({
+            "id": "zoom_t39",
+            "email": "vijay_test@natyaarts.com",
+            "first_name": "Vijay",
+            "last_name": "Pn",
+            "display_name": "Vijay Pn",
+            "type": 2,
+            "status": "active",
+        })
+
+        def side_effect(status="active", page_size=300):
+            if status == "active":
+                return users
+            return []
+        mock_list_users.side_effect = side_effect
+
+        out = StringIO()
+        call_command(
+            "sync_zoom_host_accounts",
+            commit=True,
+            confirm="CONFIRM-ZOOM-HOST-SYNC",
+            stdout=out
+        )
+
+        output = out.getvalue()
+        self.assertIn("CONFLICT_EXCLUDED_TEACHER", output)
+        h.refresh_from_db()
+        self.assertEqual(h.assigned_instructor_id, 39)  # untouched
+
+    @mock.patch.object(ZoomService, "list_users")
+    def test_teacher_39_is_excluded_from_existing_host_updates_by_email_matching(self, mock_list_users):
+        teacher_39 = User.objects.create_user(
+            id=39,
+            username="vijay_test_39",
+            email="vijay_test@natyaarts.com",
+            first_name="Vijay",
+            last_name="Pn",
+            is_teacher=True
+        )
+        # Pre-create host bound to teacher 39 with a different/old Zoom ID, matching only by email
+        h = ZoomHostAccount.objects.create(
+            zoom_user_id="old_zoom_id_39",
+            email="vijay_test@natyaarts.com",
+            status=ZoomHostAccount.Status.ACTIVE,
+            account_type=ZoomHostAccount.AccountType.DEDICATED,
+            assigned_instructor=teacher_39
+        )
+
+        users = self._sample_zoom_users()
+        users.append({
+            "id": "new_zoom_id_39",
+            "email": "vijay_test@natyaarts.com",
+            "first_name": "Vijay",
+            "last_name": "Pn",
+            "display_name": "Vijay Pn",
+            "type": 2,
+            "status": "active",
+        })
+
+        def side_effect(status="active", page_size=300):
+            if status == "active":
+                return users
+            return []
+        mock_list_users.side_effect = side_effect
+
+        out = StringIO()
+        call_command(
+            "sync_zoom_host_accounts",
+            commit=True,
+            confirm="CONFIRM-ZOOM-HOST-SYNC",
+            stdout=out
+        )
+
+        output = out.getvalue()
+        self.assertIn("CONFLICT_EXCLUDED_TEACHER", output)
+        h.refresh_from_db()
+        self.assertEqual(h.assigned_instructor_id, 39)  # untouched
+        self.assertEqual(h.zoom_user_id, "old_zoom_id_39")  # untouched
+
+    @mock.patch.object(ZoomService, "list_users")
+    def test_zoom_pending_invitations_are_reported_in_audit_separately(self, mock_list_users):
+        active_users = self._sample_zoom_users()
+        pending_users = [
+            {
+                "id": "pending_zoom_1",
+                "email": "pending_teacher@natyaarts.com",
+                "first_name": "Pending",
+                "last_name": "Teacher",
+                "display_name": "Pending Teacher",
+                "type": 2,
+                "status": "pending",
+            }
+        ]
+
+        def side_effect(status="active", page_size=300):
+            if status == "active":
+                return active_users
+            elif status == "pending":
+                return pending_users
+            return []
+        mock_list_users.side_effect = side_effect
+
+        out = StringIO()
+        call_command("sync_zoom_host_accounts", stdout=out)
+
+        output = out.getvalue()
+        self.assertIn("Pending Invitations:        1", output)
+        # Pending user is NOT created as host
+        self.assertFalse(ZoomHostAccount.objects.filter(zoom_user_id="pending_zoom_1").exists())
+
 
 @override_settings(**TEST_ZOOM_CREDS)
 class ZoomServiceListUsersPaginationTests(TestCase):
