@@ -663,6 +663,12 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'courses.tasks.recover_stale_zoom_outbox_task',
         'schedule': crontab(minute='*/10'),  # Run every 10 minutes
     },
+    # Phase B.5 (B3/B4): crashed-provision recovery + quarantine resolution.
+    # Releases a host only after confirmed teardown / verified absence.
+    'zoom-provisioning-watchdog': {
+        'task': 'courses.tasks.zoom_provisioning_watchdog_task',
+        'schedule': crontab(minute='*/5'),  # Run every 5 minutes
+    },
 }
 if not (IS_STAGING and not (os.environ.get('ENABLE_STAGING_BILLING_AUTOMATION', 'False').lower() in ('true', '1', 'yes'))):
     CELERY_BEAT_SCHEDULE['billing-daily-automation'] = {

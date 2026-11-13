@@ -575,6 +575,7 @@ class LiveClassReportSerializer(serializers.ModelSerializer):
 class LiveClassSerializer(serializers.ModelSerializer):
     course = serializers.PrimaryKeyRelatedField(queryset=Course.objects.all(), required=False)
     instructor = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False, allow_null=True)
+    substitute_instructor = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False, allow_null=True)
     min_attendance_percentage = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=100)
     effective_min_attendance_percentage = serializers.SerializerMethodField(read_only=True)
 
@@ -588,6 +589,8 @@ class LiveClassSerializer(serializers.ModelSerializer):
             'batch',
             'course',
             'instructor',
+            'substitute_instructor',
+            'is_substitute_instructor',
             'title',
             'description',
             'scheduled_start',
@@ -595,6 +598,8 @@ class LiveClassSerializer(serializers.ModelSerializer):
             'meeting_provider',
             'meeting_url',
             'host_url',
+            'zoom_meeting_id',
+            'zoom_uuid',
             'status',
             'cancellation_reason',
             'recording_url',
@@ -605,12 +610,26 @@ class LiveClassSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at'
         ]
-        read_only_fields = ['id', 'cancellation_reason', 'recording_uploaded_at', 'recurrence_rule', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'zoom_meeting_id', 'zoom_uuid', 'cancellation_reason', 'recording_uploaded_at', 'recurrence_rule', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'meeting_url': {'required': False, 'allow_blank': True},
+            'host_url': {'required': False, 'allow_blank': True},
+        }
 
     def validate(self, attrs):
         import django.core.exceptions
         from django.utils import timezone
         from django.db.models import Q
+
+        # For Zoom classes, allow empty meeting_url initially; provision_zoom_meeting provisions the real URL.
+        # For non-Zoom classes, meeting_url must be provided and non-empty.
+        provider = attrs.get('meeting_provider') or (self.instance.meeting_provider if self.instance else LiveClass.MeetingProvider.OTHER)
+        if provider == LiveClass.MeetingProvider.ZOOM:
+            if not attrs.get('meeting_url') and not (self.instance and self.instance.meeting_url):
+                attrs['meeting_url'] = ''
+        else:
+            if not attrs.get('meeting_url') and not (self.instance and self.instance.meeting_url):
+                raise serializers.ValidationError({"meeting_url": ["This field cannot be blank for non-Zoom classes."]})
 
         batch = attrs.get('batch')
         if not batch:
@@ -630,6 +649,11 @@ class LiveClassSerializer(serializers.ModelSerializer):
             # Verify batch has a valid instructor
             if not batch.instructor:
                 raise serializers.ValidationError({"batch": "The batch must have an assigned instructor."})
+
+            if not attrs.get('instructor'):
+                attrs['instructor'] = batch.instructor
+            if not attrs.get('course'):
+                attrs['course'] = batch.course
 
             # Check for conflicting course/instructor values if provided in request.data
             request = self.context.get('request')
@@ -740,6 +764,9 @@ class LiveClassSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)
+        # Never expose empty string or pending placeholder URL to any client
+        if not ret.get('meeting_url') or 'pending-provision' in str(ret.get('meeting_url') or ''):
+            ret['meeting_url'] = None
         request = self.context.get('request')
         if request and request.user:
             user = request.user

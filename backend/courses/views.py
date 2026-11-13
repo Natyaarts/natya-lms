@@ -1364,6 +1364,8 @@ class IsSuperAdminOrAuthorizedTeacherOrReadOnly(permissions.BasePermission):
                 return obj.batch.instructor == request.user or obj.batch.mentor == request.user
             if getattr(view, 'action', None) in ('report', 'toggle_report_visibility'):
                 return obj.batch.instructor == request.user or obj.batch.mentor == request.user
+            if view.__class__.__name__ == 'AdminZoomMeetingCreateView':
+                return obj.batch.instructor == request.user or obj.batch.mentor == request.user
             return obj.batch.instructor == request.user
         # Students can only access classes they are assigned to via LiveBatchStudent (Safe methods only)
         if request.method in permissions.SAFE_METHODS:
@@ -1444,6 +1446,76 @@ def _generate_occurrence_datetimes(start_dt, frequency, weekdays, end_date, occu
         return dates
 
     return [start_dt]
+
+
+def _teardown_zoom_for_cancelled_class(live_class_id, reason=""):
+    """
+    Deletes the Zoom meeting of a just-cancelled class and releases its pool host, via
+    cancel_zoom_meeting. Must be called OUTSIDE any transaction (it makes an HTTP call).
+
+    Only a class with a CURRENT meeting record is torn down here. A class whose CREATE is
+    still in flight is left alone: provision_zoom_meeting's phase-3 fencing sees the
+    CANCELLED status and compensates (deletes the meeting, releases the host) itself.
+    Calling cancel_zoom_meeting in that window would cancel the PROVISIONAL reservation
+    under the in-flight operation.
+    """
+    from courses.models import ZoomMeetingRecord
+    from courses.services.zoom_lifecycle import cancel_zoom_meeting, ZoomLifecycleError
+
+    if not ZoomMeetingRecord.objects.filter(live_class_id=live_class_id, is_current=True).exists():
+        return {"status": "NOT_PROVISIONED"}
+    try:
+        result = cancel_zoom_meeting(live_class_id=live_class_id, reason=reason or "Class cancelled")
+        return {"status": "RELEASED", "meeting_id": (result or {}).get("cancelled_meeting_id")}
+    except ZoomLifecycleError as exc:
+        # DELETE not confirmed: host held in MANUAL_REVIEW, meeting record COMPENSATING;
+        # the cancellation-saga watchdog retries the delete and releases the host.
+        logger.warning(f"[LiveClassCancel] Zoom teardown for LC {live_class_id} pending verification: {exc}")
+        return {"status": "PENDING_VERIFICATION", "detail": str(exc)}
+    except Exception:
+        logger.exception(f"[LiveClassCancel] Zoom teardown for LC {live_class_id} failed")
+        return {"status": "ERROR", "detail": "Zoom teardown failed; see server logs."}
+
+
+def _rollback_recurring_series(created_instances, provisioned_instances, rule):
+    """
+    Release-closure B10: rolls back a partially provisioned recurring series without ever
+    500-ing midway or deleting an occurrence that still carries Zoom obligations.
+
+    1. Cancel every provisioned occurrence through cancel_zoom_meeting (which holds the host
+       in MANUAL_REVIEW if the DELETE is not confirmed; the scheduled watchdog finishes it).
+    2. For each occurrence, in its own savepoint: delete it only if the zero-teardown
+       invariant proves it clean; otherwise (meeting record, held reservation, in-flight or
+       quarantined operation, pending outbox) keep it, marked CANCELLED, for the lifecycle
+       to tear down and audit.
+    3. Delete the recurrence rule only when no occurrence was retained.
+    """
+    from courses.services.zoom_lifecycle import cancel_zoom_meeting, validate_zero_teardown_invariant
+
+    cancel_failures = {}
+    for inst in provisioned_instances:
+        try:
+            cancel_zoom_meeting(live_class_id=inst.id, reason="Recurring series rollback")
+        except Exception as ce:
+            cancel_failures[inst.id] = str(ce)
+            logger.warning(f"[Recurring Rollback] Cancel of LC {inst.id} not confirmed; host held: {ce}")
+
+    deleted, retained = [], []
+    for inst in created_instances:
+        try:
+            with transaction.atomic():
+                validate_zero_teardown_invariant(inst.id)
+                LiveClass.objects.get(id=inst.id).delete()
+            deleted.append(inst.id)
+        except Exception as exc:
+            LiveClass.objects.filter(id=inst.id).update(status=LiveClass.ClassStatus.CANCELLED)
+            retained.append({"live_class_id": inst.id, "reason": type(exc).__name__,
+                             "cancel_error": cancel_failures.get(inst.id, "")})
+
+    if rule is not None and rule.pk and not retained:
+        rule.delete()
+    return {"deleted_live_class_ids": deleted, "retained_cancelled": retained,
+            "recurrence_rule_retained": bool(retained)}
 
 
 class LiveClassViewSet(viewsets.ModelViewSet):
@@ -1633,6 +1705,44 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 instance.save(update_fields=['recurrence_rule'])
                 created_instances.append(instance)
 
+        # Phase B.4: If meeting provider is Zoom, provision each occurrence via lifecycle engine
+        if base_data.get('meeting_provider') == LiveClass.MeetingProvider.ZOOM:
+            from courses.services.zoom_lifecycle import (
+                provision_zoom_meeting,
+                cancel_zoom_meeting,
+                HostCapacityExhaustedError,
+                ZeroTeardownInvariantViolation,
+                ZoomLifecycleError,
+            )
+            provisioned_instances = []
+            failure_reason = None
+            for instance in created_instances:
+                when = instance.scheduled_start.strftime('%Y-%m-%d %H:%M')
+                try:
+                    result = provision_zoom_meeting(live_class_id=instance.id)
+                except HostCapacityExhaustedError as e:
+                    failure_reason = f"Host capacity exhausted for occurrence on {when}: {str(e)}"
+                    break
+                except Exception as e:
+                    failure_reason = f"Failed to provision Zoom meeting for occurrence on {when}: {str(e)}"
+                    break
+                # Release-closure B10: an ambiguous CREATE (OUTCOME_UNKNOWN) is not a success --
+                # a meeting may exist, so the series stops and that occurrence is held, not deleted.
+                if not isinstance(result, dict) or result.get("status") not in ("SUCCESS", "ALREADY_COMPLETED"):
+                    status_text = result.get("status") if isinstance(result, dict) else result
+                    failure_reason = (f"Zoom outcome for occurrence on {when} is {status_text}; "
+                                      f"its host is held until the outcome is verified.")
+                    break
+                instance.refresh_from_db()
+                provisioned_instances.append(instance)
+
+            if failure_reason:
+                rollback = _rollback_recurring_series(created_instances, provisioned_instances, rule)
+                return Response(
+                    {"error": f"Recurring scheduling failed: {failure_reason}", "rollback": rollback},
+                    status=drf_status.HTTP_409_CONFLICT
+                )
+
         for instance in created_instances:
             self._dispatch_scheduled_notifications(instance)
 
@@ -1655,59 +1765,109 @@ class LiveClassViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         live_class = serializer.save()
-        if live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM and not live_class.meeting_url:
+        if live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM and not live_class.zoom_meeting_id:
+            from courses.services.zoom_lifecycle import (
+                provision_zoom_meeting,
+                HostCapacityExhaustedError,
+                ZeroTeardownInvariantViolation,
+                ZoomLifecycleError,
+            )
             try:
-                from courses.services.zoom import ZoomService
-                z_res = ZoomService.create_meeting(
-                    topic=live_class.title or "Natya Arts Live Session",
-                    start_time_iso=live_class.scheduled_start.isoformat() if live_class.scheduled_start else None,
-                    duration_minutes=live_class.duration_minutes or 60
-                )
-                live_class.meeting_url = z_res.get('join_url', '')
-                live_class.host_url = z_res.get('start_url', '')
-                live_class.save(update_fields=['meeting_url', 'host_url'])
+                provision_zoom_meeting(live_class_id=live_class.id)
+                live_class.refresh_from_db()
+            except HostCapacityExhaustedError as e:
+                logger.error(f"[LiveClassViewSet] Host capacity exhausted for LC {live_class.id}: {e}")
+                from courses.models import LiveClassDurableOperation
+                LiveClassDurableOperation.objects.filter(live_class=live_class).update(status=LiveClassDurableOperation.Status.FAILED)
+                live_class.delete()
+                from rest_framework.exceptions import APIException
+                exc = APIException(detail=f"Host capacity exhausted: {str(e)}")
+                exc.status_code = drf_status.HTTP_409_CONFLICT
+                raise exc
+            except ZeroTeardownInvariantViolation as e:
+                logger.error(f"[LiveClassViewSet] Zero-teardown violation for LC {live_class.id}: {e}")
+                from courses.models import LiveClassDurableOperation
+                LiveClassDurableOperation.objects.filter(live_class=live_class).update(status=LiveClassDurableOperation.Status.FAILED)
+                live_class.delete()
+                from rest_framework.exceptions import APIException
+                exc = APIException(detail=f"Scheduling conflict: {str(e)}")
+                exc.status_code = drf_status.HTTP_409_CONFLICT
+                raise exc
             except Exception as e:
-                logger.error(f"Failed to auto-generate Zoom meeting on backend: {e}")
+                logger.error(f"[LiveClassViewSet] Failed to auto-generate Zoom meeting for LC {live_class.id}: {e}")
+                from courses.models import LiveClassDurableOperation
+                LiveClassDurableOperation.objects.filter(live_class=live_class).update(status=LiveClassDurableOperation.Status.FAILED)
+                live_class.delete()
+                from rest_framework.exceptions import APIException
+                exc = APIException(detail=f"Failed to auto-generate Zoom meeting: {str(e)}")
+                exc.status_code = drf_status.HTTP_500_INTERNAL_SERVER_ERROR
+                raise exc
+
         self._dispatch_scheduled_notifications(live_class)
+
+    def perform_update(self, serializer):
+        old_live_class = LiveClass.objects.get(pk=serializer.instance.pk)
+        old_eff_instructor_id = old_live_class.effective_instructor_id
+        live_class = serializer.save()
+        new_eff_instructor_id = live_class.effective_instructor_id
+
+        # Phase B.4: If substitute/effective instructor changed on a class with an active Zoom meeting
+        if (
+            live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM
+            and live_class.zoom_meeting_id
+            and old_eff_instructor_id != new_eff_instructor_id
+        ):
+            from courses.services.zoom_lifecycle import replace_zoom_meeting
+            try:
+                replace_zoom_meeting(live_class_id=live_class.id)
+            except Exception as e:
+                logger.warning(
+                    f"[LiveClassViewSet] Could not migrate Zoom meeting for LC {live_class.id} "
+                    f"to new instructor: {e}"
+                )
 
     @action(detail=True, methods=['post'], url_path='generate-zoom')
     def generate_zoom(self, request, pk=None):
         live_class = self.get_object()
-        from courses.services.zoom import ZoomService
-        try:
-            z_res = ZoomService.create_meeting(
-                topic=live_class.title or "Natya Arts Live Session",
-                start_time_iso=live_class.scheduled_start.isoformat() if live_class.scheduled_start else None,
-                duration_minutes=live_class.duration_minutes or 60
-            )
-            live_class.meeting_url = z_res.get('join_url', '')
-            live_class.host_url = z_res.get('start_url', '')
-            live_class.meeting_provider = LiveClass.MeetingProvider.ZOOM
-            live_class.save(update_fields=['meeting_url', 'host_url', 'meeting_provider'])
+        from courses.models import ZoomMeetingRecord
+        # Idempotency check: Reuse existing active meeting if already provisioned
+        zmr = ZoomMeetingRecord.objects.filter(live_class=live_class, is_current=True).first()
+        if zmr and live_class.zoom_meeting_id and live_class.meeting_url:
             serializer = self.get_serializer(live_class)
             return Response(serializer.data)
+
+        from courses.services.zoom_lifecycle import (
+            provision_zoom_meeting,
+            HostCapacityExhaustedError,
+            ZeroTeardownInvariantViolation,
+        )
+
+        try:
+            provision_zoom_meeting(live_class_id=live_class.id)
+            live_class.refresh_from_db()
+            serializer = self.get_serializer(live_class)
+            return Response(serializer.data)
+        except HostCapacityExhaustedError as e:
+            return Response(
+                {"error": f"Host capacity exhausted: {str(e)}"},
+                status=drf_status.HTTP_409_CONFLICT
+            )
+        except ZeroTeardownInvariantViolation as e:
+            return Response(
+                {"error": f"Scheduling conflict: {str(e)}"},
+                status=drf_status.HTTP_409_CONFLICT
+            )
         except Exception as e:
-            return Response({"error": f"Zoom error: {str(e)}"}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {"error": f"Zoom error: {str(e)}"},
+                status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     @action(detail=True, methods=['post'])
     def start(self, request, pk=None):
         live_class = self.get_object()
         if live_class.status != LiveClass.ClassStatus.SCHEDULED:
             if live_class.status == LiveClass.ClassStatus.LIVE:
-                # If already LIVE and Zoom host_url missing, backfill it
-                if live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM and not live_class.host_url:
-                    try:
-                        from courses.services.zoom import ZoomService
-                        z_res = ZoomService.create_meeting(
-                            topic=live_class.title or "Natya Arts Live Session",
-                            start_time_iso=live_class.scheduled_start.isoformat() if live_class.scheduled_start else None,
-                            duration_minutes=live_class.duration_minutes or 60
-                        )
-                        live_class.meeting_url = z_res.get('join_url', '')
-                        live_class.host_url = z_res.get('start_url', '')
-                        live_class.save(update_fields=['meeting_url', 'host_url'])
-                    except Exception as e:
-                        logger.error(f"Failed to auto-generate Zoom host link: {e}")
                 serializer = self.get_serializer(live_class)
                 return Response(serializer.data)
             return Response(
@@ -1715,19 +1875,14 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 status=drf_status.HTTP_400_BAD_REQUEST
             )
         live_class.status = LiveClass.ClassStatus.LIVE
-        if live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM and not live_class.host_url:
+        if live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM and not live_class.zoom_meeting_id:
+            from courses.services.zoom_lifecycle import provision_zoom_meeting
             try:
-                from courses.services.zoom import ZoomService
-                z_res = ZoomService.create_meeting(
-                    topic=live_class.title or "Natya Arts Live Session",
-                    start_time_iso=live_class.scheduled_start.isoformat() if live_class.scheduled_start else None,
-                    duration_minutes=live_class.duration_minutes or 60
-                )
-                live_class.meeting_url = z_res.get('join_url', '')
-                live_class.host_url = z_res.get('start_url', '')
+                provision_zoom_meeting(live_class_id=live_class.id)
+                live_class.refresh_from_db()
             except Exception as e:
-                logger.error(f"Failed to auto-generate Zoom host link: {e}")
-        live_class.save()
+                logger.error(f"[LiveClassViewSet.start] Failed to provision Zoom meeting for LC {live_class.id}: {e}")
+        live_class.save(update_fields=['status'])
         serializer = self.get_serializer(live_class)
         return Response(serializer.data)
 
@@ -1886,9 +2041,16 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 {"error": f"Cannot transition to CANCELLED from {live_class.status}."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        live_class.status = LiveClass.ClassStatus.CANCELLED
-        live_class.cancellation_reason = request.data.get('reason', '')
-        live_class.save()
+        with transaction.atomic():
+            live_class.status = LiveClass.ClassStatus.CANCELLED
+            live_class.cancellation_reason = request.data.get('reason', '')
+            live_class.save()
+
+        # Release the Zoom meeting and its pool host (outside any transaction).
+        zoom_teardown = None
+        if live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM:
+            zoom_teardown = _teardown_zoom_for_cancelled_class(live_class.id, live_class.cancellation_reason)
+            live_class.refresh_from_db()
 
         def dispatch_cancellation():
             LiveClassNotificationService.notify_cancelled(live_class)
@@ -1899,8 +2061,10 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         else:
             dispatch_cancellation()
 
-        serializer = self.get_serializer(live_class)
-        return Response(serializer.data)
+        data = dict(self.get_serializer(live_class).data)
+        if zoom_teardown is not None:
+            data['zoom_teardown'] = zoom_teardown
+        return Response(data)
 
     @action(detail=True, methods=['post'], url_path='cancel-series')
     def cancel_series(self, request, pk=None):
@@ -1933,6 +2097,18 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 occ.save()
                 cancelled.append(occ)
 
+        # Release each occurrence's Zoom meeting and pool host -- after the commit above,
+        # never inside it (the teardown makes HTTP calls).
+        zoom_teardown = {}
+        for occ in cancelled:
+            if occ.meeting_provider == LiveClass.MeetingProvider.ZOOM:
+                zoom_teardown[occ.id] = _teardown_zoom_for_cancelled_class(occ.id, reason)
+                occ.refresh_from_db()
+        unreleased = {k: v["status"] for k, v in zoom_teardown.items()
+                      if v["status"] not in ("RELEASED", "NOT_PROVISIONED")}
+        if unreleased:
+            logger.warning(f"[LiveClassCancelSeries] Zoom teardown not confirmed for: {unreleased}")
+
         def dispatch():
             for occ in cancelled:
                 LiveClassNotificationService.notify_cancelled(occ)
@@ -1958,6 +2134,49 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        new_scheduled_start_str = request.data.get('scheduled_start')
+        new_duration = request.data.get('duration_minutes')
+        from django.utils.dateparse import parse_datetime
+        new_start_dt = parse_datetime(new_scheduled_start_str) if new_scheduled_start_str else None
+        if new_scheduled_start_str and not new_start_dt:
+            return Response({"scheduled_start": ["Invalid date/time format."]}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Phase B.4: If Zoom meeting exists and time/duration changes, invoke replace_zoom_meeting
+        if (
+            live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM
+            and live_class.zoom_meeting_id
+            and (new_start_dt or new_duration)
+        ):
+            from courses.services.zoom_lifecycle import (
+                replace_zoom_meeting,
+                HostCapacityExhaustedError,
+                ZeroTeardownInvariantViolation,
+                ZoomLifecycleError,
+            )
+            target_start = new_start_dt or live_class.scheduled_start
+            target_dur = int(new_duration) if new_duration else live_class.duration_minutes
+            try:
+                replace_zoom_meeting(
+                    live_class_id=live_class.id,
+                    new_start_time=target_start,
+                    new_duration=target_dur
+                )
+            except HostCapacityExhaustedError as e:
+                return Response(
+                    {"error": f"No Zoom host available for the new timeslot: {str(e)}"},
+                    status=drf_status.HTTP_409_CONFLICT
+                )
+            except ZeroTeardownInvariantViolation as e:
+                return Response(
+                    {"error": f"Rescheduling conflict: {str(e)}"},
+                    status=drf_status.HTTP_409_CONFLICT
+                )
+            except Exception as e:
+                return Response(
+                    {"error": f"Zoom rescheduling error: {str(e)}"},
+                    status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
         with transaction.atomic():
             locked_class = LiveClass.objects.select_for_update().get(pk=live_class.pk)
 
@@ -1979,6 +2198,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                     _schedule_class_reminders(updated_class)
                 transaction.on_commit(dispatch_reschedule)
 
+        serializer = self.get_serializer(updated_class)
         return Response(serializer.data)
 
     @action(detail=False, methods=['get'])
@@ -3338,24 +3558,102 @@ class AssignmentSubmissionViewSet(mixins.RetrieveModelMixin, viewsets.GenericVie
 
 
 class AdminZoomMeetingCreateView(APIView):
+    """
+    Provisions the Zoom meeting for an EXISTING Zoom live class through the durable
+    lifecycle (provision_zoom_meeting): DOP + host-pool reservation, CREATE outside
+    locks, fenced finalization. It never creates classes or meetings ad hoc and never
+    calls ZoomService directly (a bare create_meeting has no host and no reservation).
+
+    Responses:
+      200 ALREADY_PROVISIONED  -- class already has its current meeting; no Zoom call.
+      201 SUCCESS              -- meeting created on a reserved pool host and persisted.
+      202 OUTCOME_UNKNOWN      -- CREATE outcome ambiguous; host held, the provisioning
+                                  watchdog verifies it. Do NOT retry with a new request.
+      400                      -- missing live_class_id / not a Zoom class / cancelled.
+      403 / 404                -- not permitted for this class / class not found.
+      409                      -- no host free, teardown pending, or an operation in flight.
+      502                      -- Zoom definitively refused; nothing held, safe to retry.
+    """
     permission_classes = [permissions.IsAuthenticated]
+
+    @staticmethod
+    def _meeting_payload(live_class, status_text):
+        return {
+            "meeting_id": live_class.zoom_meeting_id,
+            "join_url": live_class.meeting_url,
+            "start_url": live_class.host_url,
+            "host_url": live_class.host_url,
+            "live_class_id": live_class.id,
+            "status": status_text,
+        }
 
     def post(self, request):
         user = request.user
         if not (user.is_superuser or user.is_staff or getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False)):
             return Response({"error": "Only admins, teachers, and mentors can generate Zoom meetings."}, status=drf_status.HTTP_403_FORBIDDEN)
 
-        from courses.services.zoom import ZoomService
+        live_class_id = request.data.get('live_class_id')
+        if not live_class_id:
+            return Response(
+                {"error": "live_class_id is required. Create the Zoom live class first; its meeting is "
+                          "provisioned automatically on a reserved pool host."},
+                status=drf_status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            live_class = LiveClass.objects.select_related('batch').get(id=int(live_class_id))
+        except (TypeError, ValueError):
+            return Response({"error": "live_class_id must be an integer."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        except LiveClass.DoesNotExist:
+            return Response({"error": f"LiveClass {live_class_id} not found."}, status=drf_status.HTTP_404_NOT_FOUND)
 
-        topic = request.data.get('topic') or "Natya Arts Live Session"
-        start_time = request.data.get('start_time')
-        duration = request.data.get('duration', 60)
+        if not IsSuperAdminOrAuthorizedTeacherOrReadOnly().has_object_permission(request, self, live_class):
+            return Response({"error": "You do not have permission to manage this class's Zoom meeting."},
+                            status=drf_status.HTTP_403_FORBIDDEN)
+        if live_class.meeting_provider != LiveClass.MeetingProvider.ZOOM:
+            return Response({"error": "This live class does not use Zoom."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        if live_class.status == LiveClass.ClassStatus.CANCELLED:
+            return Response({"error": "This live class is cancelled."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        from courses.models import ZoomMeetingRecord
+        from courses.services.zoom_lifecycle import (
+            provision_zoom_meeting,
+            ConcurrencyConflictError,
+            HostCapacityExhaustedError,
+            ZeroTeardownInvariantViolation,
+            ZoomLifecycleError,
+        )
+
+        # Idempotency: an already-provisioned class is returned as-is (no second CREATE).
+        if live_class.zoom_meeting_id and ZoomMeetingRecord.objects.filter(live_class=live_class, is_current=True).exists():
+            return Response(self._meeting_payload(live_class, "ALREADY_PROVISIONED"), status=drf_status.HTTP_200_OK)
 
         try:
-            meeting_info = ZoomService.create_meeting(topic=topic, start_time_iso=start_time, duration_minutes=duration)
-            return Response(meeting_info, status=drf_status.HTTP_201_CREATED)
-        except Exception as e:
-            return Response({"error": f"Zoom API Error: {str(e)}"}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
+            result = provision_zoom_meeting(live_class_id=live_class.id)
+        except HostCapacityExhaustedError as e:
+            return Response({"error": f"Host capacity exhausted: {e}"}, status=drf_status.HTTP_409_CONFLICT)
+        except (ZeroTeardownInvariantViolation, ConcurrencyConflictError) as e:
+            return Response({"error": f"Scheduling conflict: {e}"}, status=drf_status.HTTP_409_CONFLICT)
+        except ZoomLifecycleError as e:
+            return Response({"error": f"Zoom meeting could not be created: {e}"}, status=drf_status.HTTP_502_BAD_GATEWAY)
+        except Exception:
+            logger.exception(f"[AdminZoomMeetingCreate] Unexpected error provisioning LC {live_class.id}")
+            return Response({"error": "Unexpected error while creating the Zoom meeting."},
+                            status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        live_class.refresh_from_db()
+        result_status = result.get("status") if isinstance(result, dict) else None
+        if result_status in ("SUCCESS", "ALREADY_COMPLETED"):
+            return Response(self._meeting_payload(live_class, "SUCCESS"), status=drf_status.HTTP_201_CREATED)
+
+        # OUTCOME_UNKNOWN: a meeting may or may not exist on Zoom. The host stays held and the
+        # provisioning watchdog resolves it; a fresh CREATE now could duplicate the meeting.
+        logger.error(f"[AdminZoomMeetingCreate] LC {live_class.id} provisioning outcome {result_status}: {result}")
+        return Response({
+            "live_class_id": live_class.id,
+            "status": result_status or "UNKNOWN",
+            "error": "Zoom did not confirm the meeting. The host is held while the outcome is verified; "
+                     "do not retry until verification completes.",
+        }, status=drf_status.HTTP_202_ACCEPTED)
 
 
 OTP_MANUAL_RELEASE_PURPOSE = 'MANUAL_RELEASE'
@@ -3811,11 +4109,13 @@ class ZoomWebhookView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
+        import os
+        import json
+        from django.conf import settings
         from courses.services.recording import ZoomRecordingService
         from courses.models import ZoomWebhookEvent
         from django.db import transaction, IntegrityError, OperationalError, connection
         from django.utils import timezone
-        import json
 
         # Access raw_body FIRST before reading any data streams
         raw_body = request.body
@@ -3855,15 +4155,35 @@ class ZoomWebhookView(APIView):
             logger.warning("[ZoomWebhook] Signature verification failed or timestamp expired.")
             return Response({"error": "Invalid signature or expired timestamp"}, status=drf_status.HTTP_401_UNAUTHORIZED)
 
-        # 3. Extract payload details & generate deduplication key
+        # 3. Account ID validation & schema validation
+        configured_account_id = getattr(settings, 'ZOOM_ACCOUNT_ID', None) or os.environ.get('ZOOM_ACCOUNT_ID', '')
         payload = body_data.get('payload', {})
+        if not isinstance(payload, dict):
+            payload = {}
+        if configured_account_id:
+            payload_acc_id = str(payload.get('account_id') or body_data.get('account_id') or '').strip()
+            if payload_acc_id and payload_acc_id != str(configured_account_id).strip():
+                logger.warning(f"[ZoomWebhook] account_id mismatch: received={payload_acc_id}, expected={configured_account_id}")
+                return Response({"error": "Unauthorized account_id"}, status=drf_status.HTTP_403_FORBIDDEN)
+
         object_data = payload.get('object', {})
+        if not isinstance(object_data, dict):
+            object_data = {}
+
+        if not event or not isinstance(body_data, dict):
+            return Response({"error": "Invalid payload format"}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        if str(event).startswith('user.') and not (object_data.get('id') or object_data.get('email') or payload.get('id') or payload.get('email')):
+            return Response({"error": "Malformed user event payload: missing user identifier"}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        if str(event).startswith('meeting.') and not (object_data.get('id') or object_data.get('uuid')):
+            return Response({"error": "Malformed meeting event payload: missing meeting id or uuid"}, status=drf_status.HTTP_400_BAD_REQUEST)
+
         meeting_uuid = object_data.get('uuid', '')
         meeting_id = str(object_data.get('id') or '')
         event_ts = body_data.get('event_ts', '')
 
         # Extract participant identifier for participant events to prevent deduplication collisions
-        # Zoom standard nests participant inside payload.object.participant; fallback to payload.participant
         participant_data = {}
         if isinstance(object_data, dict) and 'participant' in object_data:
             participant_data = object_data.get('participant', {})
@@ -3891,26 +4211,51 @@ class ZoomWebhookView(APIView):
         # Canonical idempotency key
         if event in ('meeting.participant_joined', 'meeting.participant_left'):
             event_id = f"zoom:{event}:{meeting_uuid or meeting_id}:{p_id}:{event_ts}"
+        elif str(event).startswith('user.'):
+            u_ident = str(object_data.get('id') or object_data.get('email') or payload.get('id') or payload.get('email') or 'user')
+            event_id = f"zoom:{event}:{u_ident}:{event_ts}"
         else:
             event_id = f"zoom:{event}:{meeting_uuid or meeting_id}:{event_ts}"
 
         # Find matching LiveClass if present
         live_class = ZoomRecordingService.find_live_class_for_zoom_meeting(meeting_id, meeting_uuid)
 
-        # 4. Durable persistence inside atomic transaction savepoint
+        # 4. Durable persistence via trusted SECURITY DEFINER function or ORM create
         is_redelivery = False
         try:
             with transaction.atomic():
-                webhook_event = ZoomWebhookEvent.objects.create(
-                    event_id=event_id,
-                    event_type=event or 'unknown',
-                    payload=body_data,
-                    live_class=live_class,
-                    meeting_uuid=meeting_uuid,
-                    participant_uuid=str(p_id),
-                    event_ts=int(event_ts) if str(event_ts).isdigit() else None,
-                    status=ZoomWebhookEvent.Status.RECEIVED
-                )
+                if connection.vendor == 'postgresql':
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            """
+                            SELECT id, is_existing FROM fn_record_authenticated_webhook(
+                                %s, %s, %s::jsonb, %s, %s, %s, %s
+                            )
+                            """,
+                            [
+                                event_id,
+                                event or 'unknown',
+                                json.dumps(body_data),
+                                live_class.id if live_class else None,
+                                meeting_uuid,
+                                str(p_id),
+                                int(event_ts) if str(event_ts).isdigit() else None
+                            ]
+                        )
+                        rec_row = cursor.fetchone()
+                        ev_id, is_redelivery = rec_row[0], bool(rec_row[1])
+                    webhook_event = ZoomWebhookEvent.objects.get(id=ev_id)
+                else:
+                    webhook_event = ZoomWebhookEvent.objects.create(
+                        event_id=event_id,
+                        event_type=event or 'unknown',
+                        payload=body_data,
+                        live_class=live_class,
+                        meeting_uuid=meeting_uuid,
+                        participant_uuid=str(p_id),
+                        event_ts=int(event_ts) if str(event_ts).isdigit() else None,
+                        status=ZoomWebhookEvent.Status.RECEIVED
+                    )
         except (IntegrityError, OperationalError):
             is_redelivery = True
             webhook_event = ZoomWebhookEvent.objects.filter(event_id=event_id).first()
@@ -3923,6 +4268,8 @@ class ZoomWebhookView(APIView):
                 logger.error(f"[ZoomWebhook] Database conflict or table lock; event not found: {event_id}")
                 return Response({"error": "Database concurrency conflict"}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+        # Check for duplicates across both Postgres function and ORM create paths
+        if webhook_event and (is_redelivery or webhook_event.status in (ZoomWebhookEvent.Status.PROCESSED, ZoomWebhookEvent.Status.PROCESSING)):
             # If already processed or actively processing, safely ignore duplicate
             if webhook_event.status in (ZoomWebhookEvent.Status.PROCESSED, ZoomWebhookEvent.Status.PROCESSING):
                 logger.info(f"[ZoomWebhook] Duplicate webhook event already {webhook_event.status}: {event_id}")
@@ -4129,6 +4476,46 @@ class ZoomWebhookView(APIView):
                     logger.info(f"[ZoomWebhook] Scheduled reconciliation for LiveClass #{live_class.id} on meeting.ended.")
                 except Exception as task_err:
                     logger.warning(f"[ZoomWebhook] Failed to dispatch reconcile task on meeting.ended: {task_err}")
+
+            webhook_event.status = ZoomWebhookEvent.Status.PROCESSED
+            webhook_event.processed_at = timezone.now()
+            webhook_event.save(update_fields=['status', 'processed_at'])
+            return Response({"status": "received", "event_id": event_id}, status=drf_status.HTTP_200_OK)
+
+        # 6c. User events (user.updated, user.created, user.disassociated, user.deleted)
+        if event in ('user.created', 'user.updated', 'user.disassociated', 'user.deleted'):
+            from courses.models import ZoomHostAccount
+            u_obj = object_data or payload
+            z_uid = str(u_obj.get('id') or '').strip()
+            z_email = str(u_obj.get('email') or '').strip().lower()
+
+            if z_uid or z_email:
+                host_acct = None
+                if z_uid:
+                    host_acct = ZoomHostAccount.objects.filter(zoom_user_id=z_uid).first()
+                if not host_acct and z_email:
+                    host_acct = ZoomHostAccount.objects.filter(email__iexact=z_email).first()
+
+                if host_acct:
+                    if event in ('user.deleted', 'user.disassociated'):
+                        host_acct.status = ZoomHostAccount.Status.INACTIVE
+                        host_acct.save(update_fields=['status', 'updated_at'])
+                        logger.info(f"[ZoomWebhook] Host account #{host_acct.id} deactivated on {event}.")
+                    elif event == 'user.updated':
+                        new_email = u_obj.get('email')
+                        first_name = u_obj.get('first_name', '')
+                        last_name = u_obj.get('last_name', '')
+                        display_name = f"{first_name} {last_name}".strip()
+                        updates = []
+                        if new_email and new_email != host_acct.email:
+                            host_acct.email = new_email
+                            updates.append('email')
+                        if display_name and display_name != host_acct.display_name:
+                            host_acct.display_name = display_name
+                            updates.append('display_name')
+                        if updates:
+                            updates.append('updated_at')
+                            host_acct.save(update_fields=updates)
 
             webhook_event.status = ZoomWebhookEvent.Status.PROCESSED
             webhook_event.processed_at = timezone.now()

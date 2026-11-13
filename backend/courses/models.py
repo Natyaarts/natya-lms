@@ -417,13 +417,25 @@ class LiveClass(models.Model):
     def effective_instructor(self):
         """
         Precedence: substitute_instructor takes priority if assigned,
-        falling back to the primary assigned instructor.
+        falling back to the primary assigned instructor, then batch instructor.
         """
-        return self.substitute_instructor or self.instructor
+        if self.substitute_instructor:
+            return self.substitute_instructor
+        if self.instructor:
+            return self.instructor
+        if self.batch_id and getattr(self, 'batch', None):
+            return self.batch.instructor
+        return None
 
     @property
     def effective_instructor_id(self):
-        return self.substitute_instructor_id or self.instructor_id
+        if self.substitute_instructor_id:
+            return self.substitute_instructor_id
+        if self.instructor_id:
+            return self.instructor_id
+        if self.batch_id and getattr(self, 'batch', None):
+            return self.batch.instructor_id
+        return None
 
     def clean(self):
         super().clean()
@@ -453,6 +465,13 @@ class LiveClass(models.Model):
                 raise ValidationError({"substitute_instructor": "The substitute instructor must be a teacher, mentor, or administrator."})
             if effective_primary_id and self.substitute_instructor_id == effective_primary_id:
                 raise ValidationError({"substitute_instructor": "Substitute instructor cannot be the same as the assigned primary instructor."})
+
+    def full_clean(self, exclude=None, validate_unique=True, validate_constraints=True):
+        exclude = list(exclude) if exclude is not None else []
+        if self.meeting_provider == self.MeetingProvider.ZOOM and not self.meeting_url:
+            if 'meeting_url' not in exclude:
+                exclude.append('meeting_url')
+        return super().full_clean(exclude=exclude, validate_unique=validate_unique, validate_constraints=validate_constraints)
 
     def save(self, *args, **kwargs):
         if self.batch:
@@ -1967,13 +1986,30 @@ class LiveClassDurableOperation(models.Model):
     lease_worker = models.UUIDField(null=True, blank=True, db_index=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
     version = models.PositiveIntegerField(default=1)
+    # Phase B.5 repair (B3): the moment this operation entered quarantine. The
+    # mandatory quarantine grace period is measured from here -- never from
+    # created_at -- and it is stamped automatically by save() on any transition
+    # into a QUARANTINE_STATUSES status, so no caller can forget or backdate it.
+    quarantined_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # Statuses in which a remote Zoom meeting may exist that the database does
+    # not own; the host reservation stays held until verified resolution.
+    QUARANTINE_STATUSES = ("OUTCOME_UNKNOWN", "COMPENSATION_REQUIRED")
 
     class Meta:
         ordering = ["-created_at"]
         verbose_name = "Live Class Durable Operation"
         verbose_name_plural = "Live Class Durable Operations"
+
+    def save(self, *args, **kwargs):
+        if self.status in self.QUARANTINE_STATUSES and self.quarantined_at is None:
+            self.quarantined_at = timezone.now()
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None and 'quarantined_at' not in update_fields:
+                kwargs['update_fields'] = list(update_fields) + ['quarantined_at']
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.operation_type} ({self.idempotency_key[:16]}) - {self.status}"
@@ -2035,6 +2071,11 @@ class ZoomHostAccount(models.Model):
         INACTIVE = "INACTIVE", "Inactive"
         SUSPENDED = "SUSPENDED", "Suspended"
 
+    class AccountType(models.TextChoices):
+        DEDICATED = "DEDICATED", "Dedicated"
+        SHARED_POOL = "SHARED_POOL", "Shared Pool"
+        UNCLASSIFIED = "UNCLASSIFIED", "Unclassified"
+
     zoom_user_id = models.CharField(max_length=64, unique=True, db_index=True)
     email = models.EmailField(unique=True, db_index=True)
     display_name = models.CharField(max_length=255, blank=True, default='')
@@ -2045,6 +2086,20 @@ class ZoomHostAccount(models.Model):
         db_index=True
     )
     max_concurrency = models.PositiveIntegerField(default=1)
+    account_type = models.CharField(
+        max_length=32,
+        choices=AccountType.choices,
+        default=AccountType.SHARED_POOL,
+        db_index=True
+    )
+    assigned_instructor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_zoom_hosts",
+        db_index=True
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -2300,3 +2355,148 @@ class ZoomLifecycleOutbox(models.Model):
 
     def __str__(self):
         return f"Outbox {self.id}: {self.event_type} on {self.aggregate_id} [{self.status}]"
+
+
+class ZoomWebhookVault(models.Model):
+    """
+    Durable vault for Zoom webhook secret tokens.
+    Supports atomic secret rotation and retirement grace period.
+    Only one secret may be ACTIVE at any time.
+    """
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        RETIRED = "RETIRED", "Retired"
+
+    secret_token = models.CharField(max_length=255)
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        db_index=True
+    )
+    activated_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    retired_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-activated_at"]
+        verbose_name = "Zoom Webhook Vault Secret"
+        verbose_name_plural = "Zoom Webhook Vault Secrets"
+        constraints = [
+            models.UniqueConstraint(
+                fields=['status'],
+                condition=models.Q(status='ACTIVE'),
+                name='uq_zoom_webhook_single_active_secret'
+            )
+        ]
+
+    def __str__(self):
+        return f"Webhook Secret {self.id} [{self.status}]"
+
+
+class ZoomApproverSecrets(models.Model):
+    """
+    Enrolled public keys/secrets for authorized governance approvers.
+    """
+    approver_id = models.CharField(max_length=64, unique=True, db_index=True)
+    secret_hash = models.CharField(max_length=128)
+    is_active = models.BooleanField(default=True, db_index=True)
+    enrolled_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["approver_id"]
+        verbose_name = "Zoom Approver Secret"
+        verbose_name_plural = "Zoom Approver Secrets"
+
+    def __str__(self):
+        return f"Approver {self.approver_id} (active={self.is_active})"
+
+
+class ZoomManifestNonces(models.Model):
+    """
+    Replay protection nonces for reconciliation manifest approvals.
+    """
+    nonce = models.CharField(max_length=128, unique=True, db_index=True)
+    used_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Zoom Manifest Nonce"
+        verbose_name_plural = "Zoom Manifest Nonces"
+
+    def __str__(self):
+        return f"Nonce {self.nonce} at {self.used_at}"
+
+
+class ZoomRollbackSession(models.Model):
+    """
+    Cryptographically authenticated rollback sessions.
+    Only valid sessions may invoke exact rollback procedures.
+    """
+    session_token = models.CharField(max_length=128, unique=True, db_index=True)
+    approver_id = models.CharField(max_length=64, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(db_index=True)
+    consumed_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Zoom Rollback Session"
+        verbose_name_plural = "Zoom Rollback Sessions"
+
+    def __str__(self):
+        return f"Rollback Session {self.session_token[:8]}... by {self.approver_id}"
+
+
+class ZoomVerifiedEvidence(models.Model):
+    """
+    Durable evidence from external Zoom API queries (e.g., dual GET 404/3001 verification,
+    cancellation saga DELETE responses). Used for zero-teardown invariant safety.
+    """
+    meeting_id = models.CharField(max_length=128, db_index=True)
+    evidence_type = models.CharField(max_length=64, db_index=True)
+    http_status = models.IntegerField()
+    response_body = models.JSONField(default=dict, blank=True)
+    verified_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    worker_id = models.CharField(max_length=64, blank=True, default='')
+    # Phase B.5 repair (B2): the durable operation this evidence was gathered
+    # for. Quarantine resolution only accepts evidence bound to the same DOP.
+    # Plain integer (not an FK) so evidence rows are never cascaded or nulled.
+    dop_id = models.BigIntegerField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        ordering = ["-verified_at"]
+        verbose_name = "Zoom Verified Evidence"
+        verbose_name_plural = "Zoom Verified Evidence"
+
+    def __str__(self):
+        return f"Evidence {self.evidence_type} for {self.meeting_id} ({self.http_status})"
+
+
+class ZoomReconciliationApproval(models.Model):
+    """
+    Immutable approvals for reconciliation manifests requiring dual-party authorization.
+    """
+    manifest_hash = models.CharField(max_length=128, db_index=True)
+    target_commit = models.CharField(max_length=64, default='', blank=True)
+    nonce = models.CharField(max_length=128, default='', blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    approver_id = models.CharField(max_length=64, db_index=True)
+    signature = models.CharField(max_length=255)
+    approved_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-approved_at"]
+        verbose_name = "Zoom Reconciliation Approval"
+        verbose_name_plural = "Zoom Reconciliation Approvals"
+        constraints = [
+            models.UniqueConstraint(
+                fields=['manifest_hash', 'approver_id'],
+                name='uq_manifest_approver'
+            )
+        ]
+
+    def __str__(self):
+        return f"Approval for {self.manifest_hash[:8]} by {self.approver_id}"
+

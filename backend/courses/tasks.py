@@ -938,3 +938,25 @@ def recover_stale_zoom_outbox_task(self, stale_seconds=300):
     recovered = recover_stale_outbox_messages(stale_seconds=stale_seconds)
     return {"status": "ok", "recovered": recovered}
 
+
+
+@shared_task(bind=True, max_retries=0)
+def zoom_provisioning_watchdog_task(self, limit=50):
+    """
+    Phase B.5 (B3/B4 runtime wiring): recovers crashed Zoom provisioning operations and
+    resolves quarantined ones whose grace period has elapsed. Never releases a host
+    without a confirmed teardown or verified absence (see run_provisioning_watchdog).
+    Skips when Zoom credentials are not configured, leaving every reservation held.
+    """
+    from django.core.exceptions import ImproperlyConfigured
+    from courses.services.zoom import ZoomService
+    from courses.services.zoom_lifecycle import run_provisioning_watchdog
+    try:
+        ZoomService.get_credentials()
+    except ImproperlyConfigured:
+        logger.warning("[ZoomWatchdog] Zoom credentials not configured; watchdog skipped, all reservations stay held.")
+        return {"status": "skipped_no_credentials"}
+    report = run_provisioning_watchdog(limit=limit)
+    counts = {k: len(v) for k, v in report.items()}
+    counts["cancellations_finalized"] = sum(report["cancellations_finalized"])
+    return {"status": "ok", **counts}

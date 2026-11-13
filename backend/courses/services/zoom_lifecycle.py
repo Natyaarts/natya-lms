@@ -80,6 +80,248 @@ class RemoteVerificationError(ZoomLifecycleError):
     pass
 
 
+class QuarantineVerificationError(ZoomLifecycleError):
+    """Raised when quarantine cannot be resolved; the host reservation stays held."""
+    pass
+
+
+class QuarantineStateError(ZoomLifecycleError):
+    """Raised when quarantine resolution is attempted on a DOP that is not quarantined."""
+    pass
+
+
+class EvidenceRejectedError(ZoomLifecycleError):
+    """Raised when the database evidence boundary refuses a row (e.g. the caller lost its lease)."""
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Phase B.5 repair (B2/B3/B4/B5): actual Zoom call outcomes and verified evidence
+# ---------------------------------------------------------------------------
+
+# A provisioning CREATE can take: token fetch + POST + (401 -> token refresh + POST).
+PROVISION_LEASE_SECONDS = max(120, 6 * ZoomService.DEFAULT_TIMEOUT_SECONDS)
+RECOVERY_LEASE_SECONDS = 300
+QUARANTINE_GRACE_SECONDS = 900
+EVIDENCE_FRESHNESS_SECONDS = 600
+ORPHAN_START_TOLERANCE_SECONDS = 120
+ORPHAN_CREATED_SKEW_SECONDS = 300
+
+_AMBIGUOUS_ZOOM_ERRORS = (ZoomAmbiguousOutcomeError, ZoomTransientError, requests.Timeout, requests.ConnectionError)
+_OUTCOME_TOKEN = object()
+
+
+class ZoomCallOutcome:
+    """
+    The classified result of ONE actual Zoom HTTP call. It can only be built by
+    zoom_delete_outcome()/zoom_get_outcome(), which derive http_status from what
+    the Zoom client actually returned or raised -- never from a caller's claim.
+    """
+    CONFIRMED_DELETED = "CONFIRMED_DELETED"   # DELETE answered 204
+    CONFIRMED_ABSENT = "CONFIRMED_ABSENT"     # Zoom answered 404 (code 3001: meeting does not exist)
+    EXISTS = "EXISTS"                         # GET answered 200
+    FAILED = "FAILED"                         # definite non-confirmation (401/403/429/other 4xx)
+    AMBIGUOUS = "AMBIGUOUS"                   # 5xx / timeout / connection drop / unexpected error
+
+    __slots__ = ("meeting_id", "operation", "http_status", "result", "detail")
+
+    def __init__(self, token, meeting_id, operation, http_status, result, detail=""):
+        if token is not _OUTCOME_TOKEN:
+            raise TypeError("ZoomCallOutcome is produced only by an actual Zoom call "
+                            "(zoom_delete_outcome / zoom_get_outcome).")
+        object.__setattr__(self, "meeting_id", str(meeting_id))
+        object.__setattr__(self, "operation", operation)
+        object.__setattr__(self, "http_status", http_status)
+        object.__setattr__(self, "result", result)
+        object.__setattr__(self, "detail", str(detail or "")[:500])
+
+    def __setattr__(self, name, value):
+        raise AttributeError("ZoomCallOutcome is immutable")
+
+    @property
+    def confirmed_gone(self) -> bool:
+        return self.result in (self.CONFIRMED_DELETED, self.CONFIRMED_ABSENT)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {"meeting_id": self.meeting_id, "operation": self.operation,
+                "http_status": self.http_status, "result": self.result, "detail": self.detail}
+
+    def __repr__(self):
+        return f"ZoomCallOutcome({self.operation} {self.meeting_id}: {self.result} HTTP {self.http_status})"
+
+
+def _classify_zoom_exception(exc) -> Tuple[Optional[int], str]:
+    """Classify by exception TYPE and status code -- never by message substrings."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(exc, ZoomNotFoundError) and status == 404:
+        return 404, ZoomCallOutcome.CONFIRMED_ABSENT
+    if isinstance(exc, _AMBIGUOUS_ZOOM_ERRORS):
+        return status, ZoomCallOutcome.AMBIGUOUS
+    if isinstance(exc, ZoomAPIError):
+        return status, ZoomCallOutcome.FAILED
+    return None, ZoomCallOutcome.AMBIGUOUS
+
+
+def zoom_delete_outcome(meeting_id, zoom_client=None) -> ZoomCallOutcome:
+    """DELETE a meeting. ZoomService.delete_meeting returns only on HTTP 204 and raises otherwise."""
+    client = zoom_client if zoom_client is not None else ZoomService
+    try:
+        client.delete_meeting(str(meeting_id))
+    except Exception as exc:
+        status, result = _classify_zoom_exception(exc)
+        return ZoomCallOutcome(_OUTCOME_TOKEN, meeting_id, "DELETE", status, result, f"{type(exc).__name__}: {exc}")
+    return ZoomCallOutcome(_OUTCOME_TOKEN, meeting_id, "DELETE", 204, ZoomCallOutcome.CONFIRMED_DELETED)
+
+
+def zoom_get_outcome(meeting_id, zoom_client=None) -> ZoomCallOutcome:
+    """GET a meeting. ZoomService.get_meeting returns only on HTTP 200 and raises otherwise."""
+    client = zoom_client if zoom_client is not None else ZoomService
+    try:
+        client.get_meeting(str(meeting_id))
+    except Exception as exc:
+        status, result = _classify_zoom_exception(exc)
+        return ZoomCallOutcome(_OUTCOME_TOKEN, meeting_id, "GET", status, result, f"{type(exc).__name__}: {exc}")
+    return ZoomCallOutcome(_OUTCOME_TOKEN, meeting_id, "GET", 200, ZoomCallOutcome.EXISTS)
+
+
+# evidence_type -> (operation, accepted results). Only confirmations are evidence.
+_EVIDENCE_RULES = {
+    "CANCELLATION_SAGA_DELETE": ("DELETE", (ZoomCallOutcome.CONFIRMED_DELETED, ZoomCallOutcome.CONFIRMED_ABSENT)),
+    "ORPHAN_FENCING_TEARDOWN": ("DELETE", (ZoomCallOutcome.CONFIRMED_DELETED, ZoomCallOutcome.CONFIRMED_ABSENT)),
+    "CRASH_RECOVERY_TEARDOWN": ("DELETE", (ZoomCallOutcome.CONFIRMED_DELETED, ZoomCallOutcome.CONFIRMED_ABSENT)),
+    "OUTBOX_TEARDOWN_CONFIRMATION": ("DELETE", (ZoomCallOutcome.CONFIRMED_DELETED, ZoomCallOutcome.CONFIRMED_ABSENT)),
+    "DUAL_GET_QUARANTINE_VERIFICATION": ("GET", (ZoomCallOutcome.CONFIRMED_ABSENT,)),
+}
+
+
+def _record_evidence_from_outcome(outcome: ZoomCallOutcome, evidence_type: str,
+                                  dop_id: Optional[int] = None, worker_id: str = ""):
+    """
+    The only evidence writer. It takes no HTTP status argument: the status is
+    the one carried by the ZoomCallOutcome of the actual call, and anything that
+    is not a confirmation is refused. On PostgreSQL the insert goes through
+    fn_record_verified_evidence (owner-only since migration 0038), which
+    re-validates the type/status pairing and the DOP binding.
+    """
+    from django.db import connection
+    from courses.models import ZoomVerifiedEvidence
+    import json
+
+    if not isinstance(outcome, ZoomCallOutcome):
+        raise TypeError("Evidence can only be recorded from a ZoomCallOutcome of an actual Zoom call.")
+    rule = _EVIDENCE_RULES.get(evidence_type)
+    if rule is None:
+        raise ValueError(f"Unknown evidence type {evidence_type!r}")
+    operation, accepted = rule
+    if outcome.operation != operation or outcome.result not in accepted:
+        raise ValueError(f"Refusing to record {evidence_type} evidence for {outcome!r}: not a confirmation.")
+
+    worker = str(worker_id or "")[:64]
+    if connection.vendor == 'postgresql':
+        from django.db import DatabaseError
+        try:
+            with transaction.atomic():  # savepoint: a rejection never poisons the caller's transaction
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT fn_record_verified_evidence(%s, %s, %s, %s::jsonb, %s, %s)",
+                        [outcome.meeting_id, evidence_type, int(outcome.http_status),
+                         json.dumps(outcome.as_dict()), worker, dop_id]
+                    )
+                    ev_id = cursor.fetchone()[0]
+        except DatabaseError as exc:
+            raise EvidenceRejectedError(f"{evidence_type} evidence for {outcome.meeting_id} rejected by the "
+                                        f"database boundary: {str(exc).splitlines()[0]}") from exc
+        return ZoomVerifiedEvidence.objects.get(id=ev_id)
+    return ZoomVerifiedEvidence.objects.create(
+        meeting_id=outcome.meeting_id, evidence_type=evidence_type, http_status=int(outcome.http_status),
+        response_body=outcome.as_dict(), worker_id=worker, dop_id=dop_id,
+    )
+
+
+def _parse_zoom_time(value) -> Optional[datetime.datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if timezone.is_naive(parsed):
+        return None
+    return parsed
+
+
+def _list_host_meetings(host_user_id: str, zoom_client=None) -> List[Dict[str, Any]]:
+    """ZoomService.list_user_meetings returns a LIST of {'meeting_id', 'topic', 'start_time', ...}."""
+    client = zoom_client if zoom_client is not None else ZoomService
+    meetings = client.list_user_meetings(host_user_id)
+    if not isinstance(meetings, list):
+        raise RemoteVerificationError(
+            f"Unexpected list_user_meetings response type {type(meetings).__name__}; expected list.")
+    return meetings
+
+
+def _db_owned_meeting_ids(meeting_ids) -> set:
+    ids = [str(m) for m in meeting_ids if m]
+    if not ids:
+        return set()
+    owned = set(ZoomMeetingRecord.objects.filter(zoom_meeting_id__in=ids).values_list('zoom_meeting_id', flat=True))
+    owned |= set(LiveClass.objects.filter(zoom_meeting_id__in=ids).values_list('zoom_meeting_id', flat=True))
+    return {str(m) for m in owned}
+
+
+def _orphan_deletion_candidates(meetings, payload: Dict[str, Any], dop_created_at) -> List[str]:
+    """
+    Meetings that can be attributed to THIS provisioning operation, strictly enough
+    to delete. All must hold: same host (the listing is per host), exact topic,
+    start within tolerance of what was sent, same duration, created no earlier
+    than the operation, and not owned by any ZoomMeetingRecord or LiveClass.
+    Topic alone never qualifies.
+    """
+    topic = payload.get('title') or payload.get('topic')
+    expected_start = _parse_zoom_time(payload.get('scheduled_start'))
+    duration = payload.get('duration_minutes')
+    if not topic or expected_start is None or duration is None:
+        return []
+    candidates = []
+    for m in meetings:
+        mid = str(m.get('meeting_id') or '')
+        start = _parse_zoom_time(m.get('start_time'))
+        created = _parse_zoom_time(m.get('created_at'))
+        if (mid and m.get('topic') == topic and start is not None
+                and abs((start - expected_start).total_seconds()) <= ORPHAN_START_TOLERANCE_SECONDS
+                and int(m.get('duration') or -1) == int(duration)
+                and created is not None
+                and created >= dop_created_at - datetime.timedelta(seconds=ORPHAN_CREATED_SKEW_SECONDS)):
+            candidates.append(mid)
+    owned = _db_owned_meeting_ids(candidates)
+    return [c for c in candidates if c not in owned]
+
+
+def _release_blocking_meetings(meetings, payload: Dict[str, Any], own_meeting_ids) -> List[str]:
+    """
+    Fail-closed check before RELEASING a host: any of this operation's known
+    meetings still listed, or any unowned meeting with the same topic whose start
+    is within tolerance (regardless of created_at/duration), blocks release.
+    """
+    own = {str(m) for m in own_meeting_ids if m}
+    topic = payload.get('title') or payload.get('topic')
+    expected_start = _parse_zoom_time(payload.get('scheduled_start'))
+    blockers = []
+    for m in meetings:
+        mid = str(m.get('meeting_id') or '')
+        if not mid:
+            continue
+        if mid in own:
+            blockers.append(mid)
+            continue
+        start = _parse_zoom_time(m.get('start_time'))
+        if (topic and m.get('topic') == topic and expected_start is not None and start is not None
+                and abs((start - expected_start).total_seconds()) <= ORPHAN_START_TOLERANCE_SECONDS):
+            blockers.append(mid)
+    owned = _db_owned_meeting_ids(blockers) - own
+    return [b for b in blockers if b not in owned]
+
+
 # ---------------------------------------------------------------------------
 # Stage 4: Concurrency & Bounded Deadlock Retry
 # ---------------------------------------------------------------------------
@@ -259,16 +501,117 @@ def select_and_reserve_host(
     """
     Selects an available ZoomHostAccount from the active pool under deterministic
     Level 3 locks (ORDER BY id ASC FOR UPDATE). Enforces max concurrency per host.
+    Authoritative teacher-to-host resolution and anti-host-stealing isolation.
     Creates a HostReservation in PROVISIONAL state.
     """
-    end_time = start_time + datetime.timedelta(minutes=duration_minutes)
+    from django.db.models.functions import Lower
+    from django.contrib.auth import get_user_model
 
-    # Lock active candidate hosts in deterministic ID order
-    host_query = ZoomHostAccount.objects.filter(
-        status=ZoomHostAccount.Status.ACTIVE
-    ).order_by('id')
+    end_time = start_time + datetime.timedelta(minutes=duration_minutes)
+    UserModel = get_user_model()
+
+    # 1. Resolve Effective Instructor and Teacher Email safely
+    eff_inst = live_class.effective_instructor
+    eff_inst_id = live_class.effective_instructor_id
+    raw_email = getattr(eff_inst, 'email', None) if eff_inst else None
+    teacher_email = raw_email.strip().lower() if (raw_email and raw_email.strip() and '@' in raw_email) else None
+
+    # Check for ambiguous teacher identity (multiple user accounts with same email)
+    if teacher_email:
+        duplicate_users = UserModel.objects.filter(email__iexact=teacher_email).count()
+        if duplicate_users > 1:
+            raise HostCapacityExhaustedError(
+                f"Ambiguous teacher identity: multiple user accounts share email '{teacher_email}'."
+            )
+
+    # 2. Gather other teachers' emails for anti-host-stealing protection
+    other_teacher_emails = set(
+        UserModel.objects.filter(
+            models.Q(is_teacher=True) | models.Q(is_mentor=True)
+        ).exclude(id=eff_inst_id).values_list('email', flat=True)
+    )
+    other_teacher_emails = {
+        e.strip().lower() for e in other_teacher_emails if e and e.strip() and '@' in e
+    }
+
+    # 3. Check Dedicated Host Mapping for Current Teacher
+    # Priority: explicit assigned_instructor, then fallback to email match
+    dedicated_host = None
+    if eff_inst:
+        dedicated_host = ZoomHostAccount.objects.filter(
+            account_type=ZoomHostAccount.AccountType.DEDICATED,
+            assigned_instructor=eff_inst
+        ).first()
+
+    if not dedicated_host and teacher_email:
+        dedicated_host = (
+            ZoomHostAccount.objects.annotate(email_lower=Lower('email'))
+            .filter(
+                models.Q(account_type=ZoomHostAccount.AccountType.DEDICATED, email_lower=teacher_email) |
+                models.Q(email_lower=teacher_email)
+            )
+            .first()
+        )
+
+    if dedicated_host:
+        # If dedicated host exists but is not ACTIVE, fail closed! Never silently fall back.
+        if dedicated_host.status != ZoomHostAccount.Status.ACTIVE:
+            raise HostCapacityExhaustedError(
+                f"Dedicated Zoom host account for instructor '{teacher_email or eff_inst}' ({dedicated_host.zoom_user_id}) "
+                f"is {dedicated_host.status}. Dedicated hosts must be ACTIVE to conduct classes."
+            )
+
+    # 4. Formulate Host Query
+    # Exclude UNCLASSIFIED hosts strictly!
+    host_query = (
+        ZoomHostAccount.objects.annotate(email_lower=Lower('email'))
+        .filter(status=ZoomHostAccount.Status.ACTIVE)
+        .exclude(account_type=ZoomHostAccount.AccountType.UNCLASSIFIED)
+        .order_by('id')
+    )
+
     if preferred_host_id:
-        host_query = ZoomHostAccount.objects.filter(id=preferred_host_id)
+        pref_host = (
+            ZoomHostAccount.objects.annotate(email_lower=Lower('email'))
+            .filter(id=preferred_host_id, status=ZoomHostAccount.Status.ACTIVE)
+            .first()
+        )
+        if not pref_host:
+            raise HostCapacityExhaustedError(
+                f"Preferred host account {preferred_host_id} is not active or does not exist."
+            )
+        if pref_host.account_type == ZoomHostAccount.AccountType.UNCLASSIFIED:
+            raise HostCapacityExhaustedError(
+                f"Unauthorized host selection: host {preferred_host_id} is UNCLASSIFIED and cannot be allocated."
+            )
+        # Prevent selecting another teacher's dedicated host
+        if pref_host.account_type == ZoomHostAccount.AccountType.DEDICATED:
+            if not dedicated_host or pref_host.id != dedicated_host.id:
+                raise HostCapacityExhaustedError(
+                    f"Unauthorized host selection: host {preferred_host_id} is a dedicated host for another instructor."
+                )
+        if pref_host.email_lower in other_teacher_emails:
+            raise HostCapacityExhaustedError(
+                f"Unauthorized host selection: host {preferred_host_id} ({pref_host.email}) belongs to another instructor."
+            )
+        # If current teacher has a dedicated host, preferred host must match it
+        if dedicated_host and dedicated_host.id != pref_host.id:
+            raise HostCapacityExhaustedError(
+                f"Instructor '{teacher_email}' is bound to dedicated host {dedicated_host.id}; cannot use host {preferred_host_id}."
+            )
+        host_query = host_query.filter(id=preferred_host_id)
+
+    elif dedicated_host:
+        # Dedicated active host strictly assigned to this teacher
+        host_query = host_query.filter(id=dedicated_host.id)
+
+    else:
+        # General shared pool allocation:
+        # Strictly exclude ALL dedicated hosts, other teachers' hosts, and unclassified hosts
+        host_query = host_query.filter(account_type=ZoomHostAccount.AccountType.SHARED_POOL)
+        if other_teacher_emails:
+            host_query = host_query.exclude(email_lower__in=other_teacher_emails)
+        host_query = host_query.exclude(assigned_instructor__isnull=False)
 
     candidate_hosts = list(host_query.select_for_update())
     if not candidate_hosts:
@@ -378,13 +721,43 @@ def provision_zoom_meeting(
                 "dop_id": dop.id
             }
 
-        reservation = select_and_reserve_host(
-            live_class=live_class,
-            start_time=live_class.scheduled_start,
-            duration_minutes=live_class.duration_minutes,
-            preferred_host_id=preferred_host_id,
-            durable_operation=dop
-        )
+        # Phase B.5 repair (B4): an existing operation whose CREATE may still be
+        # outstanding (in flight, crashed, or ambiguous) must never be re-driven --
+        # a second CREATE could leave two meetings. It goes through crash recovery
+        # or quarantine resolution instead.
+        if not created and dop.status in (
+            LiveClassDurableOperation.Status.IN_PROGRESS,
+            LiveClassDurableOperation.Status.OUTCOME_UNKNOWN,
+            LiveClassDurableOperation.Status.COMPENSATION_REQUIRED,
+            LiveClassDurableOperation.Status.COMPENSATING,
+        ):
+            raise ConcurrencyConflictError(
+                f"DOP #{dop.id} is {dop.status} (lease until {dop.lease_expires_at}); a CREATE may be "
+                f"outstanding. Use recover_crashed_provision_dop / quarantine resolution, not a re-drive."
+            )
+
+        # Phase B.5 repair (B4): a real provisioning lease. Crash recovery may not
+        # touch this DOP until the lease (which outlasts the whole CREATE call,
+        # including its 401 retry) has expired; Phase 3 refuses to finalize if the
+        # lease was taken over in the meantime.
+        provision_worker = uuid.uuid4()
+        dop.lease_worker = provision_worker
+        dop.lease_expires_at = timezone.now() + datetime.timedelta(seconds=PROVISION_LEASE_SECONDS)
+        dop.save(update_fields=['lease_worker', 'lease_expires_at', 'updated_at'])
+
+        try:
+            reservation = select_and_reserve_host(
+                live_class=live_class,
+                start_time=live_class.scheduled_start,
+                duration_minutes=live_class.duration_minutes,
+                preferred_host_id=preferred_host_id,
+                durable_operation=dop
+            )
+        except Exception as e:
+            dop.status = LiveClassDurableOperation.Status.FAILED
+            dop.error_message = str(e)
+            dop.save(update_fields=['status', 'error_message', 'updated_at'])
+            raise
         host_user_id = reservation.host_account.zoom_user_id
         res_id = reservation.id
         dop_id = dop.id
@@ -412,20 +785,34 @@ def provision_zoom_meeting(
 
     # Phase 3: Final State Transition under Level 1 Lock
     definite_failure_exc = None
+    fencing_conflict_exc = None
+    fenced_teardown = None
     with transaction.atomic():
         live_class = LiveClass.objects.select_for_update().get(id=live_class_id)
         dop = LiveClassDurableOperation.objects.select_for_update().get(id=dop_id)
         reservation = HostReservation.objects.select_for_update().get(id=res_id)
 
-        # Fencing: verify version has not mutated concurrently
-        if dop.version != dop_version:
-            raise ConcurrencyConflictError(
-                f"Fencing conflict: DOP {dop_id} version changed from {dop_version} to {dop.version}"
+        # Fencing: verify version/lease have not mutated concurrently and class is not cancelled
+        is_fencing_violation = (
+            dop.version != dop_version
+            or dop.lease_worker != provision_worker
+            or dop.status != LiveClassDurableOperation.Status.IN_PROGRESS
+            or live_class.status == LiveClass.ClassStatus.CANCELLED
+            or reservation.status != HostReservation.Status.PROVISIONAL
+        )
+
+        if is_fencing_violation:
+            # Phase B.5 repair (B5): record compensation durably and STOP. The
+            # success path below must never run for a fenced operation, and no
+            # Zoom call is made while these locks are held.
+            fenced_teardown, fencing_conflict_exc = _compensate_fenced_provision(
+                live_class, dop, reservation, zoom_result, zoom_error, provision_worker, dop_version
             )
 
-        dop.version += 1
-
-        if zoom_result:
+        elif zoom_result:
+            dop.version += 1
+            dop.lease_worker = None
+            dop.lease_expires_at = None
             meeting_id = str(zoom_result["meeting_id"])
             uuid_val = zoom_result.get("uuid", "")
             join_url = zoom_result.get("join_url", "")
@@ -451,7 +838,8 @@ def provision_zoom_meeting(
 
             dop.status = LiveClassDurableOperation.Status.COMPLETED
             dop.response_payload = zoom_result
-            dop.save(update_fields=['status', 'response_payload', 'version', 'updated_at'])
+            dop.save(update_fields=['status', 'response_payload', 'version', 'lease_worker',
+                                    'lease_expires_at', 'updated_at'])
 
             # Update LiveClass pointers
             live_class.zoom_meeting_id = meeting_id
@@ -484,9 +872,13 @@ def provision_zoom_meeting(
 
         elif isinstance(zoom_error, (ZoomAmbiguousOutcomeError, requests.Timeout, requests.ConnectionError)):
             # Ambiguous: Cannot safely rollback; must hold host and require reconciliation
+            dop.version += 1
+            dop.lease_worker = None
+            dop.lease_expires_at = None
             dop.status = LiveClassDurableOperation.Status.OUTCOME_UNKNOWN
             dop.error_message = f"Ambiguous remote outcome: {str(zoom_error)}"
-            dop.save(update_fields=['status', 'error_message', 'version', 'updated_at'])
+            dop.save(update_fields=['status', 'error_message', 'version', 'lease_worker',
+                                    'lease_expires_at', 'updated_at'])
 
             reservation.status = HostReservation.Status.MANUAL_REVIEW
             reservation.release_reason = "Ambiguous remote outcome during CREATE; held until verified."
@@ -502,9 +894,13 @@ def provision_zoom_meeting(
 
         else:
             # Definite failure: Cancel reservation and mark DOP FAILED
+            dop.version += 1
+            dop.lease_worker = None
+            dop.lease_expires_at = None
             dop.status = LiveClassDurableOperation.Status.FAILED
             dop.error_message = f"Zoom API definite failure: {str(zoom_error)}"
-            dop.save(update_fields=['status', 'error_message', 'version', 'updated_at'])
+            dop.save(update_fields=['status', 'error_message', 'version', 'lease_worker',
+                                    'lease_expires_at', 'updated_at'])
 
             reservation.status = HostReservation.Status.CANCELLED
             reservation.release_reason = f"Definite failure during CREATE: {str(zoom_error)}"
@@ -512,8 +908,143 @@ def provision_zoom_meeting(
 
             definite_failure_exc = ZoomLifecycleError(f"Zoom creation failed: {str(zoom_error)}")
 
+    # Fenced: the compensation, hold and durable teardown outbox are committed.
+    # Only now -- outside every lock -- attempt the immediate teardown. If it is
+    # not confirmed, the committed outbox message is the durable retry.
+    if fenced_teardown:
+        _attempt_fenced_teardown(fenced_teardown)
+    if fencing_conflict_exc:
+        raise fencing_conflict_exc
     if definite_failure_exc:
         raise definite_failure_exc
+
+
+def _compensate_fenced_provision(live_class, dop, reservation, zoom_result, zoom_error,
+                                 provision_worker, dop_version):
+    """
+    Phase B.5 repair (B5). Runs inside provision Phase 3's transaction, under the
+    LiveClass/DOP/reservation locks, and makes NO Zoom call. Records -- durably,
+    in that transaction -- everything needed to tear down a meeting created by a
+    CREATE that returned after the operation was fenced or cancelled:
+      * a PENDING teardown outbox message (the durable retry),
+      * the orphan meeting id on the DOP, which moves to COMPENSATION_REQUIRED
+        (quarantine) while a remote meeting may exist,
+      * the reservation held in MANUAL_REVIEW (never reactivated; a reservation
+        that is already terminal is left as it is).
+    Never creates a ZoomMeetingRecord and never reactivates a reservation.
+    Returns (teardown_plan_or_None, ConcurrencyConflictError).
+    """
+    terminal_reservation = (HostReservation.Status.RELEASED, HostReservation.Status.COMPLETED,
+                            HostReservation.Status.CANCELLED)
+    orphan_meeting_id = str(zoom_result["meeting_id"]) if zoom_result and zoom_result.get("meeting_id") else None
+    ambiguous = orphan_meeting_id is None and isinstance(zoom_error, _AMBIGUOUS_ZOOM_ERRORS)
+    remote_may_exist = bool(orphan_meeting_id) or ambiguous
+
+    outbox_id = None
+    if orphan_meeting_id:
+        outbox = ZoomLifecycleOutbox.objects.create(
+            aggregate_id=live_class.id,
+            event_type="ZOOM_MEETING_COMMIT_FAILED_NEEDS_TEARDOWN",
+            status=ZoomLifecycleOutbox.Status.PENDING,
+            payload={"meeting_id": orphan_meeting_id, "dop_id": dop.id,
+                     "reservation_id": reservation.id, "reason": "in_flight_cancelled_or_fenced"}
+        )
+        outbox_id = outbox.id
+        logger.critical(
+            f"[ZoomLifecycle] Fencing violation for DOP {dop.id}: CREATE returned meeting {orphan_meeting_id} "
+            f"after LiveClass {live_class.id} was fenced/cancelled. Teardown queued (outbox #{outbox_id})."
+        )
+
+    if remote_may_exist:
+        if dop.status != LiveClassDurableOperation.Status.COMPLETED:
+            dop.status = LiveClassDurableOperation.Status.COMPENSATION_REQUIRED
+            # A remote meeting has only now become known: restart the grace period.
+            dop.quarantined_at = timezone.now()
+    elif dop.status not in (LiveClassDurableOperation.Status.COMPLETED, LiveClassDurableOperation.Status.FAILED,
+                            LiveClassDurableOperation.Status.COMPENSATED):
+        dop.status = LiveClassDurableOperation.Status.COMPENSATED
+    response_payload = dict(dop.response_payload or {})
+    if orphan_meeting_id:
+        response_payload["orphan_meeting_id"] = orphan_meeting_id
+    dop.response_payload = response_payload
+    if orphan_meeting_id:
+        dop.error_message = (f"Fencing violation: CREATE returned meeting {orphan_meeting_id} after the operation "
+                             f"was fenced. Teardown queued in outbox #{outbox_id}; reservation held.")
+    elif ambiguous:
+        dop.error_message = "Fencing violation with ambiguous CREATE outcome; reservation held for quarantine verification."
+    else:
+        dop.error_message = f"Fencing violation; CREATE failed definitively ({zoom_error}); no remote meeting."
+    dop.version += 1
+    if dop.lease_worker == provision_worker:
+        dop.lease_worker = None
+        dop.lease_expires_at = None
+    dop.save(update_fields=['status', 'response_payload', 'error_message', 'version',
+                            'lease_worker', 'lease_expires_at', 'quarantined_at', 'updated_at'])
+
+    if reservation.status not in terminal_reservation:
+        if remote_may_exist:
+            reservation.status = HostReservation.Status.MANUAL_REVIEW
+            reservation.release_reason = ("Held: provisioning was fenced while a Zoom meeting may exist "
+                                          f"({orphan_meeting_id or 'ambiguous CREATE'}).")
+        else:
+            reservation.status = HostReservation.Status.CANCELLED
+            reservation.release_reason = "Fencing violation: CREATE failed definitively; nothing to tear down."
+        reservation.save(update_fields=['status', 'release_reason', 'updated_at'])
+
+    conflict = ConcurrencyConflictError(
+        f"Fencing conflict: DOP {dop.id} changed from version {dop_version} while CREATE was in flight "
+        f"(status={dop.status}). Orphan meeting: {orphan_meeting_id or 'none'}."
+    )
+    plan = None
+    if orphan_meeting_id:
+        plan = {"meeting_id": orphan_meeting_id, "dop_id": dop.id, "live_class_id": live_class.id,
+                "fenced_version": dop.version, "reservation_id": reservation.id, "outbox_id": outbox_id}
+    return plan, conflict
+
+
+def _attempt_fenced_teardown(plan: Dict[str, Any]) -> ZoomCallOutcome:
+    """
+    Phase B.5 repair (B5). Immediate teardown attempt for a fenced CREATE, made
+    with no locks held. Evidence is recorded only from a confirmed DELETE
+    (HTTP 204, or 404 = already gone). Only then is the held reservation released
+    -- and only if nobody has touched the DOP since the fencing commit. Anything
+    unconfirmed leaves the committed outbox message as the durable retry.
+    """
+    outcome = zoom_delete_outcome(plan["meeting_id"])
+    if not outcome.confirmed_gone:
+        logger.warning(f"[ZoomLifecycle] Immediate teardown of fenced meeting {plan['meeting_id']} not confirmed "
+                       f"({outcome.result}, HTTP {outcome.http_status}); outbox #{plan['outbox_id']} will retry.")
+        return outcome
+
+    try:
+        _record_evidence_from_outcome(outcome, "ORPHAN_FENCING_TEARDOWN", dop_id=plan["dop_id"],
+                                      worker_id="provision_fencing_guard")
+    except EvidenceRejectedError as exc:
+        logger.warning(f"[ZoomLifecycle] {exc}; reservation stays held for quarantine verification.")
+        return outcome
+    with transaction.atomic():
+        LiveClass.objects.select_for_update().filter(id=plan["live_class_id"]).first()
+        dop = LiveClassDurableOperation.objects.select_for_update().get(id=plan["dop_id"])
+        outbox = ZoomLifecycleOutbox.objects.select_for_update().filter(
+            id=plan["outbox_id"], status=ZoomLifecycleOutbox.Status.PENDING).first()
+        if outbox:
+            outbox.status = ZoomLifecycleOutbox.Status.COMPLETED
+            outbox.error_message = f"Teardown confirmed immediately by provisioning fencing guard (HTTP {outcome.http_status})."
+            outbox.save(update_fields=['status', 'error_message', 'updated_at'])
+        if (dop.version == plan["fenced_version"]
+                and dop.status == LiveClassDurableOperation.Status.COMPENSATION_REQUIRED):
+            dop.status = LiveClassDurableOperation.Status.COMPENSATED
+            dop.version += 1
+            dop.error_message = (f"{dop.error_message} Teardown of {plan['meeting_id']} confirmed "
+                                 f"(HTTP {outcome.http_status}).")
+            dop.save(update_fields=['status', 'version', 'error_message', 'updated_at'])
+            res = HostReservation.objects.select_for_update().filter(
+                id=plan["reservation_id"], status=HostReservation.Status.MANUAL_REVIEW).first()
+            if res:
+                res.status = HostReservation.Status.CANCELLED
+                res.release_reason = f"Fenced orphan meeting {plan['meeting_id']} teardown confirmed (HTTP {outcome.http_status})."
+                res.save(update_fields=['status', 'release_reason', 'updated_at'])
+    return outcome
 
 
 @execute_with_deadlock_retry()
@@ -573,11 +1104,12 @@ def replace_zoom_meeting(
                 blocking_details={"blocking_reservations": blocking_res}
             )
 
-        # DEF-01 Guard 3: Reject if any in-flight teardown outbox records exist
+        # DEF-01 Guard 3: Reject if any in-flight teardown or replacement outbox records exist
         in_flight_teardown_outbox = list(
             ZoomLifecycleOutbox.objects.filter(
                 aggregate_id=live_class.id,
                 event_type__in=[
+                    'ZOOM_MEETING_REPLACED',
                     'ZOOM_MEETING_TEARDOWN',
                     'ZOOM_MEETING_COMMIT_FAILED_NEEDS_TEARDOWN',
                 ],
@@ -590,7 +1122,7 @@ def replace_zoom_meeting(
         )
         if in_flight_teardown_outbox:
             raise ZeroTeardownInvariantViolation(
-                f"Cannot replace Zoom meeting for LiveClass {live_class_id}: in-flight teardown operations exist.",
+                f"Cannot replace Zoom meeting for LiveClass {live_class_id}: in-flight teardown or replacement operations exist ({in_flight_teardown_outbox}).",
                 blocking_details={"in_flight_teardown_outbox": in_flight_teardown_outbox}
             )
 
@@ -885,75 +1417,97 @@ def cancel_zoom_meeting(live_class_id: int, reason: str = "Class cancelled") -> 
 
 
 @execute_with_deadlock_retry()
-def compensate_zoom_operation(dop_id: int, worker_id: Optional[uuid.UUID] = None) -> Dict[str, Any]:
+def compensate_zoom_operation(dop_id: int, worker_id: Optional[uuid.UUID] = None, zoom_client=None) -> Dict[str, Any]:
     """
-    Executes compensation for an incomplete saga:
-    Fences against stale workers by verifying lease_worker and lease_expires_at.
-    Acquires LiveClass FOR NO KEY UPDATE (or FOR UPDATE),
-    deletes any created remote Zoom meeting, marks meeting record COMPENSATED with is_current=False,
-    cancels host reservation, and marks DOP COMPENSATED.
+    Executes compensation for an incomplete saga.
+
+    Release-closure B9:
+    - Locks in the global order L1 LiveClass -> L2 DOP -> L3 ZoomMeetingRecord -> L5 HostReservation
+      in both transactions (previously DOP before LiveClass, the inverse of every other path).
+    - The Zoom DELETE is made with no lock held; the second transaction re-checks the claim
+      (version + lease worker) before changing anything.
+    - Fails closed: the host is released only when no remote meeting exists or its DELETE is
+      confirmed (HTTP 204/404). Otherwise the DOP is quarantined (COMPENSATION_REQUIRED), its
+      reservations are held (MANUAL_REVIEW) and a durable teardown is queued in the outbox.
     """
+    worker_id = worker_id or uuid.uuid4()
+    terminal_reservation = (HostReservation.Status.RELEASED, HostReservation.Status.COMPLETED,
+                            HostReservation.Status.CANCELLED)
+
     with transaction.atomic():
-        dop = LiveClassDurableOperation.objects.select_for_update().get(id=dop_id)
+        lc_id = LiveClassDurableOperation.objects.filter(id=dop_id).values_list('live_class_id', flat=True).first()
+        if lc_id:
+            LiveClass.objects.select_for_update().filter(id=lc_id).first()                     # L1
+        dop = LiveClassDurableOperation.objects.select_for_update().get(id=dop_id)            # L2
         now = timezone.now()
+        if dop.lease_expires_at and dop.lease_expires_at > now and dop.lease_worker and dop.lease_worker != worker_id:
+            raise ConcurrencyConflictError(
+                f"Fencing violation: DOP {dop_id} is leased to worker {dop.lease_worker} until {dop.lease_expires_at}"
+            )
+        dop.lease_worker = worker_id
+        dop.lease_expires_at = now + datetime.timedelta(seconds=RECOVERY_LEASE_SECONDS)
+        dop.version += 1
+        dop.save(update_fields=['lease_worker', 'lease_expires_at', 'version', 'updated_at'])
+        claim_version = dop.version
+        zmr = ZoomMeetingRecord.objects.select_for_update().filter(durable_operation=dop).first()  # L3
+        zmr_id = zmr.id if zmr else None
+        meeting_to_delete = (zmr.zoom_meeting_id if zmr and zmr.state not in
+                             (ZoomMeetingRecord.State.RELEASED, ZoomMeetingRecord.State.COMPENSATED) else None)
 
-        # Worker fencing check: if lease is active and held by a different worker, reject!
-        if dop.lease_expires_at and dop.lease_expires_at > now:
-            if dop.lease_worker and worker_id and dop.lease_worker != worker_id:
-                raise ConcurrencyConflictError(
-                    f"Fencing violation: DOP {dop_id} is leased to worker {dop.lease_worker} until {dop.lease_expires_at}"
-                )
-
-        # Renew lease for current worker
-        if worker_id:
-            dop.lease_worker = worker_id
-            dop.lease_expires_at = now + datetime.timedelta(seconds=60)
-            dop.save(update_fields=['lease_worker', 'lease_expires_at', 'updated_at'])
-
-        live_class = LiveClass.objects.select_for_update().get(id=dop.live_class_id)
-        meeting_to_delete = None
-        zmr = ZoomMeetingRecord.objects.select_for_update().filter(
-            durable_operation=dop
-        ).first()
-        if zmr and zmr.state not in (ZoomMeetingRecord.State.RELEASED, ZoomMeetingRecord.State.COMPENSATED):
-            meeting_to_delete = zmr.zoom_meeting_id
-
-    if meeting_to_delete:
-        try:
-            ZoomService.delete_meeting(meeting_to_delete)
-        except ZoomNotFoundError:
-            pass
-        except Exception as exc:
-            logger.error(f"[ZoomLifecycle] Error deleting meeting during compensation: {exc}")
+    outcome = zoom_delete_outcome(meeting_to_delete, zoom_client=zoom_client) if meeting_to_delete else None
+    confirmed = outcome is None or outcome.confirmed_gone
 
     with transaction.atomic():
-        dop = LiveClassDurableOperation.objects.select_for_update().get(id=dop_id)
-        live_class = LiveClass.objects.select_for_update().get(id=dop.live_class_id)
+        live_class = LiveClass.objects.select_for_update().filter(id=lc_id).first() if lc_id else None  # L1
+        dop = LiveClassDurableOperation.objects.select_for_update().get(id=dop_id)                    # L2
+        if dop.version != claim_version or dop.lease_worker != worker_id:
+            raise ConcurrencyConflictError(f"DOP #{dop_id} compensation claim was lost; nothing changed.")
+        zmr = ZoomMeetingRecord.objects.select_for_update().get(id=zmr_id) if zmr_id else None          # L3
+        reservations = list(HostReservation.objects.select_for_update().filter(
+            durable_operation=dop).exclude(status__in=terminal_reservation))                           # L5
+        dop.lease_expires_at = None
 
-        if zmr:
-            zmr = ZoomMeetingRecord.objects.select_for_update().get(id=zmr.id)
-            zmr.state = ZoomMeetingRecord.State.COMPENSATED
-            if zmr.live_class_id:
-                zmr.historical_live_class_id = zmr.live_class_id
-            zmr.live_class = None
-            zmr.is_current = False
-            zmr.save(update_fields=['state', 'historical_live_class_id', 'live_class', 'is_current', 'updated_at'])
+        if confirmed:
+            if zmr:
+                zmr.state = ZoomMeetingRecord.State.COMPENSATED
+                if zmr.live_class_id:
+                    zmr.historical_live_class_id = zmr.live_class_id
+                zmr.live_class = None
+                zmr.is_current = False
+                zmr.save(update_fields=['state', 'historical_live_class_id', 'live_class', 'is_current', 'updated_at'])
+            for res in reservations:
+                res.status = HostReservation.Status.CANCELLED
+                res.release_reason = "Saga compensation completed."
+                res.save(update_fields=['status', 'release_reason', 'updated_at'])
+            dop.status = LiveClassDurableOperation.Status.COMPENSATED
+            dop.save(update_fields=['status', 'lease_expires_at', 'updated_at'])
+            if live_class and meeting_to_delete and live_class.zoom_meeting_id == meeting_to_delete:
+                live_class.zoom_meeting_id = ''
+                live_class.zoom_uuid = ''
+                live_class.save(update_fields=['zoom_meeting_id', 'zoom_uuid'])
+            if outcome is not None and meeting_to_delete:
+                logger.info(f"[ZoomLifecycle] Compensation of DOP {dop_id}: meeting {meeting_to_delete} "
+                            f"deletion confirmed (HTTP {outcome.http_status}).")
+            return {"status": "COMPENSATED", "dop_id": dop_id}
 
-        # Cancel reservations
-        HostReservation.objects.filter(durable_operation=dop).update(
-            status=HostReservation.Status.CANCELLED,
-            release_reason="Saga compensation completed."
+        ZoomLifecycleOutbox.objects.create(
+            aggregate_id=lc_id or dop_id,
+            event_type="ZOOM_MEETING_COMMIT_FAILED_NEEDS_TEARDOWN",
+            status=ZoomLifecycleOutbox.Status.PENDING,
+            payload={"meeting_id": meeting_to_delete, "dop_id": dop_id, "reason": "compensation_delete_unconfirmed"}
         )
-
-        dop.status = LiveClassDurableOperation.Status.COMPENSATED
-        dop.save(update_fields=['status', 'updated_at'])
-
-        if live_class.zoom_meeting_id == meeting_to_delete:
-            live_class.zoom_meeting_id = ''
-            live_class.zoom_uuid = ''
-            live_class.save(update_fields=['zoom_meeting_id', 'zoom_uuid'])
-
-    return {"status": "COMPENSATED", "dop_id": dop_id}
+        dop.status = LiveClassDurableOperation.Status.COMPENSATION_REQUIRED
+        dop.quarantined_at = timezone.now()
+        dop.response_payload = {**(dop.response_payload or {}), "orphan_meeting_id": meeting_to_delete}
+        dop.error_message = (f"Compensation held: delete of meeting {meeting_to_delete} not confirmed "
+                             f"({outcome.result}, HTTP {outcome.http_status}); teardown queued.")
+        dop.save(update_fields=['status', 'quarantined_at', 'response_payload', 'error_message',
+                                'lease_expires_at', 'updated_at'])
+        for res in reservations:
+            res.status = HostReservation.Status.MANUAL_REVIEW
+            res.release_reason = f"Held: compensation delete of {meeting_to_delete} not confirmed."
+            res.save(update_fields=['status', 'release_reason', 'updated_at'])
+        return {"status": "HELD", "dop_id": dop_id, "meeting_id": meeting_to_delete}
 
 
 # ---------------------------------------------------------------------------
@@ -1103,3 +1657,599 @@ def process_outbox_queue(batch_size: int = 50, worker_id: Optional[uuid.UUID] = 
         if process_outbox_message(outbox_id, worker_id=worker_id):
             success_count += 1
     return success_count
+
+
+class ZoomCancellationSagaWorker:
+    """
+    4-Phase Execution Worker for Zoom Meeting Cancellation:
+    Phase 1: Claim & Lease (transitions meeting state to COMPENSATING, locks resources)
+    Phase 2: Remote Zoom DELETE (invoked OUTSIDE locks with bounded timeouts)
+    Phase 3: Durable evidence persistence (HTTP 204 or 404/3001 persisted in ZoomVerifiedEvidence)
+    Phase 4: Finalization & replacement preservation (transitions meeting to COMPENSATED, releases host reservation, preserves replacement meeting if present)
+    """
+
+    @classmethod
+    def claim_and_lease(cls, live_class_id: int, worker_id: Optional[uuid.UUID] = None, lease_seconds: int = 60) -> Optional[dict]:
+        """
+        Release-closure B7: the lease is DURABLE -- persisted on the ZoomMeetingRecord
+        (lease_worker, lease_expires_at, owner_token, version) -- so finalization and the
+        watchdog can fence against it. The class id is kept in historical_live_class_id.
+        """
+        if not worker_id:
+            worker_id = uuid.uuid4()
+        now = timezone.now()
+        lease_expires = now + datetime.timedelta(seconds=lease_seconds)
+
+        with transaction.atomic():
+            # Level 1: Lock LiveClass
+            lc = LiveClass.objects.select_for_update().filter(id=live_class_id).first()
+            if not lc:
+                return None
+
+            # Fence any in-flight DOPs for this LiveClass to prevent delayed creation orphans
+            in_flight_dops = list(LiveClassDurableOperation.objects.select_for_update().filter(
+                live_class=lc,
+                status__in=[
+                    LiveClassDurableOperation.Status.IN_PROGRESS,
+                    LiveClassDurableOperation.Status.OUTCOME_UNKNOWN
+                ]
+            ))
+            for dop in in_flight_dops:
+                dop.version += 1
+                dop.status = LiveClassDurableOperation.Status.COMPENSATION_REQUIRED
+                dop.error_message = "Cancelled by ZoomCancellationSagaWorker while creation was in flight."
+                dop.save(update_fields=['version', 'status', 'error_message', 'updated_at'])
+
+            # Level 3: Lock current ZoomMeetingRecord
+            zmr = ZoomMeetingRecord.objects.select_for_update().filter(
+                live_class=lc,
+                is_current=True
+            ).first()
+            if not zmr:
+                if in_flight_dops:
+                    return {
+                        "live_class_id": lc.id,
+                        "meeting_id": None,
+                        "worker_id": str(worker_id),
+                        "lease_expires": lease_expires.isoformat(),
+                        "already_finalized": False,
+                        "fenced_in_flight_dops": [d.id for d in in_flight_dops]
+                    }
+                return None
+
+            if zmr.state in ('COMPENSATED', 'RELEASED'):
+                return {"already_finalized": True, "meeting_id": zmr.zoom_meeting_id}
+
+            zmr.state = 'COMPENSATING'
+            zmr.historical_live_class_id = lc.id
+            zmr.live_class = None
+            zmr.owner_token = worker_id
+            zmr.lease_worker = worker_id
+            zmr.lease_expires_at = lease_expires
+            zmr.version += 1
+            zmr.save(update_fields=['state', 'historical_live_class_id', 'live_class', 'owner_token',
+                                    'lease_worker', 'lease_expires_at', 'version', 'updated_at'])
+
+            return {
+                "live_class_id": lc.id,
+                "zmr_id": zmr.id,
+                "meeting_id": zmr.zoom_meeting_id,
+                "worker_id": str(worker_id),
+                "lease_expires": lease_expires.isoformat(),
+                "already_finalized": False
+            }
+
+    @classmethod
+    def execute_remote_delete(cls, meeting_id: str, zoom_client=None) -> dict:
+        """
+        Executes external HTTP DELETE to Zoom. Runs strictly outside DB transaction locks.
+        Phase B.5 repair (B2): the result is classified from the actual client
+        response/exception type (never by message substrings) and carries the
+        ZoomCallOutcome needed to record evidence. Unconfirmed deletes are
+        returned, not raised, with confirmed=False.
+        """
+        if not meeting_id:
+            return {"status": None, "action": "no_remote_meeting", "confirmed": True, "outcome": None, "body": {}}
+        outcome = zoom_delete_outcome(meeting_id, zoom_client=zoom_client)
+        return {"status": outcome.http_status, "action": outcome.result, "confirmed": outcome.confirmed_gone,
+                "outcome": outcome, "body": outcome.as_dict()}
+
+    @classmethod
+    def persist_cancellation_evidence(cls, meeting_id: str, delete_result, worker_id: str = "",
+                                      dop_id: Optional[int] = None):
+        """
+        Records CANCELLATION_SAGA_DELETE evidence from the result of
+        execute_remote_delete(). HTTP statuses cannot be supplied by the caller.
+        """
+        outcome = delete_result.get("outcome") if isinstance(delete_result, dict) else delete_result
+        if not isinstance(outcome, ZoomCallOutcome):
+            raise TypeError("persist_cancellation_evidence requires the result of execute_remote_delete(); "
+                            "HTTP statuses cannot be supplied by the caller.")
+        if str(outcome.meeting_id) != str(meeting_id):
+            raise ValueError(f"Outcome is for meeting {outcome.meeting_id}, not {meeting_id}.")
+        return _record_evidence_from_outcome(outcome, "CANCELLATION_SAGA_DELETE", dop_id=dop_id,
+                                             worker_id=str(worker_id))
+
+    @classmethod
+    def _bound_reservation(cls, zmr, live_class_id):
+        """
+        The single reservation provably tied to THIS meeting record: same DOP, or else the
+        same class + host + generation (+ exact window when known). Never "any reservation of
+        the class". Returns None unless exactly one candidate exists.
+        """
+        held = [HostReservation.Status.ACTIVE, HostReservation.Status.PROVISIONAL,
+                HostReservation.Status.DRAINING, HostReservation.Status.MANUAL_REVIEW]
+        qs = HostReservation.objects.select_for_update().filter(
+            status__in=held, host_account_id=zmr.host_account_id, generation=zmr.generation)
+        if zmr.durable_operation_id:
+            qs = qs.filter(durable_operation_id=zmr.durable_operation_id)
+        elif live_class_id:
+            qs = qs.filter(live_class_id=live_class_id)
+        elif zmr.scheduled_start and zmr.scheduled_end:
+            qs = qs.filter(scheduled_start=zmr.scheduled_start, scheduled_end=zmr.scheduled_end)
+        else:
+            return None
+        if zmr.scheduled_start and zmr.scheduled_end:
+            qs = qs.filter(scheduled_start=zmr.scheduled_start, scheduled_end=zmr.scheduled_end)
+        candidates = list(qs[:2])
+        if len(candidates) != 1:
+            if candidates:
+                logger.warning(f"[CancellationSaga] Meeting {zmr.zoom_meeting_id}: {len(candidates)}+ candidate "
+                               f"reservations; none cancelled (held for manual review).")
+            return None
+        return candidates[0]
+
+    @classmethod
+    def finalize_cancellation(cls, live_class_id: Optional[int], worker_id: Optional[uuid.UUID] = None,
+                              replacement_meeting_id: Optional[str] = None) -> bool:
+        """
+        Release-closure B7: finalizes ONLY the meeting record this worker holds the lease on,
+        and cancels ONLY the reservation bound to that record. Returns False (changing
+        nothing) when the worker no longer owns the lease or the record belongs to another class.
+        """
+        if not worker_id:
+            raise ValueError("finalize_cancellation requires the worker_id that holds the lease.")
+        with transaction.atomic():
+            # L1: Lock LiveClass
+            lc = LiveClass.objects.select_for_update().filter(id=live_class_id).first() if live_class_id else None
+            # L3: the record leased by this worker
+            zmr = ZoomMeetingRecord.objects.select_for_update().filter(
+                lease_worker=worker_id, state='COMPENSATING').first()
+            if not zmr:
+                return False
+            if zmr.historical_live_class_id and live_class_id and zmr.historical_live_class_id != live_class_id:
+                return False
+            class_id = zmr.historical_live_class_id or live_class_id
+
+            # L5: only the reservation bound to this meeting record
+            res = cls._bound_reservation(zmr, class_id)
+
+            zmr.state = 'COMPENSATED'
+            zmr.live_class = None
+            zmr.is_current = False
+            zmr.lease_worker = None
+            zmr.lease_expires_at = None
+            zmr.version += 1
+            zmr.save(update_fields=['state', 'live_class', 'is_current', 'lease_worker', 'lease_expires_at',
+                                    'version', 'updated_at'])
+
+            if res:
+                res.status = HostReservation.Status.CANCELLED
+                res.release_reason = f"Cancelled via ZoomCancellationSagaWorker (meeting {zmr.zoom_meeting_id} deleted)"
+                res.save(update_fields=['status', 'release_reason', 'updated_at'])
+
+            if lc:
+                # Preserve replacement meeting if scheduled
+                if replacement_meeting_id:
+                    if lc.zoom_meeting_id != replacement_meeting_id:
+                        lc.zoom_meeting_id = replacement_meeting_id
+                        lc.save(update_fields=['zoom_meeting_id'])
+                elif str(lc.zoom_meeting_id) == str(zmr.zoom_meeting_id):
+                    lc.zoom_meeting_id = ""
+                    lc.meeting_url = ""
+                    lc.host_url = ""
+                    lc.save(update_fields=['zoom_meeting_id', 'meeting_url', 'host_url'])
+
+            return True
+
+    @classmethod
+    def run_watchdog_recovery(cls, stale_seconds: int = 60, zoom_client=None, lease_seconds: int = 120) -> int:
+        """
+        Release-closure B7: takes over only COMPENSATING records whose durable lease has
+        expired (or, for lease-less legacy rows, that are stale), by claiming the lease under
+        lock before any remote call. An unconfirmed delete releases the lease for the next
+        sweep and changes nothing else; finalization is fenced by that lease.
+        """
+        now = timezone.now()
+        stale_cutoff = now - datetime.timedelta(seconds=stale_seconds)
+        candidates = list(
+            ZoomMeetingRecord.objects.filter(state='COMPENSATING').filter(
+                models.Q(lease_expires_at__lte=now)
+                | models.Q(lease_expires_at__isnull=True, updated_at__lte=stale_cutoff)
+            ).values_list('id', 'historical_live_class_id')
+        )
+        recovered = 0
+        for zmr_id, lc_id in candidates:
+            token = uuid.uuid4()
+            with transaction.atomic():
+                if lc_id:
+                    LiveClass.objects.select_for_update().filter(id=lc_id).first()          # L1
+                zmr = ZoomMeetingRecord.objects.select_for_update().filter(id=zmr_id).first()  # L3
+                takeover_now = timezone.now()
+                if (not zmr or zmr.state != 'COMPENSATING'
+                        or (zmr.lease_expires_at and zmr.lease_expires_at > takeover_now)
+                        or (zmr.lease_expires_at is None and zmr.updated_at > stale_cutoff)):
+                    continue
+                zmr.lease_worker = token
+                zmr.owner_token = token
+                zmr.lease_expires_at = takeover_now + datetime.timedelta(seconds=lease_seconds)
+                zmr.version += 1
+                zmr.save(update_fields=['lease_worker', 'owner_token', 'lease_expires_at', 'version', 'updated_at'])
+                meeting_id = zmr.zoom_meeting_id
+
+            delete_res = cls.execute_remote_delete(meeting_id, zoom_client=zoom_client)
+            confirmed = delete_res["confirmed"]
+            if confirmed and delete_res["outcome"] is not None:
+                try:
+                    cls.persist_cancellation_evidence(meeting_id, delete_res, worker_id="watchdog")
+                except EvidenceRejectedError as exc:
+                    logger.warning(f"[CancellationWatchdog] {exc}")
+                    confirmed = False
+            if not confirmed:
+                # Not confirmed gone: release our lease so the next sweep retries; nothing else changes.
+                ZoomMeetingRecord.objects.filter(id=zmr_id, lease_worker=token).update(lease_expires_at=timezone.now())
+                logger.warning(f"[CancellationWatchdog] Delete of meeting {meeting_id} not confirmed "
+                               f"({delete_res['action']}, HTTP {delete_res['status']}); left COMPENSATING.")
+                continue
+            if cls.finalize_cancellation(lc_id, worker_id=token):
+                recovered += 1
+                logger.info(f"[CancellationWatchdog] Recovered stale compensating meeting #{meeting_id}")
+
+        return recovered
+
+
+class QuarantinePeriodActiveError(Exception):
+    """Raised when quarantine resolution is attempted before the 15-minute grace period has elapsed."""
+    pass
+
+
+class ZoomQuarantineService:
+    """
+    Phase B.5 repair (B3). Quarantine resolution fails closed:
+    - only DOPs in a quarantine status (OUTCOME_UNKNOWN / COMPENSATION_REQUIRED),
+    - only after the full grace period measured from quarantined_at (no bypass flag),
+    - under L1 (LiveClass) -> L2 (DOP) -> L5 (HostReservation) locks with a lease
+      claim and version fencing between the remote checks and finalization,
+    - every known meeting id must answer HTTP 404 to two independent authenticated
+      GETs through the real Zoom client, and the host's meeting listing must
+      succeed and show nothing that could belong to this operation,
+    - finalization re-checks the persisted DUAL_GET evidence (bound to this DOP,
+      gathered after the grace period, fresh) before releasing anything.
+    Any probe failure, timeout, auth failure, ambiguous outcome or remaining
+    meeting raises and leaves the reservation held.
+    """
+
+    @classmethod
+    def verify_and_resolve_quarantine(cls, dop_id: int, zoom_client=None, worker_id=None) -> dict:
+        from courses.models import ZoomVerifiedEvidence
+
+        worker_id = worker_id or uuid.uuid4()
+        quarantine_statuses = LiveClassDurableOperation.QUARANTINE_STATUSES
+        held_statuses = [HostReservation.Status.PROVISIONAL, HostReservation.Status.MANUAL_REVIEW]
+
+        # Phase 1: lock, validate state/grace/lease, claim.
+        with transaction.atomic():
+            peek = LiveClassDurableOperation.objects.filter(id=dop_id).values('live_class_id').first()
+            if peek is None:
+                raise ValueError(f"DurableOperation #{dop_id} does not exist.")
+            lc_id = peek['live_class_id']
+            if lc_id:
+                LiveClass.objects.select_for_update().filter(id=lc_id).first()
+            dop = LiveClassDurableOperation.objects.select_for_update().get(id=dop_id)
+            if dop.status not in quarantine_statuses:
+                raise QuarantineStateError(f"DOP #{dop_id} is {dop.status}; only quarantined operations can be resolved.")
+            now = timezone.now()
+            if dop.lease_expires_at and dop.lease_expires_at > now and dop.lease_worker != worker_id:
+                raise ConcurrencyConflictError(f"DOP #{dop_id} is leased to {dop.lease_worker} until {dop.lease_expires_at}.")
+            quarantine_start = dop.quarantined_at or dop.updated_at
+            elapsed = (now - quarantine_start).total_seconds()
+            if elapsed < QUARANTINE_GRACE_SECONDS:
+                raise QuarantinePeriodActiveError(
+                    f"Quarantine active. {int(QUARANTINE_GRACE_SECONDS - elapsed)} seconds remaining in the "
+                    f"mandatory {QUARANTINE_GRACE_SECONDS // 60}-minute grace period.")
+            reservations = list(HostReservation.objects.select_for_update().filter(
+                durable_operation=dop, status__in=held_statuses))
+            dop.version += 1
+            dop.lease_worker = worker_id
+            dop.lease_expires_at = now + datetime.timedelta(seconds=RECOVERY_LEASE_SECONDS)
+            dop.save(update_fields=['version', 'lease_worker', 'lease_expires_at', 'updated_at'])
+            claim_version = dop.version
+            payload = dict(dop.payload or {})
+            response_payload = dict(dop.response_payload or {})
+            meeting_ids = sorted({str(m) for m in (
+                payload.get('meeting_id'), payload.get('zoom_meeting_id'),
+                response_payload.get('orphan_meeting_id')) if m})
+            host_ids = sorted(set(ZoomHostAccount.objects.filter(
+                id__in=[r.host_account_id for r in reservations]).values_list('zoom_user_id', flat=True)))
+
+        # Phase 2: remote verification with no locks held.
+        failures = []
+        for mid in meeting_ids:
+            for probe in (1, 2):
+                outcome = zoom_get_outcome(mid, zoom_client=zoom_client)
+                if outcome.result != ZoomCallOutcome.CONFIRMED_ABSENT:
+                    failures.append(f"meeting {mid} GET probe {probe}: {outcome.result} (HTTP {outcome.http_status})")
+                    break
+                try:
+                    _record_evidence_from_outcome(outcome, "DUAL_GET_QUARANTINE_VERIFICATION", dop_id=dop_id,
+                                                  worker_id=f"quarantine:{worker_id}")
+                except EvidenceRejectedError as exc:
+                    failures.append(str(exc))
+                    break
+
+        can_correlate = bool((payload.get('title') or payload.get('topic')) and payload.get('scheduled_start'))
+        if host_ids and (can_correlate or meeting_ids):
+            for host_user_id in host_ids:
+                try:
+                    meetings = _list_host_meetings(host_user_id, zoom_client=zoom_client)
+                except Exception as exc:
+                    failures.append(f"meeting listing for host {host_user_id} failed: {type(exc).__name__}")
+                    continue
+                blockers = _release_blocking_meetings(meetings, payload, meeting_ids)
+                if blockers:
+                    failures.append(f"host {host_user_id} still lists meeting(s) {blockers} that may belong to this operation")
+        elif not meeting_ids:
+            failures.append("no meeting id and no host/correlation data: remote state cannot be verified")
+
+        if failures:
+            with transaction.atomic():
+                dop = LiveClassDurableOperation.objects.select_for_update().get(id=dop_id)
+                if dop.version == claim_version and dop.lease_worker == worker_id:
+                    dop.version += 1
+                    dop.lease_worker = None
+                    dop.lease_expires_at = None
+                    dop.error_message = "Quarantine verification failed; host held: " + "; ".join(failures)
+                    dop.save(update_fields=['version', 'lease_worker', 'lease_expires_at', 'error_message', 'updated_at'])
+            raise QuarantineVerificationError(f"DOP #{dop_id} remains quarantined: " + "; ".join(failures))
+
+        # Phase 3: finalize under locks, re-checking claim and persisted evidence.
+        with transaction.atomic():
+            if lc_id:
+                LiveClass.objects.select_for_update().filter(id=lc_id).first()
+            dop = LiveClassDurableOperation.objects.select_for_update().get(id=dop_id)
+            if dop.version != claim_version or dop.lease_worker != worker_id or dop.status not in quarantine_statuses:
+                raise ConcurrencyConflictError(f"DOP #{dop_id} changed during quarantine verification; nothing released.")
+            now = timezone.now()
+            evidence_floor = max(quarantine_start + datetime.timedelta(seconds=QUARANTINE_GRACE_SECONDS),
+                                 now - datetime.timedelta(seconds=EVIDENCE_FRESHNESS_SECONDS))
+            for mid in meeting_ids:
+                probes = ZoomVerifiedEvidence.objects.filter(
+                    meeting_id=mid, dop_id=dop.id, evidence_type="DUAL_GET_QUARANTINE_VERIFICATION",
+                    http_status=404, verified_at__gte=evidence_floor).count()
+                if probes < 2:
+                    raise QuarantineVerificationError(
+                        f"DOP #{dop_id}: meeting {mid} lacks two fresh, bound 404 probes ({probes}); host held.")
+            dop.status = LiveClassDurableOperation.Status.COMPENSATED
+            dop.version += 1
+            dop.lease_worker = None
+            dop.lease_expires_at = None
+            dop.error_message = f"Quarantine resolved: verified absent {meeting_ids or '(host listing clear)'}."
+            dop.save(update_fields=['status', 'version', 'lease_worker', 'lease_expires_at', 'error_message', 'updated_at'])
+            released = []
+            for res in HostReservation.objects.select_for_update().filter(durable_operation=dop, status__in=held_statuses):
+                res.status = HostReservation.Status.RELEASED
+                res.release_reason = "Quarantine resolved: dual GET 404 verified and host listing clear."
+                res.save(update_fields=['status', 'release_reason', 'updated_at'])
+                released.append(res.id)
+            ZoomLifecycleOutbox.objects.create(
+                aggregate_id=dop.live_class_id or dop.id,
+                event_type="TEARDOWN_QUARANTINE_VERIFIED",
+                status=ZoomLifecycleOutbox.Status.COMPLETED,
+                payload={"meeting_ids": meeting_ids, "dop_id": dop.id, "released_reservations": released}
+            )
+
+        return {"status": "RESOLVED", "meeting_ids": meeting_ids, "dop_id": dop_id, "released_reservations": released}
+
+
+def recover_crashed_provision_dop(dop_id: int, zoom_client=None, stale_seconds: int = 60,
+                                  worker_id=None) -> Dict[str, Any]:
+    """
+    Phase B.5 repair (B4). Recovers a provisioning operation whose worker crashed
+    after (possibly) sending CREATE but before Phase 3 persisted the result.
+
+    - Refuses while the provisioning lease is active (or, for legacy DOPs without
+      a lease, until updated_at is older than stale_seconds), then takes its own
+      lease and bumps the version so a late Phase 3 of the crashed worker fences.
+    - Lists the host's meetings through the real client (a LIST of
+      {'meeting_id', 'topic', 'start_time', 'duration', 'created_at', ...}) and
+      attributes a meeting to this operation only by full correlation (topic +
+      start + duration + created after the DOP + not owned by any DB record).
+    - Releases the host only after a CONFIRMED delete (HTTP 204, or 404) of the
+      single correlated meeting. A failed listing, no correlated meeting (absence
+      in a listing is not proof), several candidates, or an unconfirmed delete
+      all leave the reservation held (MANUAL_REVIEW) and the DOP quarantined
+      (OUTCOME_UNKNOWN); an unconfirmed delete also enqueues a durable teardown.
+    - Finalization re-checks that this worker still owns the claim.
+    """
+    worker_id = worker_id or uuid.uuid4()
+    now = timezone.now()
+
+    # Phase 1: claim under L1 -> L2 -> L5 locks.
+    with transaction.atomic():
+        peek = LiveClassDurableOperation.objects.filter(id=dop_id).values('live_class_id').first()
+        if peek is None:
+            raise ValueError(f"DurableOperation #{dop_id} does not exist.")
+        lc_id = peek['live_class_id']
+        if lc_id:
+            LiveClass.objects.select_for_update().filter(id=lc_id).first()
+        dop = LiveClassDurableOperation.objects.select_for_update().get(id=dop_id)
+        if dop.status not in (LiveClassDurableOperation.Status.IN_PROGRESS, LiveClassDurableOperation.Status.OUTCOME_UNKNOWN):
+            return {"status": "ALREADY_RESOLVED", "dop_status": dop.status}
+        if dop.lease_expires_at and dop.lease_expires_at > now:
+            raise ConcurrencyConflictError(f"DOP #{dop_id} lease is still active until {dop.lease_expires_at}")
+        if dop.lease_expires_at is None and (now - dop.updated_at).total_seconds() < stale_seconds:
+            raise ConcurrencyConflictError(f"DOP #{dop_id} has no lease and was updated less than {stale_seconds}s ago")
+        res = HostReservation.objects.select_for_update().filter(
+            durable_operation=dop,
+            status__in=[HostReservation.Status.PROVISIONAL, HostReservation.Status.MANUAL_REVIEW]
+        ).first()
+        dop.version += 1
+        dop.lease_worker = worker_id
+        dop.lease_expires_at = now + datetime.timedelta(seconds=RECOVERY_LEASE_SECONDS)
+        dop.save(update_fields=['version', 'lease_worker', 'lease_expires_at', 'updated_at'])
+        claim_version = dop.version
+        res_id = res.id if res else None
+        host_user_id = (ZoomHostAccount.objects.filter(id=res.host_account_id)
+                        .values_list('zoom_user_id', flat=True).first() if res else None)
+        payload = dict(dop.payload or {})
+        dop_created_at = dop.created_at
+
+    # Phase 2: remote inspection and teardown with no locks held.
+    hold_reason = None
+    orphan_meeting_id = None
+    outcome = None
+    if not host_user_id:
+        hold_reason = "no held host reservation to inspect"
+    else:
+        try:
+            meetings = _list_host_meetings(host_user_id, zoom_client=zoom_client)
+        except Exception as exc:
+            hold_reason = f"host meeting listing failed ({type(exc).__name__}: {exc})"
+        else:
+            candidates = _orphan_deletion_candidates(meetings, payload, dop_created_at)
+            if len(candidates) > 1:
+                hold_reason = f"{len(candidates)} correlated meetings {candidates}; refusing to choose one"
+            elif not candidates:
+                hold_reason = ("no correlated meeting visible; absence from one listing is not proof, "
+                               "held for quarantine verification")
+            else:
+                orphan_meeting_id = candidates[0]
+                outcome = zoom_delete_outcome(orphan_meeting_id, zoom_client=zoom_client)
+                if outcome.confirmed_gone:
+                    try:
+                        _record_evidence_from_outcome(outcome, "CRASH_RECOVERY_TEARDOWN", dop_id=dop_id,
+                                                      worker_id=f"crash_recovery:{worker_id}")
+                    except EvidenceRejectedError as exc:
+                        # Typically: our claim was taken over. Phase 3's fencing check decides; never release here.
+                        hold_reason = f"teardown evidence rejected ({exc})"
+                else:
+                    hold_reason = (f"delete of orphan meeting {orphan_meeting_id} not confirmed "
+                                   f"({outcome.result}, HTTP {outcome.http_status})")
+
+    # Phase 3: finalize only if this worker still owns the claim.
+    with transaction.atomic():
+        if lc_id:
+            LiveClass.objects.select_for_update().filter(id=lc_id).first()
+        dop = LiveClassDurableOperation.objects.select_for_update().get(id=dop_id)
+        if dop.version != claim_version or dop.lease_worker != worker_id:
+            raise ConcurrencyConflictError(f"DOP #{dop_id} recovery claim was lost; nothing finalized.")
+        res = HostReservation.objects.select_for_update().filter(id=res_id).first() if res_id else None
+        dop.version += 1
+        dop.lease_worker = None
+        dop.lease_expires_at = None
+        if orphan_meeting_id:
+            dop.response_payload = {**(dop.response_payload or {}), "orphan_meeting_id": orphan_meeting_id}
+
+        if hold_reason is None:
+            dop.status = LiveClassDurableOperation.Status.COMPENSATED
+            dop.error_message = (f"Recovered from worker crash: orphan meeting {orphan_meeting_id} deletion "
+                                 f"confirmed (HTTP {outcome.http_status}).")
+            dop.save(update_fields=['status', 'version', 'lease_worker', 'lease_expires_at',
+                                    'response_payload', 'error_message', 'updated_at'])
+            if res and res.status in (HostReservation.Status.PROVISIONAL, HostReservation.Status.MANUAL_REVIEW):
+                res.status = HostReservation.Status.CANCELLED
+                res.release_reason = (f"Crash recovery: orphan meeting {orphan_meeting_id} deletion confirmed "
+                                      f"(HTTP {outcome.http_status}).")
+                res.save(update_fields=['status', 'release_reason', 'updated_at'])
+            return {"status": "RECOVERED", "orphan_deleted": orphan_meeting_id, "dop_id": dop_id,
+                    "http_status": outcome.http_status}
+
+        dop.status = LiveClassDurableOperation.Status.OUTCOME_UNKNOWN
+        dop.error_message = f"Crash recovery held: {hold_reason}"
+        dop.save(update_fields=['status', 'version', 'lease_worker', 'lease_expires_at',
+                                'response_payload', 'error_message', 'updated_at'])
+        if orphan_meeting_id:
+            ZoomLifecycleOutbox.objects.create(
+                aggregate_id=lc_id or dop.id,
+                event_type="ZOOM_MEETING_COMMIT_FAILED_NEEDS_TEARDOWN",
+                status=ZoomLifecycleOutbox.Status.PENDING,
+                payload={"meeting_id": orphan_meeting_id, "dop_id": dop_id, "reason": "crash_recovery_delete_unconfirmed"}
+            )
+        if res and res.status == HostReservation.Status.PROVISIONAL:
+            res.status = HostReservation.Status.MANUAL_REVIEW
+            res.release_reason = f"Held by crash recovery: {hold_reason}"
+            res.save(update_fields=['status', 'release_reason', 'updated_at'])
+        return {"status": "HELD", "reason": hold_reason, "orphan_meeting_id": orphan_meeting_id, "dop_id": dop_id}
+
+
+def run_provisioning_watchdog(zoom_client=None, limit: int = 50, stale_seconds: int = 120) -> Dict[str, Any]:
+    """
+    Phase B.5 runtime wiring for B3/B4 (Celery beat task + management command).
+
+    1. Crash recovery: ZOOM_PROVISION operations still IN_PROGRESS whose provisioning
+       lease has expired (or, for legacy rows without a lease, that are stale).
+    2. Quarantine resolution: operations in a quarantine status whose grace period,
+       measured from quarantined_at, has elapsed.
+
+    It never releases a host itself. Each operation goes through
+    recover_crashed_provision_dop / verify_and_resolve_quarantine, which release only
+    after a confirmed teardown or verified absence; any error is isolated to that
+    operation, logged, and leaves its reservation held for the next sweep.
+    """
+    now = timezone.now()
+    report = {"recovered": [], "recovery_held": [], "resolved": [], "quarantine_held": [], "errors": []}
+
+    crashed = list(
+        LiveClassDurableOperation.objects.filter(
+            operation_type=LiveClassDurableOperation.OperationType.ZOOM_PROVISION,
+            status=LiveClassDurableOperation.Status.IN_PROGRESS,
+        ).filter(
+            models.Q(lease_expires_at__lte=now)
+            | models.Q(lease_expires_at__isnull=True, updated_at__lte=now - datetime.timedelta(seconds=stale_seconds))
+        ).order_by('id').values_list('id', flat=True)[:limit]
+    )
+    for dop_id in crashed:
+        try:
+            result = recover_crashed_provision_dop(dop_id, zoom_client=zoom_client, stale_seconds=stale_seconds)
+            bucket = "recovered" if result.get("status") == "RECOVERED" else "recovery_held"
+            report[bucket].append({"dop_id": dop_id, **{k: v for k, v in result.items() if k != "dop_id"}})
+        except Exception as exc:
+            logger.warning(f"[ZoomWatchdog] Crash recovery of DOP #{dop_id} left held: {type(exc).__name__}: {exc}")
+            report["errors"].append({"dop_id": dop_id, "stage": "recovery", "error": f"{type(exc).__name__}: {exc}"})
+
+    grace_cutoff = now - datetime.timedelta(seconds=QUARANTINE_GRACE_SECONDS)
+    quarantined = list(
+        LiveClassDurableOperation.objects.filter(
+            status__in=LiveClassDurableOperation.QUARANTINE_STATUSES,
+        ).filter(
+            models.Q(quarantined_at__lte=grace_cutoff)
+            | models.Q(quarantined_at__isnull=True, updated_at__lte=grace_cutoff)
+        ).exclude(
+            lease_expires_at__gt=now
+        ).order_by('id').values_list('id', flat=True)[:limit]
+    )
+    for dop_id in quarantined:
+        try:
+            result = ZoomQuarantineService.verify_and_resolve_quarantine(dop_id, zoom_client=zoom_client)
+            report["resolved"].append({"dop_id": dop_id, "released_reservations": result.get("released_reservations", [])})
+        except (QuarantineVerificationError, QuarantinePeriodActiveError, QuarantineStateError,
+                ConcurrencyConflictError) as exc:
+            report["quarantine_held"].append({"dop_id": dop_id, "reason": f"{type(exc).__name__}: {exc}"})
+        except Exception as exc:
+            logger.warning(f"[ZoomWatchdog] Quarantine resolution of DOP #{dop_id} left held: {type(exc).__name__}: {exc}")
+            report["errors"].append({"dop_id": dop_id, "stage": "quarantine", "error": f"{type(exc).__name__}: {exc}"})
+
+    # 3. Cancellation compensation (release-closure B7): COMPENSATING meeting records whose
+    #    durable lease expired -- e.g. an ambiguous cancel_zoom_meeting DELETE. Finalization
+    #    is lease-fenced and cancels only the reservation bound to that meeting record.
+    report["cancellations_finalized"] = []
+    try:
+        finalized = ZoomCancellationSagaWorker.run_watchdog_recovery(stale_seconds=stale_seconds, zoom_client=zoom_client)
+        report["cancellations_finalized"] = [finalized] if finalized else []
+    except Exception as exc:
+        logger.warning(f"[ZoomWatchdog] Cancellation compensation sweep failed (records stay held): {exc}")
+        report["errors"].append({"stage": "cancellation", "error": f"{type(exc).__name__}: {exc}"})
+
+    if any(report.values()):
+        logger.info(f"[ZoomWatchdog] {({k: len(v) for k, v in report.items()})}")
+    return report

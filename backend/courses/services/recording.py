@@ -61,32 +61,73 @@ class ZoomRecordingService:
           message = f"v0:{timestamp}:{raw_body_utf8}"
           hash = hmac_sha256(secret, message).hexdigest()
           expected_signature = f"v0={hash}"
-        Also validates that timestamp is within 300 seconds (5 minutes) of current time.
+
+        Enforces:
+        - Strict signature header format validation: ^v0=[a-fA-F0-9]{64}$
+        - Strict timestamp bounds & overflow protection: positive float, within 300s clock skew
+        - Candidate secret resolution: ACTIVE secret + RETIRED secrets within grace period
+        - Constant-time verification with hmac.compare_digest
+        - Strict rejection when no secret is configured (never bypassed in DEBUG)
         """
+        import datetime
+        import math
+
         if not signature_header or not timestamp_header:
             logger.warning("[ZoomWebhook] Missing signature or timestamp header.")
             return False
 
+        # 1. Format validation: must match ^v0=[a-fA-F0-9]{64}$
+        if not isinstance(signature_header, str) or not re.match(r"^v0=[a-fA-F0-9]{64}$", signature_header.strip()):
+            logger.warning("[ZoomWebhook] Malformed signature header format.")
+            return False
+        signature_header = signature_header.strip()
+
+        # 2. Timestamp validation and overflow guard
         try:
             ts = float(timestamp_header)
+            if math.isnan(ts) or math.isinf(ts) or ts <= 0:
+                logger.warning(f"[ZoomWebhook] Invalid numeric timestamp: {timestamp_header}")
+                return False
             if ts > 1e11:
                 ts = ts / 1000.0
+            if not (1e9 <= ts <= 2e10):
+                logger.warning(f"[ZoomWebhook] Timestamp out of reasonable epoch bounds: {ts}")
+                return False
             now = timezone.now().timestamp()
             if abs(now - ts) > 300:
                 logger.warning(f"[ZoomWebhook] Timestamp skew rejected: received={ts}, now={now}")
                 return False
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             logger.warning(f"[ZoomWebhook] Invalid timestamp header: {timestamp_header}")
             return False
 
-        webhook_secret = getattr(settings, 'ZOOM_WEBHOOK_SECRET_TOKEN', '') or os.environ.get('ZOOM_WEBHOOK_SECRET_TOKEN', '')
-        if not webhook_secret:
-            if getattr(settings, 'DEBUG', False):
-                logger.warning("[ZoomWebhook] ZOOM_WEBHOOK_SECRET_TOKEN not set; allowing in DEBUG.")
-                return True
+        # 3. Resolve candidate secrets (ACTIVE vault secret + RETIRED within grace period, with env fallback)
+        candidate_secrets = []
+        try:
+            from courses.models import ZoomWebhookVault
+            # Active secrets
+            active_secrets = list(ZoomWebhookVault.objects.filter(status=ZoomWebhookVault.Status.ACTIVE).values_list('secret_token', flat=True))
+            candidate_secrets.extend(active_secrets)
+            # Retired secrets within 24h grace period
+            cutoff = timezone.now() - datetime.timedelta(seconds=86400)
+            retired_secrets = list(ZoomWebhookVault.objects.filter(
+                status=ZoomWebhookVault.Status.RETIRED,
+                retired_at__gte=cutoff
+            ).values_list('secret_token', flat=True))
+            candidate_secrets.extend(retired_secrets)
+        except Exception:
+            # Table might not exist yet during migration
+            pass
+
+        cfg_secret = getattr(settings, 'ZOOM_WEBHOOK_SECRET_TOKEN', '') or os.environ.get('ZOOM_WEBHOOK_SECRET_TOKEN', '')
+        if cfg_secret and cfg_secret not in candidate_secrets:
+            candidate_secrets.append(cfg_secret)
+
+        if not candidate_secrets:
             logger.error("[ZoomWebhook] ZOOM_WEBHOOK_SECRET_TOKEN is not configured; rejecting request.")
             return False
 
+        # 4. Construct payload message
         if isinstance(raw_body_bytes, str):
             raw_body_bytes = raw_body_bytes.encode('utf-8')
 
@@ -96,10 +137,15 @@ class ZoomRecordingService:
             raw_body_str = raw_body_bytes.decode('latin-1')
 
         message = f"v0:{timestamp_header}:{raw_body_str}".encode('utf-8')
-        computed_hash = hmac.new(webhook_secret.encode('utf-8'), message, hashlib.sha256).hexdigest()
-        expected_signature = f"v0={computed_hash}"
 
-        return hmac.compare_digest(expected_signature, signature_header)
+        # 5. Constant-time verification across candidate secrets
+        for secret in candidate_secrets:
+            computed_hash = hmac.new(secret.encode('utf-8'), message, hashlib.sha256).hexdigest()
+            expected_signature = f"v0={computed_hash}"
+            if hmac.compare_digest(expected_signature, signature_header):
+                return True
+
+        return False
 
     @classmethod
     def find_live_class_for_zoom_meeting(cls, meeting_id, meeting_uuid=''):
@@ -515,8 +561,20 @@ class ZoomRecordingService:
     def validate_zoom_webhook_challenge(cls, plain_token):
         """
         Responds to Zoom's endpoint.url_validation challenge event using HMAC-SHA256.
+        Resolves active secret from ZoomWebhookVault if present, falling back to settings/environment.
         """
-        webhook_secret = getattr(settings, 'ZOOM_WEBHOOK_SECRET_TOKEN', '') or os.environ.get('ZOOM_WEBHOOK_SECRET_TOKEN', '')
+        webhook_secret = None
+        try:
+            from courses.models import ZoomWebhookVault
+            vault_sec = ZoomWebhookVault.objects.filter(status=ZoomWebhookVault.Status.ACTIVE).first()
+            if vault_sec:
+                webhook_secret = vault_sec.secret_token
+        except Exception:
+            pass
+
+        if not webhook_secret:
+            webhook_secret = getattr(settings, 'ZOOM_WEBHOOK_SECRET_TOKEN', '') or os.environ.get('ZOOM_WEBHOOK_SECRET_TOKEN', '')
+
         if not webhook_secret:
             from django.core.exceptions import ImproperlyConfigured
             logger.error('[ZoomWebhook] ZOOM_WEBHOOK_SECRET_TOKEN is not configured; cannot validate endpoint challenge.')
