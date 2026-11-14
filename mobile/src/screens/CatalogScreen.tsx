@@ -2,7 +2,6 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, TextInput, ActivityIndicator, RefreshControl, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import client from '../api/client';
-import { fetchAppleProducts, getCourseAppleSku, Product } from '../api/appleIap';
 import Icon from '../components/Icon';
 import CourseCard from '../components/CourseCard';
 import EmptyState from '../components/EmptyState';
@@ -20,7 +19,6 @@ const FILTERS = [
 export default function CatalogScreen({ navigation }: any) {
   const [courses, setCourses] = useState<any[]>([]);
   const [enrolledIds, setEnrolledIds] = useState<Set<number>>(new Set());
-  const [iapProducts, setIapProducts] = useState<Record<string, Product>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(false);
@@ -48,20 +46,6 @@ export default function CatalogScreen({ navigation }: any) {
   useEffect(() => {
     fetchCatalogData();
   }, []);
-
-  useEffect(() => {
-    if (Platform.OS !== 'ios' || courses.length === 0) return;
-    let isCancelled = false;
-    const skus = courses.map((c) => getCourseAppleSku(c)).filter(Boolean);
-    fetchAppleProducts(skus).then((map) => {
-      if (!isCancelled) {
-        setIapProducts(map);
-      }
-    });
-    return () => {
-      isCancelled = true;
-    };
-  }, [courses]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -130,7 +114,6 @@ export default function CatalogScreen({ navigation }: any) {
             thumbnail={item.thumbnail}
             moduleCount={item.modules?.length}
             price={enrolledIds.has(item.id) ? undefined : item.price}
-            localizedPrice={enrolledIds.has(item.id) ? undefined : iapProducts[getCourseAppleSku(item)]?.localizedPrice}
             isCompleted={false}
             onPress={() => navigation.navigate('CourseDetails', { courseId: item.id })}
           />
@@ -144,6 +127,12 @@ export default function CatalogScreen({ navigation }: any) {
               icon="alert-circle"
               title="Couldn't load courses"
               message="Something went wrong reaching the catalog. Pull down to try again."
+            />
+          ) : filter === 'LIVE' ? (
+            <EmptyState
+              icon="video"
+              title="No live classes assigned"
+              message="When you are enrolled in an interactive batch, your live schedule will appear here."
             />
           ) : query || filter !== 'ALL' ? (
             <EmptyState icon="search" title="No matches" message="Try a different search term or filter." />

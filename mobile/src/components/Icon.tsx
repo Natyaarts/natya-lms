@@ -15,7 +15,8 @@ export type FeatherIconName =
   | 'volume-x' | 'calendar' | 'credit-card' | 'log-out' | 'x'
   | 'alert-circle' | 'film' | 'users' | 'edit-2' | 'shield' | 'refresh-cw'
   | 'file-text' | 'award' | 'video' | 'alert-triangle' | 'user-x' | 'trash-2'
-  | 'message-square' | 'message-circle' | 'send' | 'paperclip' | 'file' | 'image' | 'plus';
+  | 'message-square' | 'message-circle' | 'send' | 'paperclip' | 'file' | 'image' | 'plus'
+  | 'info' | 'hard-drive';
 
 type MaterialIconName = 'gauge';
 

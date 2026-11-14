@@ -305,7 +305,7 @@ export default function CustomVideoPlayer({
         trySeekInitial(initialPosition, duration || player.duration);
       }
     } else if (payload.status === 'error') {
-      if (onRefreshUrls && consecutiveErrorsRef.current < 2 && !isRefreshingRef.current) {
+      if (onRefreshUrls && !source.startsWith('file://') && consecutiveErrorsRef.current < 2 && !isRefreshingRef.current) {
         consecutiveErrorsRef.current += 1;
         performRefresh(true);
       }
@@ -385,7 +385,7 @@ export default function CustomVideoPlayer({
 
   // Timer lifecycle for proactive refresh
   useEffect(() => {
-    if (onRefreshUrls) {
+    if (onRefreshUrls && !source.startsWith('file://')) {
       scheduleProactiveRefresh(expiresIn || 900);
     }
     return () => {
@@ -395,7 +395,7 @@ export default function CustomVideoPlayer({
       }
       isRefreshingRef.current = false;
     };
-  }, [lessonKey, onRefreshUrls, expiresIn]);
+  }, [lessonKey, onRefreshUrls, expiresIn, source]);
 
   // Double check seek if initialPosition arrives after duration is already known
   useEffect(() => {

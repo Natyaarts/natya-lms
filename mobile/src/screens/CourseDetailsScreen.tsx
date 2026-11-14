@@ -20,16 +20,6 @@ import { colors, spacing, radius, typography, headerLayout } from '../theme';
 
 const FALLBACK_THUMB = 'https://images.unsplash.com/photo-1514320291840-2e0a9bf2a9ae?q=80&w=1470&auto=format&fit=crop';
 
-import {
-  fetchAppleProduct,
-  requestApplePurchase,
-  restorePurchases,
-  showRestoreFeedback,
-  subscribeIap,
-  recoverUnfinishedTransactions,
-  isUserCancellation,
-} from '../api/appleIap';
-
 // A module's completion fields are only non-null when its content is
 // actually unlocked for this user (see courses/serializers.py
 // ModuleSerializer.to_representation -- locked modules get
@@ -48,11 +38,6 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
   const [checkingPayment, setCheckingPayment] = useState(false);
   const [awaitingPayment, setAwaitingPayment] = useState(false);
   const [pendingPurchaseId, setPendingPurchaseId] = useState<number | null>(null);
-
-  // StoreKit (iOS IAP) states
-  const [iapProduct, setIapProduct] = useState<any>(null);
-  const [iapLoading, setIapLoading] = useState(false);
-  const [iapFetching, setIapFetching] = useState(Platform.OS === 'ios');
 
   const awaitingPaymentRef = useRef(awaitingPayment);
   awaitingPaymentRef.current = awaitingPayment;
@@ -157,89 +142,6 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
     };
   }, [courseId]);
 
-  const appleProductId = course?.apple_product_id || `com.natyaarts.academy.course.${courseId}`;
-
-  useEffect(() => {
-    let isMounted = true;
-    if (Platform.OS === 'ios') {
-      (async () => {
-        try {
-          if (isMounted && isMountedRef.current) setIapFetching(true);
-          const product = await fetchAppleProduct(appleProductId);
-          if (isMounted && isMountedRef.current) {
-            setIapProduct(product);
-          }
-        } catch (err) {
-          console.warn('Failed to fetch Apple StoreKit products:', err);
-          if (isMounted && isMountedRef.current) setIapProduct(null);
-        } finally {
-          if (isMounted && isMountedRef.current) setIapFetching(false);
-        }
-      })();
-    }
-    return () => {
-      isMounted = false;
-    };
-  }, [appleProductId]);
-
-  useEffect(() => {
-    if (Platform.OS !== 'ios') return;
-    let isMounted = true;
-
-    // 1. Register subscriber FIRST so any event emitted during recovery or startup is captured
-    const unsubscribe = subscribeIap({
-      onSuccess: async (_purchase, _resData) => {
-        if (!isMounted || !isMountedRef.current) return;
-        setIapLoading(false);
-        await fetchCourseDetails();
-        if (!isMounted || !isMountedRef.current) return;
-        Alert.alert(
-          'Course Unlocked! 🎉',
-          'Your Apple purchase was verified successfully. Enjoy your learning!',
-          [
-            {
-              text: 'Start Learning',
-              onPress: () => {
-                if (isMountedRef.current) {
-                  navigation.navigate('Learn', { courseId, isEnrolled: true });
-                }
-              },
-            },
-            { text: 'OK' },
-          ]
-        );
-      },
-      onError: (err: any) => {
-        if (!isMounted || !isMountedRef.current) return;
-        setIapLoading(false);
-        if (isUserCancellation(err)) {
-          return;
-        }
-        console.error('Apple purchase event error:', err);
-        const errMsg = err?.response?.data?.error || err?.message || 'Could not complete Apple In-App Purchase.';
-        if (isMountedRef.current) {
-          Alert.alert('Purchase Error', errMsg);
-        }
-      },
-    });
-
-    // 2. Start recovery AFTER subscriber is registered, and catch promise errors
-    recoverUnfinishedTransactions()
-      .then(({ recovered }) => {
-        if (isMounted && isMountedRef.current && recovered > 0) {
-          fetchCourseDetails();
-        }
-      })
-      .catch((err) => {
-        console.warn('[CourseDetailsScreen] recoverUnfinishedTransactions error:', err);
-      });
-
-    return () => {
-      isMounted = false;
-      unsubscribe();
-    };
-  }, [courseId]);
-
   if (loading || !course) {
     return (
       <View style={[styles.container, styles.centered]}>
@@ -250,63 +152,6 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
 
   const thumbUrl = resolveMediaUrl(course.thumbnail) || FALLBACK_THUMB;
   const owned = hasCourseAccess(course);
-
-  // iOS Apple StoreKit In-App Purchase Flow
-  const handleApplePurchase = async () => {
-    if (buying || iapLoading || iapFetching) return;
-    if (!iapProduct) {
-      Alert.alert(
-        'Product Unavailable',
-        'This course is currently not configured or available for purchase on the App Store.'
-      );
-      return;
-    }
-    setIapLoading(true);
-    try {
-      await requestApplePurchase(appleProductId);
-      // Asynchronous transaction fulfillment and UI alerts are handled by subscribeIap above.
-    } catch (err: any) {
-      if (isMountedRef.current) {
-        setIapLoading(false);
-      }
-      if (isUserCancellation(err)) {
-        return;
-      }
-      console.error('Apple purchase initiation error:', err);
-      const errMsg = err.response?.data?.error || err.message || 'Could not initiate Apple In-App Purchase.';
-      if (isMountedRef.current) {
-        Alert.alert('Purchase Error', errMsg);
-      }
-    }
-  };
-
-  // iOS Restore Purchases Flow
-  const handleRestorePurchases = async () => {
-    if (iapLoading) return;
-    setIapLoading(true);
-    try {
-      const result = await restorePurchases();
-      if (result.newlyRestoredCount > 0 || result.previouslyVerifiedFinishedCount > 0) {
-        await fetchCourseDetails();
-      }
-      if (isMountedRef.current) {
-        showRestoreFeedback(result, () => {
-          if (isMountedRef.current) {
-            fetchCourseDetails();
-          }
-        });
-      }
-    } catch (err: any) {
-      console.error('Failed to restore purchases:', err);
-      if (isMountedRef.current) {
-        Alert.alert('Restore Error', err.message || 'Could not restore purchases from Apple Store. Please try again.');
-      }
-    } finally {
-      if (isMountedRef.current) {
-        setIapLoading(false);
-      }
-    }
-  };
 
   // Android & Web Razorpay payment flow (preserved untouched)
   const handleBuyCourse = async () => {
@@ -374,14 +219,8 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
           <Text style={styles.title}>{course.title}</Text>
 
           <View style={styles.metaRow}>
-            {!owned && (
-              Platform.OS === 'ios' ? (
-                iapProduct?.localizedPrice ? (
-                  <Text style={styles.price}>{iapProduct.localizedPrice}</Text>
-                ) : null
-              ) : (
-                <Text style={styles.price}>₹{course.price}</Text>
-              )
+            {!owned && Platform.OS !== 'ios' && (
+              <Text style={styles.price}>₹{course.price}</Text>
             )}
             {typeof course.total_module_count === 'number' && course.total_module_count > 0 && (
               <Text style={typography.meta}>
@@ -482,54 +321,13 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
             <Text style={styles.primaryButtonText}>Go to Course</Text>
           </TouchableOpacity>
         ) : Platform.OS === 'ios' ? (
-          <View style={styles.iosPurchaseContainer}>
-            <TouchableOpacity
-              style={[
-                styles.primaryButton,
-                (iapLoading || buying || iapFetching || !iapProduct) && styles.disabledButton,
-              ]}
-              onPress={handleApplePurchase}
-              disabled={iapLoading || buying || iapFetching || !iapProduct}
-              accessibilityRole="button"
-              accessibilityLabel={
-                iapFetching
-                  ? "Checking App Store availability"
-                  : iapProduct
-                  ? `Unlock course for ${iapProduct.localizedPrice}`
-                  : "Course unavailable for purchase on App Store"
-              }
-            >
-              {iapLoading ? (
-                <ActivityIndicator color={colors.textInverse} size="small" />
-              ) : iapFetching ? (
-                <>
-                  <ActivityIndicator color={colors.textInverse} size="small" />
-                  <Text style={styles.primaryButtonText}>Checking App Store...</Text>
-                </>
-              ) : iapProduct ? (
-                <>
-                  <Icon name="credit-card" size={16} color={colors.textInverse} />
-                  <Text style={styles.primaryButtonText}>
-                    Unlock Course ({iapProduct.localizedPrice})
-                  </Text>
-                </>
-              ) : (
-                <>
-                  <Icon name="alert-circle" size={16} color={colors.textInverse} />
-                  <Text style={styles.primaryButtonText}>Unavailable on App Store</Text>
-                </>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.restoreButton}
-              onPress={handleRestorePurchases}
-              disabled={iapLoading || iapFetching}
-              accessibilityRole="button"
-              accessibilityLabel="Restore Purchases"
-            >
-              <Text style={styles.restoreButtonText}>Restore Purchases</Text>
-            </TouchableOpacity>
+          <View style={styles.iosInfoContainer}>
+            <View style={styles.iosInfoIconWrap}>
+              <Icon name="info" size={18} color={colors.accent} />
+            </View>
+            <Text style={styles.iosInfoText}>
+              Enrollment for this course is completed through the Natya Academy website. Once enrolled, your full course and live sessions will unlock here automatically.
+            </Text>
           </View>
         ) : (
           <TouchableOpacity
@@ -685,19 +483,23 @@ const styles = StyleSheet.create({
     ...typography.meta,
     color: colors.textSecondary,
   },
-  iosPurchaseContainer: {
+  iosInfoContainer: {
     width: '100%',
+    flexDirection: 'row',
     alignItems: 'center',
+    backgroundColor: 'rgba(250, 204, 21, 0.08)',
+    borderColor: 'rgba(250, 204, 21, 0.25)',
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: spacing.md,
   },
-  restoreButton: {
-    marginTop: spacing.sm,
-    paddingVertical: spacing.xs,
-    paddingHorizontal: spacing.md,
+  iosInfoIconWrap: {
+    marginRight: spacing.sm,
   },
-  restoreButtonText: {
+  iosInfoText: {
     ...typography.meta,
-    color: colors.accent,
-    fontWeight: '600',
-    textAlign: 'center',
+    color: colors.textSecondary,
+    flex: 1,
+    lineHeight: 18,
   },
 });

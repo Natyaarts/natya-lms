@@ -20,6 +20,7 @@ import AssessmentAttemptScreen from './src/screens/AssessmentAttemptScreen';
 import AttemptHistoryScreen from './src/screens/AttemptHistoryScreen';
 import AssignmentScreen from './src/screens/AssignmentScreen';
 import LiveClassesScreen from './src/screens/LiveClassesScreen';
+import DownloadsScreen from './src/screens/DownloadsScreen';
 import SubscriptionScreen from './src/screens/SubscriptionScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
 import CertificatesScreen from './src/screens/CertificatesScreen';
@@ -241,6 +242,7 @@ function App() {
           <Stack.Screen name="AttemptHistory" component={AttemptHistoryScreen} />
           <Stack.Screen name="Assignment" component={AssignmentScreen} />
           <Stack.Screen name="LiveClasses" component={LiveClassesScreen} />
+          <Stack.Screen name="Downloads" component={DownloadsScreen} />
           <Stack.Screen name="Subscription" component={SubscriptionScreen} />
           <Stack.Screen name="Notifications" component={NotificationsScreen} />
           <Stack.Screen name="Certificates" component={CertificatesScreen} />

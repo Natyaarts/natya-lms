@@ -2,10 +2,17 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Linking, Image, Alert, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import client, { resolveMediaUrl } from '../api/client';
-import { fetchAppleProduct, getCourseAppleSku, Product } from '../api/appleIap';
 import CustomVideoPlayer, { AudioTrackOption } from '../components/CustomVideoPlayer';
 import Icon from '../components/Icon';
 import ProgressBar from '../components/ProgressBar';
+import {
+  getDownloadedLesson,
+  getDownloadedLessonsForCourse,
+  startLessonDownload,
+  deleteDownloadedLesson,
+  queueOfflineProgress,
+  syncOfflineProgress,
+} from '../services/offlineStorage';
 import { colors, spacing, radius, typography, headerLayout } from '../theme';
 
 const FALLBACK_THUMB = 'https://images.unsplash.com/photo-1514320291840-2e0a9bf2a9ae?q=80&w=1470&auto=format&fit=crop';
@@ -43,13 +50,14 @@ const LANGUAGE_NAME_MAP: Record<string, string> = {
 };
 
 export default function LearnScreen({ route, navigation }: any) {
-  const { courseId, isEnrolled } = route.params;
+  const { courseId, isEnrolled, initialLessonId } = route.params;
   const [course, setCourse] = useState<any>(null);
   const [activeLesson, setActiveLesson] = useState<any>(null);
-  const [iapProduct, setIapProduct] = useState<Product | null>(null);
   const [loading, setLoading] = useState(true);
   const [marking, setMarking] = useState(false);
   const [savedPosition, setSavedPosition] = useState<number>(0);
+  const [downloadingMap, setDownloadingMap] = useState<Record<number, number>>({});
+  const [downloadedSet, setDownloadedSet] = useState<Set<number>>(new Set());
   const activeProgressLessonIdRef = useRef<number | null>(null);
 
   // Playback authorization state for active lesson
@@ -82,38 +90,86 @@ export default function LearnScreen({ route, navigation }: any) {
   const positionRef = useRef({ lessonId: null as number | null, position: 0, duration: 0 });
   const lastSavedRef = useRef(0);
 
+  const refreshDownloadedStatus = useCallback(async () => {
+    if (!courseId) return;
+    try {
+      const offlineList = await getDownloadedLessonsForCourse(courseId);
+      setDownloadedSet(new Set<number>(offlineList.map((l) => l.lessonId)));
+    } catch (err) {
+      console.warn('Could not refresh downloaded status:', err);
+    }
+  }, [courseId]);
+
   const fetchCourse = async () => {
     try {
       const res = await client.get(`courses/${courseId}/`);
       setCourse(res.data);
-      if (isEnrolled && res.data.modules?.length > 0 && res.data.modules[0].lessons?.length > 0) {
-        setActiveLesson(res.data.modules[0].lessons[0]);
+      if (isEnrolled && res.data.modules?.length > 0) {
+        let target = null;
+        if (initialLessonId) {
+          for (const m of res.data.modules) {
+            const found = m.lessons?.find((l: any) => l.id === initialLessonId);
+            if (found) {
+              target = found;
+              break;
+            }
+          }
+        }
+        setActiveLesson(target || res.data.modules[0].lessons?.[0] || null);
       }
     } catch (err) {
-      console.error(err);
+      console.warn('Network error fetching course, checking offline storage:', err);
+      // Offline fallback: load from sandboxed storage for airplane-mode playback
+      try {
+        const offlineLessons = await getDownloadedLessonsForCourse(courseId);
+        if (offlineLessons.length > 0) {
+          const moduleMap = new Map<string, any[]>();
+          for (const l of offlineLessons) {
+            const modTitle = l.moduleTitle || 'Downloaded Lessons';
+            if (!moduleMap.has(modTitle)) moduleMap.set(modTitle, []);
+            moduleMap.get(modTitle)!.push({
+              id: l.lessonId,
+              title: l.lessonTitle,
+              is_locked: false,
+              is_completed: false,
+              duration: l.duration,
+            });
+          }
+          const offlineModules = Array.from(moduleMap.entries()).map(([mTitle, les], idx) => ({
+            id: idx + 1,
+            title: mTitle,
+            lessons: les,
+          }));
+          setCourse({
+            id: courseId,
+            title: offlineLessons[0].courseTitle,
+            description: 'Offline downloaded course.',
+            modules: offlineModules,
+          });
+          const targetLesson = initialLessonId
+            ? offlineLessons.find((l) => l.lessonId === initialLessonId)
+            : offlineLessons[0];
+          if (targetLesson) {
+            setActiveLesson({
+              id: targetLesson.lessonId,
+              title: targetLesson.lessonTitle,
+              is_locked: false,
+            });
+          }
+        }
+      } catch (storageErr) {
+        console.warn('Offline storage fallback error:', storageErr);
+      }
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
+    syncOfflineProgress().catch(() => {});
+    refreshDownloadedStatus();
     fetchCourse();
-  }, [courseId]);
-
-  useEffect(() => {
-    if (Platform.OS !== 'ios' || isEnrolled || !course) return;
-    let isCancelled = false;
-    const sku = getCourseAppleSku(course, courseId);
-    if (!sku) return;
-    fetchAppleProduct(sku).then((product) => {
-      if (!isCancelled) {
-        setIapProduct(product);
-      }
-    });
-    return () => {
-      isCancelled = true;
-    };
-  }, [course?.id, course?.apple_product_id, courseId, isEnrolled]);
+  }, [courseId, refreshDownloadedStatus]);
 
   // Phase 2C: Fetch saved lesson progress when a lesson is opened or switched
   useEffect(() => {
@@ -158,8 +214,12 @@ export default function LearnScreen({ route, navigation }: any) {
         video_duration: duration,
         completed,
       });
-    } catch (err) {
-      console.error('Failed to save lesson progress:', err);
+    } catch (err: any) {
+      if (!err.response || err.message === 'Network Error' || err.code === 'ECONNABORTED') {
+        queueOfflineProgress({ lessonId, position, duration, completed }).catch(() => {});
+      } else {
+        console.error('Failed to save lesson progress:', err);
+      }
     }
   };
 
@@ -206,6 +266,25 @@ export default function LearnScreen({ route, navigation }: any) {
 
     const fetchPlaybackAuth = async () => {
       setPlaybackLoading(true);
+
+      // Check offline storage first -- allows instant airplane-mode playback
+      try {
+        const offlineMeta = await getDownloadedLesson(lessonId);
+        if (offlineMeta && !isCancelled) {
+          setPlaybackAuth({
+            video_url: offlineMeta.localUri,
+            video_duration: offlineMeta.duration,
+            watermark: offlineMeta.watermark as any,
+            protection: offlineMeta.protection as any,
+          });
+          setPlaybackAuthError(null);
+          setPlaybackLoading(false);
+          return;
+        }
+      } catch (e) {
+        console.warn('Error checking offline storage:', e);
+      }
+
       try {
         const res = await client.get(`courses/lessons/${lessonId}/playback-auth/`);
         if (isCancelled) return;
@@ -216,6 +295,9 @@ export default function LearnScreen({ route, navigation }: any) {
           if (err.response?.status === 403) {
             setPlaybackAuth(null);
             setPlaybackAuthError(err.response?.data?.detail || 'You do not have active access to this lesson.');
+          } else if (!err.response) {
+            setPlaybackAuth(null);
+            setPlaybackAuthError('You are currently offline. Download this lesson while online to watch in airplane mode.');
           } else {
             setPlaybackAuth(null);
             setPlaybackAuthError('Unable to authorize playback. Please try again.');
@@ -319,6 +401,86 @@ export default function LearnScreen({ route, navigation }: any) {
     }
   }, [activeLesson?.id]);
 
+  const handleDownloadLesson = async (module: any, lesson: any) => {
+    if (downloadingMap[lesson.id] !== undefined) return;
+
+    if (downloadedSet.has(lesson.id)) {
+      Alert.alert(
+        'Downloaded Lesson',
+        `"${lesson.title}" is already downloaded. Do you want to remove it from offline storage?`,
+        [
+          { text: 'Keep', style: 'cancel' },
+          {
+            text: 'Remove',
+            style: 'destructive',
+            onPress: async () => {
+              await deleteDownloadedLesson(courseId, lesson.id);
+              await refreshDownloadedStatus();
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    try {
+      setDownloadingMap((prev) => ({ ...prev, [lesson.id]: 0 }));
+      let authData: any;
+      try {
+        const authRes = await client.get(`courses/lessons/${lesson.id}/playback-auth/`);
+        authData = authRes.data;
+      } catch (err: any) {
+        Alert.alert('Download Error', err.response?.data?.detail || 'Could not authorize video download. Please check your connection.');
+        setDownloadingMap((prev) => {
+          const next = { ...prev };
+          delete next[lesson.id];
+          return next;
+        });
+        return;
+      }
+
+      const videoUrl = authData?.video_url;
+      if (!videoUrl) {
+        Alert.alert('Download Error', 'No downloadable video found for this lesson.');
+        setDownloadingMap((prev) => {
+          const next = { ...prev };
+          delete next[lesson.id];
+          return next;
+        });
+        return;
+      }
+
+      await startLessonDownload(
+        {
+          courseId,
+          lessonId: lesson.id,
+          courseTitle: course?.title || 'Course',
+          lessonTitle: lesson.title,
+          moduleTitle: module.title,
+          videoUrl,
+          duration: authData.video_duration || lesson.duration,
+          watermark: authData.watermark,
+          protection: authData.protection,
+        },
+        (progress) => {
+          setDownloadingMap((prev) => ({ ...prev, [lesson.id]: progress }));
+        }
+      );
+
+      await refreshDownloadedStatus();
+      Alert.alert('Download Complete', `"${lesson.title}" is now available offline in airplane mode.`);
+    } catch (err: any) {
+      console.warn('Download failed:', err);
+      Alert.alert('Download Failed', err.message || 'Could not download lesson.');
+    } finally {
+      setDownloadingMap((prev) => {
+        const next = { ...prev };
+        delete next[lesson.id];
+        return next;
+      });
+    }
+  };
+
   const handlePurchase = () => {
     navigation.navigate('CourseDetails', { courseId });
   };
@@ -342,22 +504,18 @@ export default function LearnScreen({ route, navigation }: any) {
             <Image source={{ uri: resolveMediaUrl(course.thumbnail) || FALLBACK_THUMB }} style={styles.previewImage} />
             <View style={styles.previewOverlay}>
               {Platform.OS === 'ios' ? (
-                <>
-                  <TouchableOpacity style={styles.purchaseButton} onPress={handlePurchase}>
-                    <Text style={styles.purchaseButtonText}>
-                      {iapProduct?.localizedPrice
-                        ? `Unlock Course (${iapProduct.localizedPrice})`
-                        : 'Unlock Course'}
-                    </Text>
-                  </TouchableOpacity>
-                  <Text style={styles.secureCheckoutText}>In-App Purchase via App Store</Text>
-                </>
+                <View style={styles.iosInfoBox}>
+                  <Icon name="info" size={20} color={colors.accent} style={{ marginBottom: 6 }} />
+                  <Text style={styles.iosInfoText}>
+                    Enrollment for this course is completed through the Natya Academy website. Once enrolled, sign in to access your classes immediately.
+                  </Text>
+                </View>
               ) : (
                 <>
                   <TouchableOpacity style={styles.purchaseButton} onPress={handlePurchase}>
                     <Text style={styles.purchaseButtonText}>Purchase for ₹{course.price}</Text>
                   </TouchableOpacity>
-                  <Text style={styles.secureCheckoutText}>Secure checkout via web</Text>
+                  <Text style={styles.secureCheckoutText}>Secure checkout</Text>
                 </>
               )}
             </View>
@@ -373,9 +531,11 @@ export default function LearnScreen({ route, navigation }: any) {
             <Text style={[styles.noVideoText, { color: colors.textSecondary, textAlign: 'center', paddingHorizontal: spacing.lg }]}>
               {playbackAuthError}
             </Text>
-            <TouchableOpacity style={[styles.purchaseButton, { marginTop: spacing.md }]} onPress={handlePurchase}>
-              <Text style={styles.purchaseButtonText}>Renew or Purchase Access</Text>
-            </TouchableOpacity>
+            {Platform.OS !== 'ios' && (
+              <TouchableOpacity style={[styles.purchaseButton, { marginTop: spacing.md }]} onPress={handlePurchase}>
+                <Text style={styles.purchaseButtonText}>Renew or Purchase Access</Text>
+              </TouchableOpacity>
+            )}
           </View>
         ) : videoSource ? (
           <CustomVideoPlayer
@@ -451,27 +611,55 @@ export default function LearnScreen({ route, navigation }: any) {
             {module.lessons?.map((lesson: any, lIdx: number) => {
               const locked = isEnrolled ? !!lesson.is_locked : true;
               const active = activeLesson?.id === lesson.id;
+              const isDownloaded = downloadedSet.has(lesson.id);
+              const downloadProgress = downloadingMap[lesson.id];
+              const isDownloading = downloadProgress !== undefined;
+
               return (
-                <TouchableOpacity
-                  key={lesson.id}
-                  style={[styles.lessonRow, active && styles.activeLessonRow]}
-                  onPress={() => !locked && setActiveLesson(lesson)}
-                  disabled={locked}
-                  accessibilityRole="button"
-                  accessibilityLabel={lesson.title}
-                >
-                  <Icon
-                    name={lesson.is_completed ? 'check-circle' : locked ? 'lock' : 'play'}
-                    size={14}
-                    color={lesson.is_completed ? colors.success : locked ? colors.textTertiary : active ? colors.accent : colors.textSecondary}
-                  />
-                  <Text
-                    style={[styles.lessonText, active && styles.activeLessonText, locked && styles.lockedLessonText]}
-                    numberOfLines={1}
+                <View key={lesson.id} style={[styles.lessonRow, active && styles.activeLessonRow]}>
+                  <TouchableOpacity
+                    style={styles.lessonRowContent}
+                    onPress={() => !locked && setActiveLesson(lesson)}
+                    disabled={locked}
+                    accessibilityRole="button"
+                    accessibilityLabel={lesson.title}
                   >
-                    {lIdx + 1}. {lesson.title}
-                  </Text>
-                </TouchableOpacity>
+                    <Icon
+                      name={lesson.is_completed ? 'check-circle' : locked ? 'lock' : 'play'}
+                      size={14}
+                      color={lesson.is_completed ? colors.success : locked ? colors.textTertiary : active ? colors.accent : colors.textSecondary}
+                    />
+                    <Text
+                      style={[styles.lessonText, active && styles.activeLessonText, locked && styles.lockedLessonText]}
+                      numberOfLines={1}
+                    >
+                      {lIdx + 1}. {lesson.title}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {isEnrolled && !locked && (
+                    <TouchableOpacity
+                      style={styles.lessonActionBtn}
+                      onPress={() => handleDownloadLesson(module, lesson)}
+                      disabled={isDownloading}
+                      accessibilityRole="button"
+                      accessibilityLabel={isDownloaded ? 'Downloaded' : 'Download lesson'}
+                    >
+                      {isDownloading ? (
+                        <View style={styles.downloadProgressWrap}>
+                          <ActivityIndicator size="small" color={colors.accent} />
+                          <Text style={styles.downloadProgressText}>
+                            {Math.round(downloadProgress * 100)}%
+                          </Text>
+                        </View>
+                      ) : isDownloaded ? (
+                        <Icon name="check-circle" size={16} color={colors.success} />
+                      ) : (
+                        <Icon name="download" size={16} color={colors.textTertiary} />
+                      )}
+                    </TouchableOpacity>
+                  )}
+                </View>
               );
             })}
 
@@ -562,9 +750,29 @@ const styles = StyleSheet.create({
 
   moduleCard: { marginBottom: spacing.xxl },
   moduleTitle: { ...typography.caption, textTransform: 'uppercase' },
-  lessonRow: { flexDirection: 'row', alignItems: 'center', padding: spacing.md, borderRadius: radius.sm, marginBottom: 4, gap: spacing.sm },
+  lessonRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: spacing.md, borderRadius: radius.sm, marginBottom: 4 },
   activeLessonRow: { backgroundColor: colors.accentMuted, borderWidth: 1, borderColor: colors.accentBorder },
+  lessonRowContent: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   lessonText: { color: colors.text, fontSize: 14, flex: 1, marginLeft: spacing.sm },
   activeLessonText: { color: colors.accent, fontWeight: '600' },
   lockedLessonText: { color: colors.textTertiary },
+  lessonActionBtn: { padding: spacing.xs, marginLeft: spacing.sm, minWidth: 28, alignItems: 'center', justifyContent: 'center' },
+  downloadProgressWrap: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  downloadProgressText: { color: colors.accent, fontSize: 11, fontWeight: '600' },
+
+  iosInfoBox: {
+    backgroundColor: 'rgba(20, 20, 20, 0.95)',
+    borderRadius: radius.md,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    marginHorizontal: spacing.xl,
+  },
+  iosInfoText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: 'center',
+  },
 });

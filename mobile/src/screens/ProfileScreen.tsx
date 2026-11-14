@@ -4,7 +4,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import client from '../api/client';
 import { unregisterForPushNotificationsAsync } from '../api/pushNotifications';
-import { restorePurchases, showRestoreFeedback, resetIapSessionState } from '../api/appleIap';
 import Icon, { FeatherIconName } from '../components/Icon';
 import AccountDeletionModal from '../components/AccountDeletionModal';
 import { colors, spacing, radius, typography, headerLayout } from '../theme';
@@ -19,7 +18,6 @@ export default function ProfileScreen({ navigation }: any) {
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [restoringPurchases, setRestoringPurchases] = useState(false);
 
   const isMountedRef = useRef(true);
   useEffect(() => {
@@ -55,7 +53,6 @@ export default function ProfileScreen({ navigation }: any) {
     }
     await AsyncStorage.removeItem('access_token');
     await AsyncStorage.removeItem('refresh_token');
-    resetIapSessionState();
     // Same call DashboardScreen's own (unchanged) logout already uses --
     // React Navigation bubbles this up to the root Stack automatically
     // since 'Login' isn't one of MainTabs' own screens.
@@ -71,7 +68,6 @@ export default function ProfileScreen({ navigation }: any) {
     }
     await AsyncStorage.removeItem('access_token');
     await AsyncStorage.removeItem('refresh_token');
-    resetIapSessionState();
     Alert.alert(
       'Account Deleted',
       'Your account has been permanently deleted and your session has ended.',
@@ -82,34 +78,12 @@ export default function ProfileScreen({ navigation }: any) {
 
   if (loading) return <View style={styles.centered}><ActivityIndicator color={colors.accent} size="large" /></View>;
 
-  const handleRestorePurchases = async () => {
-    if (restoringPurchases) return;
-    setRestoringPurchases(true);
-    try {
-      const result = await restorePurchases();
-      if (isMountedRef.current) {
-        showRestoreFeedback(result);
-      }
-    } catch (err: any) {
-      console.error('Failed to restore purchases:', err);
-      if (isMountedRef.current) {
-        Alert.alert('Restore Error', err.message || 'Could not restore purchases from Apple Store.');
-      }
-    } finally {
-      if (isMountedRef.current) {
-        setRestoringPurchases(false);
-      }
-    }
-  };
-
   const menuItems: { label: string; icon: FeatherIconName; screen?: string; url?: string; action?: () => void; badge?: number }[] = [
     { label: 'Edit Profile', icon: 'edit-2', screen: 'EditProfile' },
     { label: 'Live Classes', icon: 'video', screen: 'LiveClasses' },
+    { label: 'Offline Downloads', icon: 'download', screen: 'Downloads' },
     { label: 'Subscription & Payments', icon: 'credit-card', screen: 'Subscription' },
     { label: 'Purchase History', icon: 'file-text', screen: 'PurchaseHistory' },
-    ...(Platform.OS === 'ios'
-      ? [{ label: 'Restore Purchases', icon: 'refresh-cw' as FeatherIconName, action: handleRestorePurchases }]
-      : []),
     { label: 'Messages', icon: 'message-square', screen: 'ChatList' },
     { label: 'Notifications', icon: 'bell', screen: 'Notifications', badge: unreadCount },
     { label: 'Certificates', icon: 'award', screen: 'Certificates' },

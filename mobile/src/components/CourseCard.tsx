@@ -36,9 +36,11 @@ export default function CourseCard({
 }: CourseCardProps) {
   const thumbUrl = resolveMediaUrl(thumbnail) || FALLBACK_THUMB;
   const isRail = variant === 'rail';
+  // iOS never renders course prices (Apple Guideline 3.1.3(b) multiplatform consumption).
+  // Android preserves full rupee pricing display.
   const displayPrice =
     Platform.OS === 'ios'
-      ? localizedPrice || null
+      ? null
       : price !== undefined
       ? `₹${price}`
       : null;

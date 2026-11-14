@@ -110,13 +110,21 @@ class CourseViewSet(viewsets.ModelViewSet):
                     Q(enrollments__user=user)
                 ).distinct()
             else:
+                # Student catalog / listing or instructor catalog request:
+                # Recorded courses: published recorded courses are public/discoverable.
+                # Live courses: ONLY accessible if the student is assigned to a live batch or enrolled!
+                # Instructors see live courses they instruct or mentor.
                 qs = Course.objects.filter(
-                    Q(is_published=True) |
-                    Q(enrollments__user=user) |   # student access, and legacy teacher self-enrollment
-                    Q(instructors__user=user)      # real CourseInstructor assignment (teacher/mentor/assistant)
+                    Q(course_type=Course.CourseType.RECORDED, is_published=True) |
+                    Q(course_type=Course.CourseType.LIVE, live_batches__students__student=user) |
+                    Q(course_type=Course.CourseType.LIVE, live_batches__instructor=user) |
+                    Q(course_type=Course.CourseType.LIVE, live_batches__mentor=user) |
+                    Q(enrollments__user=user) |
+                    Q(instructors__user=user)
                 ).distinct()
         else:
-            qs = Course.objects.filter(is_published=True)
+            # Anonymous users only see published RECORDED courses
+            qs = Course.objects.filter(is_published=True, course_type=Course.CourseType.RECORDED)
 
         if self.action == 'list':
             from django.db.models import Prefetch
@@ -1627,7 +1635,10 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 Q(batch__course__instructors__user=user)
             ).distinct().select_related(*related_fields).prefetch_related('attendance_records')
         else:
-            queryset = LiveClass.objects.filter(batch__students__student=user).distinct().select_related(*related_fields).prefetch_related('attendance_records')
+            queryset = LiveClass.objects.filter(
+                Q(batch__students__student=user) |
+                Q(batch__isnull=True, course__enrollments__user=user)
+            ).distinct().select_related(*related_fields).prefetch_related('attendance_records')
 
         queryset = queryset.annotate(batch_student_count=Count('batch__students', distinct=True))
 
@@ -1654,7 +1665,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         if student_id:
             queryset = queryset.filter(batch__students__student_id=student_id).distinct()
 
-        return queryset
+        return queryset.order_by('scheduled_start', 'id')
 
     def create(self, request, *args, **kwargs):
         """
