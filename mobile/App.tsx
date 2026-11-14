@@ -243,11 +243,15 @@ function App() {
           <Stack.Screen name="Assignment" component={AssignmentScreen} />
           <Stack.Screen name="LiveClasses" component={LiveClassesScreen} />
           <Stack.Screen name="Downloads" component={DownloadsScreen} />
-          <Stack.Screen name="Subscription" component={SubscriptionScreen} />
           <Stack.Screen name="Notifications" component={NotificationsScreen} />
           <Stack.Screen name="Certificates" component={CertificatesScreen} />
-          <Stack.Screen name="Invoices" component={InvoicesScreen} />
-          <Stack.Screen name="PurchaseHistory" component={PurchaseHistoryScreen} />
+          {Platform.OS !== 'ios' && (
+            <>
+              <Stack.Screen name="Subscription" component={SubscriptionScreen} />
+              <Stack.Screen name="Invoices" component={InvoicesScreen} />
+              <Stack.Screen name="PurchaseHistory" component={PurchaseHistoryScreen} />
+            </>
+          )}
           <Stack.Screen name="EditProfile" component={EditProfileScreen} />
           <Stack.Screen name="ChatList" component={ChatListScreen} />
           <Stack.Screen name="Conversation" component={ConversationScreen} />

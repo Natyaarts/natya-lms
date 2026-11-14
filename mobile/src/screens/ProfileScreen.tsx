@@ -9,7 +9,7 @@ import AccountDeletionModal from '../components/AccountDeletionModal';
 import { colors, spacing, radius, typography, headerLayout } from '../theme';
 
 // Phase 4.9 -- profile screen: the missing navigation hub for every
-// previously-unreachable P0 surface (live classes, subscription/payment
+// previously-unreachable P0 surface (live classes, subscription status,
 // status, notifications, certificates) plus the account's own basic info.
 // Logout stays on DashboardScreen too (unchanged) -- this is an additional
 // entry point, not a relocation.
@@ -82,12 +82,16 @@ export default function ProfileScreen({ navigation }: any) {
     { label: 'Edit Profile', icon: 'edit-2', screen: 'EditProfile' },
     { label: 'Live Classes', icon: 'video', screen: 'LiveClasses' },
     { label: 'Offline Downloads', icon: 'download', screen: 'Downloads' },
-    { label: 'Subscription & Payments', icon: 'credit-card', screen: 'Subscription' },
-    { label: 'Purchase History', icon: 'file-text', screen: 'PurchaseHistory' },
+    ...(Platform.OS !== 'ios'
+      ? [
+          { label: 'Subscription & Payments', icon: 'credit-card' as FeatherIconName, screen: 'Subscription' },
+          { label: 'Purchase History', icon: 'file-text' as FeatherIconName, screen: 'PurchaseHistory' },
+          { label: 'Invoices', icon: 'file-text' as FeatherIconName, screen: 'Invoices' },
+        ]
+      : []),
     { label: 'Messages', icon: 'message-square', screen: 'ChatList' },
     { label: 'Notifications', icon: 'bell', screen: 'Notifications', badge: unreadCount },
     { label: 'Certificates', icon: 'award', screen: 'Certificates' },
-    { label: 'Invoices', icon: 'file-text', screen: 'Invoices' },
     { label: 'Privacy Policy', icon: 'shield', url: 'https://academy.natyaarts.com/privacy' },
   ];
 

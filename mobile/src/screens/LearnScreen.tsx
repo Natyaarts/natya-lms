@@ -507,7 +507,7 @@ export default function LearnScreen({ route, navigation }: any) {
                 <View style={styles.iosInfoBox}>
                   <Icon name="info" size={20} color={colors.accent} style={{ marginBottom: 6 }} />
                   <Text style={styles.iosInfoText}>
-                    Enrollment for this course is completed through the Natya Academy website. Once enrolled, sign in to access your classes immediately.
+                    This course is not currently available in your account.
                   </Text>
                 </View>
               ) : (

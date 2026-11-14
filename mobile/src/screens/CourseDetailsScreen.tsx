@@ -326,7 +326,7 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
               <Icon name="info" size={18} color={colors.accent} />
             </View>
             <Text style={styles.iosInfoText}>
-              Enrollment for this course is completed through the Natya Academy website. Once enrolled, your full course and live sessions will unlock here automatically.
+              This course is not currently available in your account.
             </Text>
           </View>
         ) : (

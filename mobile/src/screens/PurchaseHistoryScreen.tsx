@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import client from '../api/client';
 import { headerLayout } from '../theme';
@@ -79,6 +79,8 @@ export default function PurchaseHistoryScreen({ navigation }: any) {
         : `${item.items.length} items`;
     const subtitle = item.kind === 'ORDER'
       ? item.order_number
+      : Platform.OS === 'ios'
+      ? 'Order'
       : 'Course Purchase';
     const amount = item.kind === 'ORDER' ? item.total_amount : item.amount;
     const currencySymbol = item.kind === 'ORDER' && item.currency !== 'INR' ? `${item.currency} ` : '₹';
@@ -94,10 +96,12 @@ export default function PurchaseHistoryScreen({ navigation }: any) {
         <Text style={styles.title} numberOfLines={2}>{title}</Text>
         <View style={styles.cardFooter}>
           <View>
-            <Text style={styles.amount}>{currencySymbol}{parseFloat(amount).toLocaleString()}</Text>
+            {Platform.OS !== 'ios' && (
+              <Text style={styles.amount}>{currencySymbol}{parseFloat(amount).toLocaleString()}</Text>
+            )}
             <Text style={styles.date}>{new Date(item.created_at).toLocaleDateString()}</Text>
           </View>
-          {item.has_invoice && (
+          {Platform.OS !== 'ios' && item.has_invoice && (
             <TouchableOpacity style={styles.invoiceButton} onPress={() => navigation.navigate('Invoices')}>
               <Text style={styles.invoiceButtonText}>View Invoice</Text>
             </TouchableOpacity>
@@ -113,12 +117,14 @@ export default function PurchaseHistoryScreen({ navigation }: any) {
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.backText}>← Back</Text></TouchableOpacity>
-        <Text style={styles.headerTitle}>Purchase History</Text>
+        <Text style={styles.headerTitle}>{Platform.OS === 'ios' ? 'Order History' : 'Purchase History'}</Text>
         <View style={{ width: 50 }} />
       </View>
       {error ? (
         <View style={styles.emptyContainer}>
-          <Text style={styles.emptyText}>Couldn't load your purchase history.</Text>
+          <Text style={styles.emptyText}>
+            {Platform.OS === 'ios' ? "Couldn't load your order history." : "Couldn't load your purchase history."}
+          </Text>
           <TouchableOpacity style={styles.retryButton} onPress={fetchHistory}>
             <Text style={styles.retryText}>Retry</Text>
           </TouchableOpacity>
@@ -132,8 +138,10 @@ export default function PurchaseHistoryScreen({ navigation }: any) {
           contentContainerStyle={styles.listContainer}
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Text style={styles.emptyText}>No purchases yet.</Text>
-              <Text style={styles.emptySubtext}>Courses and bundles you buy will show up here.</Text>
+              <Text style={styles.emptyText}>{Platform.OS === 'ios' ? 'No orders yet.' : 'No purchases yet.'}</Text>
+              <Text style={styles.emptySubtext}>
+                {Platform.OS === 'ios' ? 'Enrolled courses and items will show up here.' : 'Courses and bundles you buy will show up here.'}
+              </Text>
             </View>
           }
         />

@@ -89,13 +89,15 @@ export default function SubscriptionScreen({ navigation }: any) {
                 {STATUS_LABEL[subscription.status] || subscription.status}
               </Text>
             </View>
-            <Text style={styles.planPrice}>₹{subscription.plan?.price} / {subscription.plan?.billing_interval === 'MONTHLY' ? 'month' : 'year'}</Text>
+            {Platform.OS !== 'ios' && (
+              <Text style={styles.planPrice}>₹{subscription.plan?.price} / {subscription.plan?.billing_interval === 'MONTHLY' ? 'month' : 'year'}</Text>
+            )}
 
             {GRACE_STATUSES.has(subscription.status) && subscription.effective_access_until && (
               <View style={styles.graceBox}>
                 <Text style={styles.graceText}>
-                  We couldn't process your last payment. Your access continues until{' '}
-                  {new Date(subscription.effective_access_until).toLocaleDateString()} while we retry.
+                  Your subscription access continues until{' '}
+                  {new Date(subscription.effective_access_until).toLocaleDateString()} while your status is updated.
                 </Text>
               </View>
             )}
@@ -116,7 +118,7 @@ export default function SubscriptionScreen({ navigation }: any) {
             {Platform.OS === 'ios' ? (
               <View style={styles.iosInfoBox}>
                 <Text style={styles.iosInfoText}>
-                  Natya Academy memberships are multiplatform. If you have an active membership, your full course library and features will unlock here automatically upon signing in.
+                  No active subscription was found in your account.
                 </Text>
               </View>
             ) : plans.length === 0 ? (
@@ -137,7 +139,7 @@ export default function SubscriptionScreen({ navigation }: any) {
           </View>
         )}
 
-        {payments.length > 0 && (
+        {Platform.OS !== 'ios' && payments.length > 0 && (
           <View style={styles.historySection}>
             <Text style={styles.sectionTitle}>Payment History</Text>
             {payments.map((p: any) => (

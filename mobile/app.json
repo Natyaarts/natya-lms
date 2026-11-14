@@ -43,8 +43,7 @@
       "expo-document-picker",
       "expo-notifications",
       "expo-font",
-      "@sentry/react-native",
-      "react-native-iap"
+      "@sentry/react-native"
     ],
     "extra": {
       "eas": {

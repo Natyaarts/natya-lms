@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import client from '../api/client';
 import { headerLayout } from '../theme';
@@ -12,9 +12,9 @@ import { headerLayout } from '../theme';
 // print page's own comment); this screen is read-only visibility only,
 // matching the "small, consistent extension" instruction.
 const SOURCE_TYPE_LABEL: Record<string, string> = {
-  PURCHASE: 'Course Purchase',
-  ORDER: 'Order Checkout',
-  SUBSCRIPTION_PAYMENT: 'Subscription Payment',
+  PURCHASE: Platform.OS === 'ios' ? 'Course Enrollment' : 'Course Purchase',
+  ORDER: Platform.OS === 'ios' ? 'Order' : 'Order Checkout',
+  SUBSCRIPTION_PAYMENT: Platform.OS === 'ios' ? 'Subscription' : 'Subscription Payment',
 };
 
 export default function InvoicesScreen({ navigation }: any) {
@@ -64,7 +64,9 @@ export default function InvoicesScreen({ navigation }: any) {
       <Text style={styles.forLabel}>{item.source_label || SOURCE_TYPE_LABEL[item.source_type] || '—'}</Text>
       <Text style={styles.sourceType}>{SOURCE_TYPE_LABEL[item.source_type] || item.source_type}</Text>
       <View style={styles.cardFooter}>
-        <Text style={styles.amount}>{item.currency === 'INR' ? '₹' : `${item.currency} `}{parseFloat(item.amount).toLocaleString()}</Text>
+        {Platform.OS !== 'ios' && (
+          <Text style={styles.amount}>{item.currency === 'INR' ? '₹' : `${item.currency} `}{parseFloat(item.amount).toLocaleString()}</Text>
+        )}
         <Text style={styles.date}>{new Date(item.payment_date).toLocaleDateString()}</Text>
       </View>
     </View>
@@ -90,7 +92,9 @@ export default function InvoicesScreen({ navigation }: any) {
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyText}>No invoices yet.</Text>
-            <Text style={styles.emptySubtext}>A receipt appears here automatically after a successful payment.</Text>
+            <Text style={styles.emptySubtext}>
+              {Platform.OS === 'ios' ? 'Receipts will appear here when available.' : 'A receipt appears here automatically after a successful payment.'}
+            </Text>
           </View>
         }
       />
