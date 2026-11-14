@@ -505,9 +505,10 @@ export default function LearnScreen({ route, navigation }: any) {
             <View style={styles.previewOverlay}>
               {Platform.OS === 'ios' ? (
                 <View style={styles.iosInfoBox}>
-                  <Icon name="info" size={20} color={colors.accent} style={{ marginBottom: 6 }} />
+                  <Icon name="lock" size={22} color={colors.accent} style={{ marginBottom: 6 }} />
+                  <Text style={styles.iosInfoTitle}>Enrollment Required</Text>
                   <Text style={styles.iosInfoText}>
-                    This course is not currently available in your account.
+                    Course enrollment is required to access recorded lesson videos and curriculum playback.
                   </Text>
                 </View>
               ) : (
@@ -768,6 +769,13 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     alignItems: 'center',
     marginHorizontal: spacing.xl,
+  },
+  iosInfoTitle: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 4,
+    textAlign: 'center',
   },
   iosInfoText: {
     color: colors.textSecondary,

@@ -109,6 +109,7 @@ export default function CustomVideoPlayer({
 
   const player = useVideoPlayer(source, p => {
     p.loop = false;
+    p.timeUpdateEventInterval = 0.5;
     p.play();
   });
 

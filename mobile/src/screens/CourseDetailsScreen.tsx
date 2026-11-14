@@ -222,9 +222,11 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
             {!owned && Platform.OS !== 'ios' && (
               <Text style={styles.price}>₹{course.price}</Text>
             )}
-            {typeof course.total_module_count === 'number' && course.total_module_count > 0 && (
+            {((typeof course.total_module_count === 'number' && course.total_module_count > 0) ||
+              (Array.isArray(course.modules) && course.modules.length > 0)) && (
               <Text style={typography.meta}>
-                {course.total_module_count} {course.total_module_count === 1 ? 'module' : 'modules'}
+                {course.total_module_count || course.modules.length}{' '}
+                {(course.total_module_count || course.modules.length) === 1 ? 'module' : 'modules'}
               </Text>
             )}
           </View>
@@ -323,11 +325,14 @@ export default function CourseDetailsScreen({ route, navigation }: any) {
         ) : Platform.OS === 'ios' ? (
           <View style={styles.iosInfoContainer}>
             <View style={styles.iosInfoIconWrap}>
-              <Icon name="info" size={18} color={colors.accent} />
+              <Icon name="book-open" size={20} color={colors.accent} />
             </View>
-            <Text style={styles.iosInfoText}>
-              This course is not currently available in your account.
-            </Text>
+            <View style={styles.iosInfoContent}>
+              <Text style={styles.iosInfoTitle}>Course Curriculum Preview</Text>
+              <Text style={styles.iosInfoText}>
+                Curriculum lessons are available for enrolled learners. Explore the modules and lesson breakdown above.
+              </Text>
+            </View>
           </View>
         ) : (
           <TouchableOpacity
@@ -486,7 +491,7 @@ const styles = StyleSheet.create({
   iosInfoContainer: {
     width: '100%',
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     backgroundColor: 'rgba(250, 204, 21, 0.08)',
     borderColor: 'rgba(250, 204, 21, 0.25)',
     borderWidth: 1,
@@ -495,11 +500,20 @@ const styles = StyleSheet.create({
   },
   iosInfoIconWrap: {
     marginRight: spacing.sm,
+    marginTop: 2,
+  },
+  iosInfoContent: {
+    flex: 1,
+  },
+  iosInfoTitle: {
+    ...typography.meta,
+    color: colors.text,
+    fontWeight: '600',
+    marginBottom: 2,
   },
   iosInfoText: {
     ...typography.meta,
     color: colors.textSecondary,
-    flex: 1,
     lineHeight: 18,
   },
 });
