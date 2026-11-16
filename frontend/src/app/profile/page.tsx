@@ -186,7 +186,7 @@ export default function ProfilePage() {
               {fieldErrors.username && <p className="text-red-400 text-xs mt-1">{fieldErrors.username}</p>}
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-1.5 block">First Name</label>
                 <input
@@ -213,7 +213,7 @@ export default function ProfilePage() {
                 have no verification-on-change mechanism today -- shown for
                 reference, disabled, matching CustomUserDetailsSerializer's
                 own read_only_fields exactly. */}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-1.5 block">Email</label>
                 <input
@@ -237,7 +237,7 @@ export default function ProfilePage() {
 
             <div className="pt-2 border-t border-white/5">
               <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-3">Parent / Guardian Contact (optional)</p>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-1.5 block">Parent Name</label>
                   <input

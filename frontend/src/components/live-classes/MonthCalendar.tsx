@@ -79,47 +79,50 @@ export default function MonthCalendar({
         </button>
       </div>
 
-      <div className="grid grid-cols-7 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-b border-white/5">
-        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
-          <div key={d} className="p-2 text-center">{d}</div>
-        ))}
-      </div>
+      <div className="overflow-x-auto min-w-full">
+        <div className="min-w-[560px] md:min-w-0">
+          <div className="grid grid-cols-7 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-b border-white/5">
+            {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
+              <div key={d} className="p-2 text-center">{d}</div>
+            ))}
+          </div>
 
-      <div className="grid grid-cols-7">
-        {cells.map((day, idx) => {
-          if (day === null) {
-            return <div key={idx} className="min-h-[92px] border-b border-r border-white/5" />;
-          }
-          const key = `${year}-${month}-${day}`;
-          const dayClasses = byDay.get(key) || [];
-          const isToday =
-            today.getFullYear() === year && today.getMonth() === month && today.getDate() === day;
-          return (
-            <div key={idx} className="min-h-[92px] border-b border-r border-white/5 p-1.5 overflow-hidden">
-              <div className={`text-[11px] font-semibold mb-1 w-5 h-5 flex items-center justify-center rounded-full ${
-                isToday ? "bg-[#facc15] text-black" : "text-zinc-500"
-              }`}>
-                {day}
-              </div>
-              <div className="space-y-1">
-                {dayClasses.slice(0, 3).map((c) => (
-                  <button
-                    key={c.id}
-                    onClick={() => onSelectClass?.(c.id)}
-                    title={c.title}
-                    className="w-full flex items-center gap-1 px-1 py-0.5 rounded bg-white/5 hover:bg-white/10 text-left transition-colors"
-                  >
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot[c.status] || "bg-zinc-500"}`} />
-                    <span className="text-[9px] text-zinc-300 truncate">{c.title}</span>
-                  </button>
-                ))}
-                {dayClasses.length > 3 && (
-                  <div className="text-[9px] text-zinc-500 px-1">+{dayClasses.length - 3} more</div>
-                )}
-              </div>
-            </div>
-          );
-        })}
+          <div className="grid grid-cols-7">
+            {cells.map((day, idx) => {
+              if (day === null) {
+                return <div key={idx} className="min-h-[92px] border-b border-r border-white/5" />;
+              }
+              const key = `${year}-${month}-${day}`;
+              const dayClasses = byDay.get(key) || [];
+              const isToday =
+                today.getFullYear() === year && today.getMonth() === month && today.getDate() === day;
+              return (
+                <div key={idx} className="min-h-[92px] border-b border-r border-white/5 p-1.5 overflow-hidden">
+                  <div className={`text-[11px] font-semibold mb-1 w-5 h-5 flex items-center justify-center rounded-full ${isToday ? "bg-[#facc15] text-black" : "text-zinc-500"
+                    }`}>
+                    {day}
+                  </div>
+                  <div className="space-y-1">
+                    {dayClasses.slice(0, 3).map((c) => (
+                      <button
+                        key={c.id}
+                        onClick={() => onSelectClass?.(c.id)}
+                        title={c.title}
+                        className="w-full flex items-center gap-1 px-1 py-0.5 rounded bg-white/5 hover:bg-white/10 text-left transition-colors"
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot[c.status] || "bg-zinc-500"}`} />
+                        <span className="text-[9px] text-zinc-300 truncate">{c.title}</span>
+                      </button>
+                    ))}
+                    {dayClasses.length > 3 && (
+                      <div className="text-[9px] text-zinc-500 px-1">+{dayClasses.length - 3} more</div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );

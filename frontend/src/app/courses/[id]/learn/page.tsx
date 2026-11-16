@@ -307,7 +307,7 @@ export default function CourseLearnPage() {
         if (res.ok) {
           const data = await res.json();
           setCourse(data);
-          
+
           if (data.modules && data.modules.length > 0) {
             // Prefer the first UNLOCKED lesson as the default view (an
             // is_locked lesson has no playable video_file) -- fall back to
@@ -367,10 +367,10 @@ export default function CourseLearnPage() {
   const nextEntry = activeFlatIndex >= 0 && activeFlatIndex < flatLessons.length - 1 ? flatLessons[activeFlatIndex + 1] : null;
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col md:flex-row h-screen overflow-hidden">
-      
+    <div className="min-h-screen bg-[#050505] text-white flex flex-col md:flex-row md:h-screen md:overflow-hidden">
+
       {/* Sidebar: Curriculum */}
-      <div className="w-full md:w-80 bg-gradient-to-b from-zinc-950 to-black border-r border-white/5 flex flex-col h-1/3 md:h-full overflow-hidden shrink-0">
+      <div className="order-2 md:order-1 w-full md:w-80 bg-gradient-to-b from-zinc-950 to-black border-t md:border-t-0 md:border-r border-white/5 flex flex-col md:h-full md:overflow-hidden shrink-0">
         <div className="p-5 border-b border-white/5 shrink-0 bg-white/[0.02]">
           <Link href="/dashboard" className="inline-flex items-center gap-2 text-zinc-400 hover:text-white text-sm mb-4 font-medium transition-colors group">
             <span className="w-7 h-7 rounded-full bg-white/5 group-hover:bg-white/10 flex items-center justify-center transition-colors">
@@ -416,7 +416,7 @@ export default function CourseLearnPage() {
           )}
         </div>
 
-        <div className="overflow-y-auto flex-1 p-3 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
+        <div className="md:overflow-y-auto md:flex-1 p-3 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
           {course.modules?.map((module: any, idx: number) => (
             <div key={module.id} className="mb-6">
               <h3 className="flex items-center gap-2 text-xs font-bold text-zinc-500 px-3 mb-3 uppercase tracking-widest">
@@ -437,19 +437,17 @@ export default function CourseLearnPage() {
                     <button
                       key={lesson.id}
                       onClick={() => setActiveLesson(lesson)}
-                      className={`w-full text-left px-3 py-3 rounded-xl text-sm flex items-center gap-3 transition-all duration-200 ${
-                        isActive
+                      className={`w-full text-left px-3 py-3 rounded-xl text-sm flex items-center gap-3 transition-all duration-200 ${isActive
                           ? 'bg-gradient-to-r from-[#facc15]/20 to-[#facc15]/5 text-[#facc15] font-semibold shadow-inner ring-1 ring-[#facc15]/20'
                           : 'text-zinc-300 hover:bg-white/5 hover:translate-x-0.5'
-                      }`}
+                        }`}
                     >
-                      <span className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-colors ${
-                        isActive
+                      <span className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-colors ${isActive
                           ? 'bg-[#facc15] text-black'
                           : lesson.is_completed
                             ? 'bg-green-500/20 text-green-400'
                             : 'bg-white/5 text-zinc-500'
-                      }`}>
+                        }`}>
                         {isActive ? (
                           <Play className="w-2.5 h-2.5 fill-black ml-0.5" />
                         ) : lesson.is_completed ? (
@@ -535,10 +533,10 @@ export default function CourseLearnPage() {
       </div>
 
       {/* Main Content: Video Player */}
-      <div className="flex-1 flex flex-col h-2/3 md:h-full relative bg-black overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
+      <div className="order-1 md:order-2 w-full md:flex-1 md:h-full relative bg-black md:overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full">
         {activeLesson ? (
           activeLesson.is_locked ? (
-            <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 bg-[#050505] p-6 text-center">
+            <div className="w-full aspect-video md:aspect-auto md:h-full flex flex-col items-center justify-center text-zinc-600 bg-[#050505] p-6 text-center">
               <Lock className="w-14 h-14 mb-6 opacity-40" />
               <p className="text-lg font-medium text-zinc-300 mb-2">{activeLesson.title}</p>
               <p className="text-sm text-zinc-500 mb-6 max-w-sm">This lesson is locked. Enroll in this course or subscribe to a plan that includes it to watch.</p>
@@ -555,7 +553,7 @@ export default function CourseLearnPage() {
               <span className="text-xs font-medium text-zinc-400 tracking-wide">Authorizing secure playback…</span>
             </div>
           ) : playbackAuthError ? (
-            <div className="w-full h-full flex flex-col items-center justify-center text-zinc-600 bg-[#050505] p-6 text-center">
+            <div className="w-full aspect-video md:aspect-auto md:h-full flex flex-col items-center justify-center text-zinc-600 bg-[#050505] p-6 text-center">
               <Lock className="w-14 h-14 mb-6 text-amber-500/80" />
               <p className="text-lg font-medium text-zinc-200 mb-2">{activeLesson.title}</p>
               <p className="text-sm text-zinc-400 mb-6 max-w-sm leading-relaxed">{playbackAuthError}</p>
@@ -567,70 +565,70 @@ export default function CourseLearnPage() {
               </Link>
             </div>
           ) : playbackAuth?.video_url ? (
-          <div className="w-full flex flex-col relative">
+            <div className="w-full flex flex-col relative">
 
-            <div className="relative bg-black md:p-6 md:pb-3">
-              {/* Ambient glow behind the player frame */}
-              <div className="hidden md:block absolute inset-6 bg-[#facc15]/5 blur-[80px] rounded-full pointer-events-none" />
+              <div className="relative bg-black md:p-6 md:pb-3">
+                {/* Ambient glow behind the player frame */}
+                <div className="hidden md:block absolute inset-6 bg-[#facc15]/5 blur-[80px] rounded-full pointer-events-none" />
 
-              <WebVideoPlayer
-                videoUrl={playbackAuth.video_url}
-                title={activeLesson.title}
-                lessonId={activeLesson.id}
-                translatedAudios={playbackAuth.translated_audios || []}
-                savedProgressPosition={savedProgressPosition}
-                watermark={playbackAuth.watermark}
-                downloadEnabled={playbackAuth.protection?.download_enabled ?? false}
-                expiresIn={playbackAuth.expires_in}
-                onRefreshUrls={handleRefreshPlaybackUrls}
-                onSaveProgress={(pos, dur, comp) => saveProgress(activeLesson.id, pos, dur, comp)}
-                onEnded={() => {
-                  if (activeLesson?.id) {
-                    saveProgress(activeLesson.id, activeLesson.video_duration || 0, activeLesson.video_duration || 0, true).then(refreshCourseProgress);
-                  }
-                }}
-              />
-            </div>
+                <WebVideoPlayer
+                  videoUrl={playbackAuth.video_url}
+                  title={activeLesson.title}
+                  lessonId={activeLesson.id}
+                  translatedAudios={playbackAuth.translated_audios || []}
+                  savedProgressPosition={savedProgressPosition}
+                  watermark={playbackAuth.watermark}
+                  downloadEnabled={playbackAuth.protection?.download_enabled ?? false}
+                  expiresIn={playbackAuth.expires_in}
+                  onRefreshUrls={handleRefreshPlaybackUrls}
+                  onSaveProgress={(pos, dur, comp) => saveProgress(activeLesson.id, pos, dur, comp)}
+                  onEnded={() => {
+                    if (activeLesson?.id) {
+                      saveProgress(activeLesson.id, activeLesson.video_duration || 0, activeLesson.video_duration || 0, true).then(refreshCourseProgress);
+                    }
+                  }}
+                />
+              </div>
 
-            {/* Lesson Details */}
-            <div className="px-6 md:px-10 pt-6 pb-12 max-w-4xl">
-              {activeFlatEntry && (
-                <div className="flex items-center gap-2 text-xs font-bold text-[#facc15]/80 uppercase tracking-widest mb-3">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#facc15]/60" />
-                  Module {activeFlatEntry.moduleIdx + 1} · Lesson {activeFlatEntry.lessonIdx + 1}
-                </div>
-              )}
-              <h1 className="text-2xl md:text-3xl font-bold mb-4 tracking-tight">{activeLesson.title}</h1>
-              {activeLesson.description && (
-                <p className="text-zinc-400 leading-relaxed whitespace-pre-line text-base md:text-lg">{activeLesson.description}</p>
-              )}
+              {/* Lesson Details */}
+              <div className="px-6 md:px-10 pt-6 pb-12 max-w-4xl">
+                {activeFlatEntry && (
+                  <div className="flex items-center gap-2 text-xs font-bold text-[#facc15]/80 uppercase tracking-widest mb-3">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#facc15]/60" />
+                    Module {activeFlatEntry.moduleIdx + 1} · Lesson {activeFlatEntry.lessonIdx + 1}
+                  </div>
+                )}
+                <h1 className="text-2xl md:text-3xl font-bold mb-4 tracking-tight">{activeLesson.title}</h1>
+                {activeLesson.description && (
+                  <p className="text-zinc-400 leading-relaxed whitespace-pre-line text-base md:text-lg">{activeLesson.description}</p>
+                )}
 
-              {/* Previous / Next lesson navigation */}
-              {(prevEntry || nextEntry) && (
-                <div className="flex items-center justify-between gap-4 mt-10 pt-6 border-t border-white/10">
-                  <button
-                    disabled={!prevEntry}
-                    onClick={() => prevEntry && setActiveLesson(prevEntry.lesson)}
-                    className="flex items-center gap-1.5 text-sm font-medium text-zinc-400 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-400 disabled:cursor-not-allowed transition-colors"
-                  >
-                    <ChevronLeft className="w-4 h-4" /> Previous
-                  </button>
-
-                  {nextEntry ? (
+                {/* Previous / Next lesson navigation */}
+                {(prevEntry || nextEntry) && (
+                  <div className="flex items-center justify-between gap-4 mt-10 pt-6 border-t border-white/10">
                     <button
-                      onClick={() => setActiveLesson(nextEntry.lesson)}
-                      className="flex items-center gap-2 pl-5 pr-4 py-2.5 bg-[#facc15] text-black font-semibold text-sm rounded-full hover:bg-yellow-400 transition-colors shadow-[0_8px_24px_-8px_rgba(250,204,21,0.5)]"
+                      disabled={!prevEntry}
+                      onClick={() => prevEntry && setActiveLesson(prevEntry.lesson)}
+                      className="flex items-center gap-1.5 text-sm font-medium text-zinc-400 hover:text-white disabled:opacity-30 disabled:hover:text-zinc-400 disabled:cursor-not-allowed transition-colors"
                     >
-                      <span className="max-w-[14rem] truncate">Next: {nextEntry.lesson.title}</span>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                      <ChevronLeft className="w-4 h-4" /> Previous
                     </button>
-                  ) : (
-                    <span className="text-sm font-medium text-zinc-600">🎉 Last lesson in this course</span>
-                  )}
-                </div>
-              )}
+
+                    {nextEntry ? (
+                      <button
+                        onClick={() => setActiveLesson(nextEntry.lesson)}
+                        className="flex items-center gap-2 pl-5 pr-4 py-2.5 bg-[#facc15] text-black font-semibold text-sm rounded-full hover:bg-yellow-400 transition-colors shadow-[0_8px_24px_-8px_rgba(250,204,21,0.5)]"
+                      >
+                        <span className="max-w-[14rem] truncate">Next: {nextEntry.lesson.title}</span>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>
+                      </button>
+                    ) : (
+                      <span className="text-sm font-medium text-zinc-600">🎉 Last lesson in this course</span>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
           ) : (
             <div className="w-full aspect-video bg-black flex flex-col items-center justify-center gap-2 text-zinc-500 md:rounded-2xl p-6">
               <Play className="w-12 h-12 opacity-30 mb-2" />

@@ -192,18 +192,20 @@ export default function StudentLiveClassesPage() {
         </div>
 
         <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
-          <div className="flex gap-2 p-1 bg-zinc-950 border border-white/5 rounded-xl w-max">
-            {(["today", "upcoming", "completed", "cancelled"] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all capitalize ${
-                  tab === t ? "bg-[#facc15] text-black shadow-sm" : "text-zinc-400 hover:text-white"
-                }`}
-              >
-                {t === "completed" ? "History / Past" : t}
-              </button>
-            ))}
+          <div className="w-full sm:w-auto overflow-x-auto scrollbar-none pb-1">
+            <div className="flex gap-1.5 sm:gap-2 p-1 bg-zinc-950 border border-white/5 rounded-xl w-max">
+              {(["today", "upcoming", "completed", "cancelled"] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={`px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-lg text-xs sm:text-sm font-semibold transition-all capitalize shrink-0 ${
+                    tab === t ? "bg-[#facc15] text-black shadow-sm" : "text-zinc-400 hover:text-white"
+                  }`}
+                >
+                  {t === "completed" ? "History / Past" : t}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="flex gap-2 p-1 bg-zinc-950 border border-white/5 rounded-xl w-max">
             <button onClick={() => setView("list")} className={`px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${view === "list" ? "bg-white/10 text-white" : "text-zinc-500 hover:text-white"}`}>

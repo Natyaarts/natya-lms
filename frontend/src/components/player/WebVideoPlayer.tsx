@@ -238,7 +238,7 @@ export default function WebVideoPlayer({
               audioRef.current.currentTime = pos;
               audioRef.current.playbackRate = v?.playbackRate || 1;
               if (wasPlaying) {
-                audioRef.current.play().catch(() => {});
+                audioRef.current.play().catch(() => { });
               }
             }
           }
@@ -443,9 +443,9 @@ export default function WebVideoPlayer({
         }
         setCurrentTime(restoreTime);
         if (wasPlayingRef.current) {
-          videoRef.current.play().catch(() => {});
+          videoRef.current.play().catch(() => { });
           if (activeLanguage !== "en" && audioRef.current) {
-            audioRef.current.play().catch(() => {});
+            audioRef.current.play().catch(() => { });
           }
         }
       } else if (savedProgressPosition > 0 && !hasAppliedInitialSeekRef.current && dur > 0) {
@@ -580,7 +580,7 @@ export default function WebVideoPlayer({
     setIsBuffering(true);
     if (videoRef.current) {
       videoRef.current.load();
-      videoRef.current.play().catch(() => {});
+      videoRef.current.play().catch(() => { });
     }
   };
 
@@ -894,9 +894,8 @@ export default function WebVideoPlayer({
 
       {/* Controls Overlay Bar */}
       <div
-        className={`absolute bottom-0 left-0 right-0 px-4 sm:px-6 pt-20 pb-4 sm:pb-6 bg-gradient-to-t from-black/95 via-black/60 to-transparent transition-opacity duration-300 z-30 flex flex-col gap-2.5 ${
-          showControls || !isPlaying || showLanguageMenu || showSpeedMenu ? "opacity-100" : "opacity-0 pointer-events-none"
-        }`}
+        className={`absolute bottom-0 left-0 right-0 px-4 sm:px-6 pt-20 pb-4 sm:pb-6 bg-gradient-to-t from-black/95 via-black/60 to-transparent transition-opacity duration-300 z-30 flex flex-col gap-2.5 ${showControls || !isPlaying || showLanguageMenu || showSpeedMenu ? "opacity-100" : "opacity-0 pointer-events-none"
+          }`}
       >
         {/* Seek Bar with buffer & thumb */}
         <div className="relative w-full h-1.5 hover:h-2.5 bg-white/20 rounded-full group/progress cursor-pointer flex items-center transition-all">
@@ -982,7 +981,7 @@ export default function WebVideoPlayer({
             </button>
 
             {/* Volume & Slider */}
-            <div className="flex items-center gap-1 group/volume pl-1">
+            <div className="hidden sm:flex items-center gap-1 group/volume pl-1">
               <button
                 onClick={toggleMute}
                 aria-label={isMuted || volume === 0 ? "Unmute" : "Mute"}
@@ -1020,11 +1019,10 @@ export default function WebVideoPlayer({
                   setShowLanguageMenu(false);
                 }}
                 aria-label="Playback speed menu"
-                className={`flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-full border transition-all ${
-                  showSpeedMenu || playbackSpeed !== 1
+                className={`flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-full border transition-all ${showSpeedMenu || playbackSpeed !== 1
                     ? "bg-[#facc15]/20 border-[#facc15]/40 text-[#facc15]"
                     : "bg-white/5 border-white/10 text-white/90 hover:bg-white/10 hover:text-white"
-                }`}
+                  }`}
               >
                 <Gauge className="w-3.5 h-3.5" />
                 <span>{playbackSpeed}x</span>
@@ -1046,11 +1044,10 @@ export default function WebVideoPlayer({
                       <button
                         key={spd}
                         onClick={() => applyPlaybackSpeed(spd)}
-                        className={`w-full text-left px-2.5 py-1.5 text-xs rounded-lg flex items-center justify-between transition-colors ${
-                          playbackSpeed === spd
+                        className={`w-full text-left px-2.5 py-1.5 text-xs rounded-lg flex items-center justify-between transition-colors ${playbackSpeed === spd
                             ? "bg-[#facc15]/15 text-[#facc15] font-semibold"
                             : "hover:bg-white/5 text-zinc-300"
-                        }`}
+                          }`}
                       >
                         <span>{spd}x</span>
                         {playbackSpeed === spd && <Check className="w-3.5 h-3.5 text-[#facc15]" />}
@@ -1069,21 +1066,20 @@ export default function WebVideoPlayer({
                   setShowSpeedMenu(false);
                 }}
                 aria-label="Audio language menu"
-                className={`flex items-center gap-1.5 text-xs font-medium px-2.5 sm:px-3 py-1.5 rounded-full border transition-all ${
-                  showLanguageMenu || activeLanguage !== "en"
+                className={`flex items-center gap-1.5 text-xs font-medium px-2.5 sm:px-3 py-1.5 rounded-full border transition-all ${showLanguageMenu || activeLanguage !== "en"
                     ? "bg-white/15 border-white/20 text-white"
                     : "bg-white/5 border-white/10 text-white/90 hover:bg-white/10 hover:text-white"
-                }`}
+                  }`}
               >
                 <Settings className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 <span className="max-w-[70px] sm:max-w-[100px] truncate">
                   {activeLanguage === "en"
                     ? "English"
                     : getLanguageDisplayName(
-                        availableAudios.find((a) => a.language_code.split("-")[0] === activeLanguage) || {
-                          language_code: activeLanguage,
-                        }
-                      )}
+                      availableAudios.find((a) => a.language_code.split("-")[0] === activeLanguage) || {
+                        language_code: activeLanguage,
+                      }
+                    )}
                 </span>
               </button>
 
@@ -1103,11 +1099,10 @@ export default function WebVideoPlayer({
                     {/* Original English */}
                     <button
                       onClick={() => changeLanguage("en")}
-                      className={`w-full text-left px-3 py-2 text-xs sm:text-sm rounded-xl mb-1 flex justify-between items-center transition-colors ${
-                        activeLanguage === "en"
+                      className={`w-full text-left px-3 py-2 text-xs sm:text-sm rounded-xl mb-1 flex justify-between items-center transition-colors ${activeLanguage === "en"
                           ? "bg-white/10 text-white font-medium"
                           : "hover:bg-white/5 text-zinc-300"
-                      }`}
+                        }`}
                     >
                       <span>English (Original)</span>
                       {activeLanguage === "en" && <Check className="w-4 h-4 text-[#facc15]" />}
@@ -1123,11 +1118,10 @@ export default function WebVideoPlayer({
                         <button
                           key={audio.id}
                           onClick={() => changeLanguage(langCode)}
-                          className={`w-full text-left px-3 py-2 text-xs sm:text-sm rounded-xl mb-1 flex justify-between items-center transition-colors ${
-                            isActive
+                          className={`w-full text-left px-3 py-2 text-xs sm:text-sm rounded-xl mb-1 flex justify-between items-center transition-colors ${isActive
                               ? "bg-white/10 text-white font-medium"
                               : "hover:bg-white/5 text-zinc-300"
-                          }`}
+                            }`}
                         >
                           <span>{langName}</span>
                           {isActive && <Check className="w-4 h-4 text-[#facc15]" />}

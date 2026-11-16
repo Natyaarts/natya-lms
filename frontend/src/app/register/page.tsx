@@ -108,18 +108,18 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-black font-sans text-white p-6 relative overflow-hidden">
-      
+    <div className="min-h-screen flex flex-col items-center justify-center bg-black font-sans text-white p-4 sm:p-6 relative overflow-y-auto">
+
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-[#facc15]/10 rounded-full blur-[150px] pointer-events-none" />
-      
-      <Link href="/" className="absolute top-8 left-8 text-2xl font-bold tracking-widest uppercase z-50">
+
+      <Link href="/" className="mb-6 md:mb-0 md:absolute md:top-8 md:left-8 text-2xl font-bold tracking-widest uppercase z-50">
         Natya <span className="text-zinc-500 font-medium">LMS</span>
       </Link>
 
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-md bg-[#0a0a0a] border border-white/10 rounded-[2rem] p-8 relative z-10 shadow-2xl"
+        className="w-full max-w-md bg-[#0a0a0a] border border-white/10 rounded-2xl sm:rounded-[2rem] p-5 sm:p-8 relative z-10 shadow-2xl"
       >
         <div className="text-center mb-8">
           <h2 className="text-3xl font-semibold mb-2">Create an account</h2>
@@ -133,12 +133,12 @@ export default function Register() {
         )}
 
         <div className="space-y-3 mb-8">
-          <button 
+          <button
             onClick={() => handleSocialLogin('google')}
             className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-white text-black font-medium rounded-full hover:bg-zinc-200 transition-colors"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 48 48">
-              <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8c-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C12.955 4 4 12.955 4 24s8.955 20 20 20s20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="m6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.222 0-9.654-3.343-11.124-8.089l-6.571 4.819C9.656 39.663 16.318 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002l6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/>
+              <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8c-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C12.955 4 4 12.955 4 24s8.955 20 20 20s20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z" /><path fill="#FF3D00" d="m6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C16.318 4 9.656 8.337 6.306 14.691z" /><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.222 0-9.654-3.343-11.124-8.089l-6.571 4.819C9.656 39.663 16.318 44 24 44z" /><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002l6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z" />
             </svg>
             Continue with Google
           </button>
@@ -152,23 +152,23 @@ export default function Register() {
 
         {step === 1 ? (
           <form onSubmit={handleSendOTP} className="space-y-4">
-            
+
             <div className="flex gap-2 h-[50px] mb-4">
-              <CountrySelect 
-                value={countryCode} 
-                onChange={setCountryCode} 
+              <CountrySelect
+                value={countryCode}
+                onChange={setCountryCode}
               />
-              <input 
-                type="tel" 
+              <input
+                type="tel"
                 name="identifier"
-                placeholder="Mobile number" 
+                placeholder="Mobile number"
                 required
                 value={formData.identifier}
                 onChange={handleChange}
                 className="flex-1 px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl text-white focus:outline-none focus:border-zinc-500 transition-colors h-full"
               />
             </div>
-            
+
             <motion.button
               type="submit"
               disabled={otpLoading}

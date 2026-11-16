@@ -111,11 +111,16 @@ class CourseViewSet(viewsets.ModelViewSet):
                 ).distinct()
             else:
                 # Student catalog / listing or instructor catalog request:
-                # Recorded courses: published recorded courses are public/discoverable.
+                # Recorded courses: published recorded courses with published lesson content are public/discoverable.
                 # Live courses: ONLY accessible if the student is assigned to a live batch or enrolled!
                 # Instructors see live courses they instruct or mentor.
+                public_recorded_q = Q(
+                    course_type=Course.CourseType.RECORDED,
+                    is_published=True,
+                    modules__lessons__isnull=False
+                )
                 qs = Course.objects.filter(
-                    Q(course_type=Course.CourseType.RECORDED, is_published=True) |
+                    public_recorded_q |
                     Q(course_type=Course.CourseType.LIVE, live_batches__students__student=user) |
                     Q(course_type=Course.CourseType.LIVE, live_batches__instructor=user) |
                     Q(course_type=Course.CourseType.LIVE, live_batches__mentor=user) |
@@ -123,8 +128,14 @@ class CourseViewSet(viewsets.ModelViewSet):
                     Q(instructors__user=user)
                 ).distinct()
         else:
-            # Anonymous users only see published RECORDED courses
-            qs = Course.objects.filter(is_published=True, course_type=Course.CourseType.RECORDED)
+            # Anonymous users only see published RECORDED courses with actual lesson content
+            from django.db.models import Q
+            public_recorded_q = Q(
+                course_type=Course.CourseType.RECORDED,
+                is_published=True,
+                modules__lessons__isnull=False
+            )
+            qs = Course.objects.filter(public_recorded_q).distinct()
 
         if self.action == 'list':
             from django.db.models import Prefetch

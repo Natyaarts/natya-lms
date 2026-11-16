@@ -164,18 +164,18 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-black font-sans text-white p-6 relative overflow-hidden">
+    <div className="min-h-screen flex flex-col items-center justify-center bg-black font-sans text-white p-4 sm:p-6 relative overflow-y-auto">
       
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-[#facc15]/10 rounded-full blur-[150px] pointer-events-none" />
       
-      <Link href="/" className="absolute top-8 left-8 z-50">
-        <img src="/img/logo.png" alt="Natya LMS Logo" className="h-10 w-auto" />
+      <Link href="/" className="mb-6 md:mb-0 md:absolute md:top-8 md:left-8 z-50">
+        <img src="/img/logo.png" alt="Natya LMS Logo" className="h-9 sm:h-10 w-auto" />
       </Link>
 
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-md bg-[#0a0a0a] border border-white/10 rounded-[2rem] p-8 relative z-10 shadow-2xl"
+        className="w-full max-w-md bg-[#0a0a0a] border border-white/10 rounded-2xl sm:rounded-[2rem] p-5 sm:p-8 relative z-10 shadow-2xl"
       >
         <div className="text-center mb-8">
           <h2 className="text-3xl font-semibold mb-2">Welcome back</h2>

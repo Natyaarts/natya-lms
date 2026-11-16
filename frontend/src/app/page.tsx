@@ -4,11 +4,13 @@ import Link from "next/link";
 import Image from "next/image";
 import { motion, useScroll, useTransform, useMotionValue, useSpring, useMotionTemplate } from "framer-motion";
 import { useState, useEffect, MouseEvent, useRef } from "react";
+import { Menu } from "lucide-react";
+import MobileNavDrawer from "@/components/navigation/MobileNavDrawer";
 
 // --- Advanced 3D Tilt Card Component ---
 function TiltCard({ children, className }: { children: React.ReactNode, className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
-  
+
   const x = useMotionValue(0);
   const y = useMotionValue(0);
 
@@ -21,16 +23,16 @@ function TiltCard({ children, className }: { children: React.ReactNode, classNam
   const handleMouseMove = (e: MouseEvent<HTMLDivElement>) => {
     if (!ref.current) return;
     const rect = ref.current.getBoundingClientRect();
-    
+
     const width = rect.width;
     const height = rect.height;
-    
+
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
-    
+
     const xPct = mouseX / width - 0.5;
     const yPct = mouseY / height - 0.5;
-    
+
     x.set(xPct);
     y.set(yPct);
   };
@@ -69,7 +71,8 @@ function TiltCard({ children, className }: { children: React.ReactNode, classNam
 export default function Home() {
   const [content, setContent] = useState<any>(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
   const { scrollY } = useScroll();
   const y1 = useTransform(scrollY, [0, 1000], [0, 400]);
   const opacityHero = useTransform(scrollY, [0, 500], [1, 0]);
@@ -117,9 +120,9 @@ export default function Home() {
 
   return (
     <div className="min-h-screen flex flex-col bg-black text-white font-sans selection:bg-[#facc15] selection:text-black overflow-x-hidden">
-      
+
       {/* Animated Navbar */}
-      <motion.nav 
+      <motion.nav
         initial={{ y: -100, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: 1, ease: "easeOut", delay: 0.5 }}
@@ -129,45 +132,56 @@ export default function Home() {
           <Link href="/" className="flex items-center group relative z-50 overflow-visible hover:scale-105 transition-transform duration-500">
             <Image src="/img/logo.png" alt="Natya LMS Logo" width={140} height={40} className="object-contain drop-shadow-[0_0_15px_rgba(250,204,21,0.3)]" />
           </Link>
-          
-          <div className="flex items-center gap-4 z-50">
+
+          <div className="flex items-center gap-2 sm:gap-4 z-50">
             {isLoggedIn ? (
-              <Link href="/dashboard" className="relative group px-8 py-3 overflow-hidden rounded-full bg-[#facc15] text-black text-sm font-bold uppercase tracking-[0.2em] transition-all hover:scale-105 hover:shadow-[0_0_40px_rgba(250,204,21,0.6)]">
+              <Link href="/dashboard" className="relative group px-5 sm:px-8 py-2 sm:py-3 overflow-hidden rounded-full bg-[#facc15] text-black text-xs sm:text-sm font-bold uppercase tracking-[0.2em] transition-all hover:scale-105 hover:shadow-[0_0_40px_rgba(250,204,21,0.6)]">
                 <span className="relative z-10">Dashboard</span>
               </Link>
             ) : (
               <>
-                <Link href="/login" className="hidden md:flex items-center gap-2 px-5 py-2 text-white/70 text-sm font-bold uppercase tracking-widest rounded-full hover:text-white hover:bg-white/10 transition-all duration-300">
+                <Link href="/login" className="flex items-center gap-1.5 px-3 sm:px-5 py-1.5 sm:py-2 text-white/80 text-xs sm:text-sm font-bold uppercase tracking-wider sm:tracking-widest rounded-full hover:text-white hover:bg-white/10 transition-all duration-300">
                   Sign In
                 </Link>
-                <Link href="/register" className="relative group px-8 py-3 overflow-hidden rounded-full bg-white text-black text-sm font-bold uppercase tracking-[0.2em] transition-all hover:scale-105 hover:shadow-[0_0_40px_rgba(255,255,255,0.4)]">
+                <Link href="/register" className="relative group px-4 sm:px-8 py-2 sm:py-3 overflow-hidden rounded-full bg-white text-black text-xs sm:text-sm font-bold uppercase tracking-wider sm:tracking-[0.2em] transition-all hover:scale-105 hover:shadow-[0_0_40px_rgba(255,255,255,0.4)]">
                   <span className="relative z-10">Sign Up</span>
                   <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/50 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]" />
                 </Link>
               </>
             )}
+
+            <button
+              type="button"
+              onClick={() => setIsMobileMenuOpen(true)}
+              aria-label="Open mobile menu"
+              className="md:hidden p-2 text-white/80 hover:text-white rounded-lg hover:bg-white/10 transition-colors pointer-events-auto"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
           </div>
         </div>
       </motion.nav>
 
+      <MobileNavDrawer isOpen={isMobileMenuOpen} onClose={() => setIsMobileMenuOpen(false)} />
+
       <main className="flex-grow flex flex-col">
         {/* Extreme Parallax Hero Section */}
         <section className="relative min-h-[100vh] bg-black overflow-hidden flex items-center justify-center pt-20">
-          
+
           {/* Parallax Background */}
-          <motion.div 
+          <motion.div
             style={{ y: y1 }}
             className="absolute inset-0 w-full h-[120%] -top-[10%] z-0"
           >
             <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/60 to-black z-10" />
-            <img 
-              src={hero.bg_image_url} 
-              alt="Hero Background" 
+            <img
+              src={hero.bg_image_url}
+              alt="Hero Background"
               className="w-full h-full object-cover object-top opacity-50 scale-105"
             />
           </motion.div>
 
-          <motion.div 
+          <motion.div
             style={{ opacity: opacityHero, scale: scaleHero }}
             className="relative z-10 container mx-auto px-6 text-center flex flex-col items-center mt-20"
           >
@@ -181,7 +195,7 @@ export default function Home() {
                 {hero.subtitle}
               </span>
             </motion.div>
-            
+
             <h1 className="text-5xl md:text-7xl lg:text-[6rem] font-bold tracking-tighter text-white leading-[1.05] mb-8 max-w-5xl mix-blend-lighten">
               {hero.title.split(' ').map((word: string, i: number) => (
                 <motion.span
@@ -199,8 +213,8 @@ export default function Home() {
                 </motion.span>
               ))}
             </h1>
-            
-            <motion.p 
+
+            <motion.p
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 1, delay: 1 }}
@@ -208,8 +222,8 @@ export default function Home() {
             >
               {hero.description}
             </motion.p>
-            
-            <motion.div 
+
+            <motion.div
               initial={{ opacity: 0, y: 40 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 1, delay: 1.2, type: "spring" }}
@@ -224,17 +238,17 @@ export default function Home() {
               </Link>
             </motion.div>
           </motion.div>
-          
+
           {/* Scroll Indicator */}
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 2, duration: 1 }}
             className="absolute bottom-10 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 z-20"
           >
             <span className="text-zinc-500 text-xs font-bold tracking-widest uppercase">Scroll</span>
-            <motion.div 
-              animate={{ y: [0, 10, 0] }} 
+            <motion.div
+              animate={{ y: [0, 10, 0] }}
               transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
               className="w-[2px] h-12 bg-gradient-to-b from-white/50 to-transparent rounded-full"
             />
@@ -244,7 +258,7 @@ export default function Home() {
         {/* 3D Features Section */}
         <section className="py-40 px-6 max-w-7xl mx-auto relative z-20">
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] rounded-full pointer-events-none -z-10" style={{ background: 'radial-gradient(circle, rgba(250,204,21,0.05) 0%, transparent 70%)' }} />
-          
+
           <div className="text-center mb-32">
             <motion.div
               initial={{ opacity: 0, scale: 0.8 }}
@@ -257,8 +271,8 @@ export default function Home() {
                 Groundbreaking Technology
               </h2>
             </motion.div>
-            
-            <motion.h3 
+
+            <motion.h3
               initial={{ opacity: 0, y: 50, filter: "blur(10px)" }}
               whileInView={{ opacity: 1, y: 0, filter: "blur(0px)" }}
               viewport={{ once: true, margin: "-100px" }}
@@ -270,11 +284,11 @@ export default function Home() {
               <span className="text-zinc-600 inline-block mt-4">Without losing the art.</span>
             </motion.h3>
           </div>
-          
+
           <div className="grid lg:grid-cols-2 gap-10 lg:gap-16 items-center [perspective:2000px]">
-            
+
             <TiltCard className="h-full w-full">
-              <motion.div 
+              <motion.div
                 initial={{ opacity: 0, rotateY: -30, x: -100 }}
                 whileInView={{ opacity: 1, rotateY: 0, x: 0 }}
                 viewport={{ once: true, margin: "-100px" }}
@@ -283,15 +297,15 @@ export default function Home() {
               >
                 <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                 <div className="relative rounded-[2rem] overflow-hidden aspect-[4/3] bg-black border border-white/5">
-                  <motion.video 
+                  <motion.video
                     whileHover={{ scale: 1.05 }}
                     transition={{ duration: 0.8 }}
-                    src="/video.mp4" 
+                    src="/video.mp4"
                     autoPlay
                     loop
                     muted
                     playsInline
-                    className="w-full h-full object-cover opacity-70" 
+                    className="w-full h-full object-cover opacity-70"
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent flex flex-col justify-end p-8">
                     <div className="flex justify-between items-end translate-z-[60px]">
@@ -311,9 +325,9 @@ export default function Home() {
                 </div>
               </motion.div>
             </TiltCard>
-            
+
             <TiltCard className="h-full w-full">
-              <motion.div 
+              <motion.div
                 initial={{ opacity: 0, rotateY: 30, x: 100 }}
                 whileInView={{ opacity: 1, rotateY: 0, x: 0 }}
                 viewport={{ once: true, margin: "-100px" }}
@@ -322,10 +336,10 @@ export default function Home() {
               >
                 <div className="absolute -bottom-40 -right-40 w-[500px] h-[500px] rounded-full group-hover:scale-110 transition-all duration-1000" style={{ background: 'radial-gradient(circle, rgba(250,204,21,0.1) 0%, transparent 70%)' }} />
                 <div className="absolute -top-40 -left-40 w-[400px] h-[400px] rounded-full transition-all duration-1000" style={{ background: 'radial-gradient(circle, rgba(255,255,255,0.05) 0%, transparent 70%)' }} />
-                
+
                 <div className="relative z-10 space-y-12 translate-z-[50px]">
                   {features.map((feature: any, i: number) => (
-                    <motion.div 
+                    <motion.div
                       key={i}
                       initial={{ opacity: 0, y: 30 }}
                       whileInView={{ opacity: 1, y: 0 }}
@@ -354,17 +368,17 @@ export default function Home() {
 
         {/* Extreme Call to Action */}
         <section className="py-52 px-6 text-center border-t border-white/5 relative overflow-hidden bg-[#050505]">
-          <motion.div 
-            animate={{ 
+          <motion.div
+            animate={{
               scale: [1, 1.2, 1],
               opacity: [0.3, 0.5, 0.3],
             }}
             transition={{ duration: 10, repeat: Infinity, ease: "easeInOut" }}
-            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1000px] h-[1000px] rounded-full pointer-events-none" 
+            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1000px] h-[1000px] rounded-full pointer-events-none"
             style={{ background: 'radial-gradient(circle, rgba(250,204,21,0.1) 0%, transparent 70%)' }}
           />
           <div className="absolute inset-0 bg-[url('https://natyaarts.com/img/noise.png')] opacity-20 mix-blend-overlay pointer-events-none" />
-          
+
           <div className="relative z-10 max-w-4xl mx-auto flex flex-col items-center">
             <motion.div
               initial={{ opacity: 0, scale: 0.5, filter: "blur(20px)" }}
@@ -373,11 +387,11 @@ export default function Home() {
               transition={{ duration: 1.5, ease: "easeOut" }}
             >
               <h2 className="text-6xl md:text-8xl lg:text-[7rem] font-bold tracking-tighter text-white mb-8 leading-tight">
-                Start learning <br/><span className="text-transparent bg-clip-text bg-gradient-to-r from-white to-zinc-600">today.</span>
+                Start learning <br /><span className="text-transparent bg-clip-text bg-gradient-to-r from-white to-zinc-600">today.</span>
               </h2>
             </motion.div>
-            
-            <motion.p 
+
+            <motion.p
               initial={{ opacity: 0, y: 30 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true, margin: "-100px" }}
@@ -386,7 +400,7 @@ export default function Home() {
             >
               Embrace the heritage. Master the art.
             </motion.p>
-            
+
             <motion.div
               initial={{ opacity: 0, y: 30 }}
               whileInView={{ opacity: 1, y: 0 }}
@@ -403,12 +417,13 @@ export default function Home() {
           </div>
         </section>
       </main>
-      
+
       <footer className="bg-[#020202] border-t border-white/5 py-12 text-center relative z-20">
         <p className="text-zinc-600 text-sm font-medium tracking-wider uppercase">© 2026 Natya LMS. All rights reserved.</p>
       </footer>
-      
-      <style dangerouslySetInnerHTML={{__html: `
+
+      <style dangerouslySetInnerHTML={{
+        __html: `
         @keyframes shimmer {
           100% { transform: translateX(100%); }
         }
