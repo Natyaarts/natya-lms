@@ -8,6 +8,7 @@ Default mode is strictly READ-ONLY (--dry-run).
 Database mutations require BOTH --commit and --confirm=CONFIRM-ZOOM-HOST-SYNC.
 """
 import sys
+import re
 from collections import defaultdict
 from typing import Dict, Any, List, Optional
 
@@ -22,7 +23,79 @@ from courses.services.zoom import ZoomService, ZoomAPIError
 
 CONFIRMATION_PHRASE = "CONFIRM-ZOOM-HOST-SYNC"
 EXPECTED_LICENSED_SEATS = 40
-EXCLUDED_TEACHER_IDS = frozenset({39})  # Permanently excluded test/admin accounts (Teacher #39: Vijay Pn)
+EXCLUDED_TEACHER_IDS = frozenset({1, 25, 96})  # Permanently excluded personal/test accounts for Vijay Pn
+
+# Authoritative Built-in Production Explicit Mappings with Identity Fingerprints.
+# These teachers hold legitimate Zoom Pro licenses under personal emails, but hold synthetic placeholder
+# emails (teacher_X@natya.internal) in the LMS User model. Mapped strictly by production LMS User ID.
+# Every entry includes full identity fingerprint validation (expected full name and expected phone).
+# User ID 56 (Vishnupriya) is deliberately excluded pending license allocation resolution.
+BUILTIN_EXPLICIT_TEACHER_MAPPINGS = {
+    189: {
+        "email": "abhinandapadman@gmail.com",
+        "expected_name": "ABHINANDA",
+        "expected_phone": "+918921902179",
+    },
+    51: {
+        "email": "akshayakalamandalam64@gmail.com",
+        "expected_name": "Kalamandalam Akshaya",
+        "expected_phone": "+918086370221",
+    },
+    53: {
+        "email": "sreehari2310468@gmail.com",
+        "expected_name": "SREEHARI",
+        "expected_phone": "+918129240526",
+    },
+    43: {
+        "email": "sreeranjinivinay@gmail.com",
+        "expected_name": "Kalakshetra Sreeranjini",
+        "expected_phone": "+916238748717",
+    },
+    49: {
+        "email": "jayalakshmiharikumar5060@gmail.com",
+        "expected_name": "Kalamandalam Jayalakshmi",
+        "expected_phone": "+919544060298",
+    },
+    40: {
+        "email": "anaswara0293@gmail.com",
+        "expected_name": "Kalakshetra Anaswara",
+        "expected_phone": "+919567092561",
+    },
+    38: {
+        "email": "parvathyks38@gmail.com",
+        "expected_name": "Kalamandalam Parvathy Panicker",
+        "expected_phone": "+917012019877",
+    },
+}
+
+# Backward compatibility alias
+EXPLICIT_TEACHER_ZOOM_MAPPINGS = {
+    tid: m["email"] for tid, m in BUILTIN_EXPLICIT_TEACHER_MAPPINGS.items()
+}
+
+
+def _normalize_phone(phone: Optional[str]) -> str:
+    """
+    Normalizes a phone number for unambiguous identity fingerprint comparison.
+    Extracts the 10-digit subscriber number (handling +91 country code and leading zeros).
+    """
+    if not phone:
+        return ""
+    digits = re.sub(r"\D", "", str(phone))
+    if digits.startswith("91") and len(digits) == 12:
+        return digits[2:]
+    if digits.startswith("0") and len(digits) == 11:
+        return digits[1:]
+    return digits
+
+
+def _normalize_name(name: Optional[str]) -> str:
+    """
+    Normalizes a teacher's full name by collapsing whitespace and standardizing case.
+    """
+    if not name:
+        return ""
+    return " ".join(str(name).strip().lower().split())
 
 
 class Command(BaseCommand):
@@ -56,11 +129,25 @@ class Command(BaseCommand):
             default=EXPECTED_LICENSED_SEATS,
             help=f"Expected number of licensed seats (default: {EXPECTED_LICENSED_SEATS})."
         )
+        parser.add_argument(
+            "--apply-explicit-mappings",
+            action="store_true",
+            default=False,
+            help="Explicitly opt-in to applying built-in production teacher-to-Zoom mappings with identity fingerprint verification."
+        )
+        parser.add_argument(
+            "--explicit-mappings",
+            dest="explicit_mappings",
+            default=None,
+            help="Optional JSON string (CLI) or dict (tests) of {instructor_id: zoom_email} or {instructor_id: {'email': ..., 'expected_name': ...}} overriding default mappings."
+        )
 
     def handle(self, *args, **options):
         is_commit = options.get("commit", False)
         confirm_phrase = options.get("confirm", "").strip()
         expected_seats = options.get("expected_seats", EXPECTED_LICENSED_SEATS)
+        apply_explicit_mappings = options.get("apply_explicit_mappings", False)
+        explicit_mappings = options.get("explicit_mappings")
 
         if is_commit:
             if confirm_phrase != CONFIRMATION_PHRASE:
@@ -72,6 +159,17 @@ class Command(BaseCommand):
         self.stdout.write("=" * 80)
         self.stdout.write("NATYA LMS — ZOOM HOST ACCOUNT RECONCILIATION & SYNCHRONIZATION")
         self.stdout.write("=" * 80)
+
+        if not apply_explicit_mappings and explicit_mappings is None:
+            self.stdout.write(self.style.NOTICE(
+                "[Safety Policy] Built-in explicit mappings are OPT-IN and NOT applied by default.\n"
+                "                Run with --apply-explicit-mappings or pass --explicit-mappings='<json>' to enable."
+            ))
+        elif apply_explicit_mappings and explicit_mappings is None:
+            self.stdout.write(self.style.SUCCESS(
+                f"[Safety Policy] --apply-explicit-mappings enabled: loading {len(BUILTIN_EXPLICIT_TEACHER_MAPPINGS)} "
+                "built-in production teacher mappings with strict identity fingerprint verification."
+            ))
 
         # ---------------------------------------------------------------------
         # 1. Inspect Existing Production Database State
@@ -89,7 +187,13 @@ class Command(BaseCommand):
         # 3. Perform Multi-Key Reconciliation & Conflict Detection
         # ---------------------------------------------------------------------
         self.stdout.write("\n[3/4] Performing multi-key matching against LMS teacher accounts...")
-        reconciliation = self._reconcile(db_snapshot, zoom_inventory, expected_seats)
+        reconciliation = self._reconcile(
+            db_snapshot=db_snapshot,
+            zoom_inventory=zoom_inventory,
+            expected_seats=expected_seats,
+            explicit_mappings=explicit_mappings,
+            apply_builtin_explicit=apply_explicit_mappings,
+        )
 
         # ---------------------------------------------------------------------
         # 4. Generate Comprehensive Audit Report
@@ -222,25 +326,218 @@ class Command(BaseCommand):
         }
 
     # -------------------------------------------------------------------------
+    # Explicit Mapping Parser & Validator
+    # -------------------------------------------------------------------------
+    def _parse_explicit_mappings(
+        self,
+        raw_input: Any,
+        apply_builtin: bool = False
+    ) -> Dict[int, Dict[str, Any]]:
+        """
+        Parses and normalizes explicit mappings with identity fingerprints.
+        Returns a dict of:
+          {instructor_id: {'email': str, 'expected_name': Optional[str], 'expected_phone': Optional[str]}}
+        """
+        if raw_input is None:
+            if not apply_builtin:
+                return {}
+            raw_dict = BUILTIN_EXPLICIT_TEACHER_MAPPINGS
+        elif isinstance(raw_input, dict):
+            raw_dict = raw_input
+        elif isinstance(raw_input, str):
+            import json
+            try:
+                parsed = json.loads(raw_input)
+                if not isinstance(parsed, dict):
+                    raise ValueError("JSON must decode to an object/dict")
+                raw_dict = parsed
+            except Exception as exc:
+                raise CommandError(
+                    f"Invalid --explicit-mappings format. Must be a JSON object mapping instructor IDs to emails/fingerprints: {exc}"
+                )
+        else:
+            raise CommandError(
+                f"Invalid --explicit-mappings type ({type(raw_input).__name__}). Must be a dict or JSON string."
+            )
+
+        norm_mappings = {}
+        for k, v in raw_dict.items():
+            try:
+                tid = int(k)
+            except (ValueError, TypeError):
+                raise CommandError(f"Invalid instructor ID in explicit mappings: {k!r}. Must be an integer.")
+
+            if isinstance(v, str):
+                if "@" not in v:
+                    raise CommandError(f"Invalid Zoom email in explicit mappings for instructor #{tid}: {v!r}.")
+                norm_mappings[tid] = {
+                    "email": v.strip().lower(),
+                    "expected_name": None,
+                    "expected_phone": None,
+                }
+            elif isinstance(v, dict):
+                email = v.get("email")
+                if not isinstance(email, str) or "@" not in email:
+                    raise CommandError(f"Invalid Zoom email in explicit mapping dict for instructor #{tid}: {email!r}.")
+                norm_mappings[tid] = {
+                    "email": email.strip().lower(),
+                    "expected_name": v.get("expected_name"),
+                    "expected_phone": v.get("expected_phone"),
+                }
+            else:
+                raise CommandError(
+                    f"Invalid mapping value for instructor #{tid} ({type(v).__name__}). Must be email string or dict."
+                )
+
+        return norm_mappings
+
+    # -------------------------------------------------------------------------
     # Multi-Key Reconciliation & Conflict Detection
     # -------------------------------------------------------------------------
     def _reconcile(
         self,
         db_snapshot: Dict[str, Any],
         zoom_inventory: Dict[str, Any],
-        expected_seats: int
+        expected_seats: int,
+        explicit_mappings: Optional[Any] = None,
+        apply_builtin_explicit: bool = False
     ) -> Dict[str, Any]:
         User = get_user_model()
 
-        # 1. Index LMS Teachers and detect duplicate emails (excluding EXCLUDED_TEACHER_IDS)
+        # Parse and normalize explicit mappings safely
+        norm_explicit_mappings = self._parse_explicit_mappings(
+            explicit_mappings,
+            apply_builtin=apply_builtin_explicit
+        )
+
+        conflicts = []
+        valid_explicit_teachers = {}
+        explicit_zoom_to_tids = defaultdict(list)
+        invalid_explicit_zoom_emails = set()
+
+        # Validate explicit mappings targets against strict invariants:
+        for tid, m_data in norm_explicit_mappings.items():
+            z_mail = m_data["email"]
+            exp_name = m_data.get("expected_name")
+            exp_phone = m_data.get("expected_phone")
+
+            # Invariant 1: Excluded teacher IDs must NEVER be in explicit mappings
+            if tid in EXCLUDED_TEACHER_IDS:
+                conflicts.append({
+                    "type": "CONFLICT_EXCLUDED_TEACHER",
+                    "zoom_user_id": "",
+                    "email": z_mail,
+                    "instructor_id": tid,
+                    "detail": f"Teacher #{tid} is permanently excluded in EXCLUDED_TEACHER_IDS; cannot map to Zoom email '{z_mail}'."
+                })
+                invalid_explicit_zoom_emails.add(z_mail)
+                continue
+
+            # Invariant 2: Target LMS User must exist in database
+            try:
+                user_obj = User.objects.get(id=tid)
+            except User.DoesNotExist:
+                conflicts.append({
+                    "type": "CONFLICT_EXPLICIT_MAPPING_USER_NOT_FOUND",
+                    "zoom_user_id": "",
+                    "email": z_mail,
+                    "instructor_id": tid,
+                    "detail": f"Explicitly mapped user #{tid} does not exist in LMS database."
+                })
+                invalid_explicit_zoom_emails.add(z_mail)
+                continue
+
+            # Invariant 3: Target LMS User must be a teacher (is_teacher == True)
+            if not getattr(user_obj, "is_teacher", False):
+                conflicts.append({
+                    "type": "CONFLICT_EXPLICIT_MAPPING_NOT_TEACHER",
+                    "zoom_user_id": "",
+                    "email": z_mail,
+                    "instructor_id": tid,
+                    "detail": f"Explicitly mapped user #{tid} ({user_obj.username}) is not a teacher (is_teacher=False)."
+                })
+                invalid_explicit_zoom_emails.add(z_mail)
+                continue
+
+            # Invariant 4: Target LMS Teacher must be active (is_active == True)
+            if not getattr(user_obj, "is_active", True):
+                conflicts.append({
+                    "type": "CONFLICT_EXPLICIT_MAPPING_USER_INACTIVE",
+                    "zoom_user_id": "",
+                    "email": z_mail,
+                    "instructor_id": tid,
+                    "detail": f"Explicitly mapped teacher #{tid} ({user_obj.username}) is inactive (is_active=False)."
+                })
+                invalid_explicit_zoom_emails.add(z_mail)
+                continue
+
+            # Invariant 5: Expected Teacher Name Fingerprint Match
+            if exp_name:
+                user_full_name = user_obj.get_full_name().strip() or f"{user_obj.first_name} {user_obj.last_name}".strip()
+                if _normalize_name(user_full_name) != _normalize_name(exp_name):
+                    conflicts.append({
+                        "type": "CONFLICT_EXPLICIT_MAPPING_NAME_MISMATCH",
+                        "zoom_user_id": "",
+                        "email": z_mail,
+                        "instructor_id": tid,
+                        "detail": f"Explicit mapping identity fingerprint mismatch for teacher #{tid}: expected name '{exp_name}', but found '{user_full_name}'."
+                    })
+                    invalid_explicit_zoom_emails.add(z_mail)
+                    continue
+
+            # Invariant 6: Expected Registered Phone Fingerprint Match
+            if exp_phone:
+                user_phone = getattr(user_obj, "phone_number", "") or ""
+                if not user_phone:
+                    conflicts.append({
+                        "type": "CONFLICT_EXPLICIT_MAPPING_PHONE_MISMATCH",
+                        "zoom_user_id": "",
+                        "email": z_mail,
+                        "instructor_id": tid,
+                        "detail": f"Explicit mapping identity fingerprint mismatch for teacher #{tid}: expected phone '{exp_phone}', but user has no phone number recorded."
+                    })
+                    invalid_explicit_zoom_emails.add(z_mail)
+                    continue
+                if _normalize_phone(user_phone) != _normalize_phone(exp_phone):
+                    conflicts.append({
+                        "type": "CONFLICT_EXPLICIT_MAPPING_PHONE_MISMATCH",
+                        "zoom_user_id": "",
+                        "email": z_mail,
+                        "instructor_id": tid,
+                        "detail": f"Explicit mapping identity fingerprint mismatch for teacher #{tid}: expected phone '{exp_phone}', but found '{user_phone}'."
+                    })
+                    invalid_explicit_zoom_emails.add(z_mail)
+                    continue
+
+            valid_explicit_teachers[tid] = user_obj
+            explicit_zoom_to_tids[z_mail].append(tid)
+
+        # Invariant 7: Zoom email uniqueness in explicit mappings (never map the same Zoom account to multiple teachers)
+        duplicate_explicit_zoom_emails = {
+            z_mail: tids for z_mail, tids in explicit_zoom_to_tids.items() if len(tids) > 1
+        }
+        for z_mail, tids in duplicate_explicit_zoom_emails.items():
+            conflicts.append({
+                "type": "CONFLICT_DUPLICATE_EXPLICIT_ZOOM_MAPPING",
+                "zoom_user_id": "",
+                "email": z_mail,
+                "detail": f"Multiple LMS teachers {tids} are mapped to the same Zoom email '{z_mail}'."
+            })
+            invalid_explicit_zoom_emails.add(z_mail)
+
+        # 1. Index active LMS Teachers and detect duplicate emails (excluding EXCLUDED_TEACHER_IDS)
         raw_teachers = list(
-            User.objects.filter(is_teacher=True)
+            User.objects.filter(is_teacher=True, is_active=True)
             .exclude(email__isnull=True)
             .exclude(email__exact="")
         )
         total_lms_teachers_raw = len(raw_teachers)
 
         teachers = [t for t in raw_teachers if t.id not in EXCLUDED_TEACHER_IDS]
+        teacher_by_id = {t.id: t for t in teachers}
+        # Merge verified valid explicit teachers
+        for tid, t_obj in valid_explicit_teachers.items():
+            teacher_by_id[tid] = t_obj
 
         lms_email_to_teachers = defaultdict(list)
         for t in teachers:
@@ -265,9 +562,9 @@ class Command(BaseCommand):
 
         proposed_creates = []
         proposed_updates = []
-        conflicts = []
         unmatched_zoom_licensed = []
         matched_zoom_emails = set()
+        matched_teacher_ids = set()
 
         for zu in zoom_inventory["licensed_users"]:
             z_uid = zu["id"]
@@ -283,8 +580,20 @@ class Command(BaseCommand):
                 })
                 continue
 
-            # Ambiguity Check: Duplicate LMS teacher email
-            if z_email in duplicate_lms_teacher_emails:
+            # Hard safety invariant: If this Zoom email belongs to an explicit mapping that failed validation,
+            # FAIL CLOSED! Never allow fallback matching (e.g. email matching) to bypass the explicit mapping failure.
+            if z_email in invalid_explicit_zoom_emails:
+                unmatched_zoom_licensed.append({
+                    "zoom_user_id": z_uid,
+                    "email": z_email,
+                    "display_name": zu["display_name"],
+                    "existing_host": existing_by_uid.get(z_uid) or (existing_by_email.get(z_email, [None])[0]),
+                    "reason": "Explicit mapping rejected due to validation conflict"
+                })
+                continue
+
+            # Ambiguity Check: Duplicate LMS teacher email (applies only if not explicitly mapped)
+            if z_email not in explicit_zoom_to_tids and z_email in duplicate_lms_teacher_emails:
                 conflicts.append({
                     "type": "AMBIGUOUS_DUPLICATE_LMS_TEACHER_EMAIL",
                     "zoom_user_id": z_uid,
@@ -293,13 +602,27 @@ class Command(BaseCommand):
                 })
                 continue
 
-            # Check if matching LMS teacher exists
-            lms_teachers = lms_email_to_teachers.get(z_email, [])
-            target_teacher = lms_teachers[0] if lms_teachers else None
+            # Check if matching LMS teacher exists:
+            # Priority A: Explicit synthetic-email mapping by production LMS instructor ID
+            target_teacher = None
+            if z_email in explicit_zoom_to_tids:
+                if z_email in duplicate_explicit_zoom_emails:
+                    continue  # already flagged in conflicts
+                mapped_tid = explicit_zoom_to_tids[z_email][0]
+                if mapped_tid in EXCLUDED_TEACHER_IDS:
+                    continue  # already flagged in conflicts
+                target_teacher = valid_explicit_teachers.get(mapped_tid)
+            else:
+                # Priority B: Exact email match
+                lms_teachers = lms_email_to_teachers.get(z_email, [])
+                target_teacher = lms_teachers[0] if lms_teachers else None
 
-            # Hard safety invariant: Never allow an excluded teacher to be target
-            if target_teacher and target_teacher.id in EXCLUDED_TEACHER_IDS:
-                target_teacher = None
+            # Hard safety invariant: Never allow an excluded, non-teacher, or inactive teacher to be target
+            if target_teacher:
+                if (target_teacher.id in EXCLUDED_TEACHER_IDS or
+                    not getattr(target_teacher, "is_teacher", False) or
+                    not getattr(target_teacher, "is_active", True)):
+                    target_teacher = None
 
             # Dual-key lookup in existing database records
             existing_host_by_id = existing_by_uid.get(z_uid)
@@ -360,6 +683,7 @@ class Command(BaseCommand):
                         continue
 
                 matched_zoom_emails.add(z_email)
+                matched_teacher_ids.add(target_teacher.id)
 
                 if not existing_host:
                     # Clean new DEDICATED host creation
@@ -370,6 +694,7 @@ class Command(BaseCommand):
                         "target_teacher": target_teacher,
                         "status": ZoomHostAccount.Status.ACTIVE,
                         "account_type": ZoomHostAccount.AccountType.DEDICATED,
+                        "max_concurrency": 1,
                     })
                     # Mark teacher claimed in this run
                     claimed_teacher_to_host[target_teacher.id] = type(
@@ -384,7 +709,7 @@ class Command(BaseCommand):
                     if existing_host.assigned_instructor_id and existing_host.assigned_instructor_id != target_teacher.id:
                         is_conflict = True
                         conflict_reasons.append(
-                            f"Assigned to instructor #{existing_host.assigned_instructor_id} ({existing_host.assigned_instructor.email}), cannot reassign to #{target_teacher.id} ({target_teacher.email})"
+                            f"Assigned to instructor #{existing_host.assigned_instructor_id} ({getattr(existing_host.assigned_instructor, 'email', '')}), cannot reassign to #{target_teacher.id} ({target_teacher.email})"
                         )
 
                     # Conflict 2: Inactive/Draining/Suspended preservation
@@ -404,7 +729,7 @@ class Command(BaseCommand):
                         })
                         continue
 
-                    # Plan safe update: preserve status, update assigned_instructor and account_type if unassigned
+                    # Plan safe update: preserve status, update assigned_instructor, account_type, max_concurrency
                     needs_update = False
                     changes = {}
 
@@ -420,6 +745,9 @@ class Command(BaseCommand):
                     if existing_host.assigned_instructor_id != target_teacher.id:
                         changes["assigned_instructor"] = (existing_host.assigned_instructor_id, target_teacher.id)
                         needs_update = True
+                    if existing_host.max_concurrency != 1:
+                        changes["max_concurrency"] = (existing_host.max_concurrency, 1)
+                        needs_update = True
 
                     if needs_update:
                         proposed_updates.append({
@@ -431,6 +759,7 @@ class Command(BaseCommand):
                             "zoom_user_id": z_uid,
                             "email": z_email,
                             "display_name": zu["display_name"] or existing_host.display_name,
+                            "max_concurrency": 1,
                         })
                     claimed_teacher_to_host[target_teacher.id] = existing_host
             else:
@@ -442,14 +771,36 @@ class Command(BaseCommand):
                     "existing_host": existing_host
                 })
 
+        # Check for missing explicit Zoom accounts:
+        # Every verified valid teacher in explicit mappings MUST match an active licensed user in Zoom
+        for tid, m_data in norm_explicit_mappings.items():
+            z_mail = m_data["email"]
+            if tid in valid_explicit_teachers and z_mail not in matched_zoom_emails:
+                basic_match = next((u for u in zoom_inventory.get("basic_users", []) if u["email"] == z_mail), None)
+                pending_match = next((u for u in zoom_inventory.get("pending_users", []) if u["email"] == z_mail), None)
+                if basic_match:
+                    reason = f"Zoom user '{z_mail}' exists but has Basic (type=1) license; requires Workplace Pro (type=2)."
+                elif pending_match:
+                    reason = f"Zoom user '{z_mail}' exists but is in Pending invitation status; invitation must be accepted."
+                else:
+                    reason = f"Zoom user '{z_mail}' was not found in Zoom tenant user inventory."
+
+                conflicts.append({
+                    "type": "CONFLICT_EXPLICIT_ZOOM_ACCOUNT_MISSING",
+                    "zoom_user_id": "",
+                    "email": z_mail,
+                    "instructor_id": tid,
+                    "detail": f"Explicitly mapped Zoom account for Teacher #{tid} ({z_mail}) is unavailable: {reason}"
+                })
+
         # Identify LMS teachers with NO matching Zoom account
         missing_lms_teachers = []
-        for norm_e, t_list in lms_email_to_teachers.items():
-            if norm_e not in matched_zoom_emails and norm_e not in duplicate_lms_teacher_emails:
+        for t in teachers:
+            if t.id not in matched_teacher_ids and t.email.strip().lower() not in duplicate_lms_teacher_emails:
                 missing_lms_teachers.append({
-                    "id": t_list[0].id,
-                    "name": t_list[0].get_full_name() or t_list[0].username,
-                    "email": norm_e,
+                    "id": t.id,
+                    "name": t.get_full_name() or t.username,
+                    "email": t.email,
                 })
 
         return {
@@ -462,7 +813,9 @@ class Command(BaseCommand):
             "total_lms_teachers_raw": total_lms_teachers_raw,
             "total_lms_teachers": len(teachers),
             "excluded_teacher_ids": sorted(list(EXCLUDED_TEACHER_IDS)),
-            "matched_teacher_count": len(matched_zoom_emails),
+            "matched_teacher_count": len(matched_teacher_ids),
+            "explicit_mappings_count": len(norm_explicit_mappings),
+            "explicit_mappings_enabled": bool(explicit_mappings is not None or apply_builtin_explicit),
         }
 
     # -------------------------------------------------------------------------
@@ -492,7 +845,19 @@ class Command(BaseCommand):
         self.stdout.write(f"  - Pending Invitations:        {len(zoom_inventory.get('pending_users', []))} (Invited in Zoom, awaiting acceptance)")
         self.stdout.write(f"\nLMS Teachers:")
         self.stdout.write(f"  - Registered Teachers (Total): {recon.get('total_lms_teachers_raw', recon['total_lms_teachers'])}")
-        self.stdout.write(f"  - Permanently Excluded:       {recon.get('excluded_teacher_ids', sorted(list(EXCLUDED_TEACHER_IDS)))} (Teacher ID 39: Vijay Pn)")
+        self.stdout.write(f"  - Permanently Excluded:       {recon.get('excluded_teacher_ids', sorted(list(EXCLUDED_TEACHER_IDS)))} (Personal test accounts: 1, 25, 96 - Vijay Pn)")
+        
+        explicit_enabled = recon.get("explicit_mappings_enabled", False)
+        explicit_count = recon.get("explicit_mappings_count", 0)
+        if explicit_enabled:
+            explicit_desc = f"{explicit_count} applied (opt-in enabled)"
+        else:
+            explicit_desc = "OPT-IN DISABLED (0 applied; pass --apply-explicit-mappings to enable)"
+        self.stdout.write(f"  - Explicit Synthetic Mappings:{explicit_desc}")
+
+        self.stdout.write(f"  - Net Eligible Teachers:       {recon['total_lms_teachers']}")
+        self.stdout.write(f"  - Exactly Matched with Zoom:  {recon['matched_teacher_count']}")
+        self.stdout.write(f"  - Unmatched Eligible Teachers: {len(recon['missing_lms_teachers'])}")
         self.stdout.write(f"  - Net Eligible Teachers:       {recon['total_lms_teachers']}")
         self.stdout.write(f"  - Exactly Matched with Zoom:  {recon['matched_teacher_count']}")
         self.stdout.write(f"  - Unmatched Eligible Teachers: {len(recon['missing_lms_teachers'])}")
@@ -557,9 +922,9 @@ class Command(BaseCommand):
             for item in recon["proposed_creates"]:
                 target_teacher = item.get("target_teacher")
                 target_id = target_teacher.id if target_teacher else item.get("assigned_instructor_id")
-                if target_id in EXCLUDED_TEACHER_IDS:
+                if not target_teacher or target_id in EXCLUDED_TEACHER_IDS or not getattr(target_teacher, "is_teacher", False) or not getattr(target_teacher, "is_active", True):
                     self.stdout.write(self.style.ERROR(
-                        f"BLOCKED Creation: Teacher #{target_id} is in EXCLUDED_TEACHER_IDS."
+                        f"BLOCKED Creation: Teacher #{target_id} is excluded, inactive, or not a teacher."
                     ))
                     continue
                 host = ZoomHostAccount.objects.create(
@@ -578,9 +943,9 @@ class Command(BaseCommand):
             for item in recon["proposed_updates"]:
                 target_teacher = item.get("target_teacher")
                 target_id = target_teacher.id if target_teacher else (item.get("new_assigned_instructor_id") or item.get("assigned_instructor_id"))
-                if target_id in EXCLUDED_TEACHER_IDS:
+                if not target_teacher or target_id in EXCLUDED_TEACHER_IDS or not getattr(target_teacher, "is_teacher", False) or not getattr(target_teacher, "is_active", True):
                     self.stdout.write(self.style.ERROR(
-                        f"BLOCKED Update: Teacher #{target_id} is in EXCLUDED_TEACHER_IDS."
+                        f"BLOCKED Update: Teacher #{target_id} is excluded, inactive, or not a teacher."
                     ))
                     continue
                 host = ZoomHostAccount.objects.select_for_update().get(id=item["host"].id)
@@ -607,7 +972,8 @@ class Command(BaseCommand):
                 host.display_name = item["display_name"]
                 host.account_type = ZoomHostAccount.AccountType.DEDICATED
                 host.assigned_instructor = item["target_teacher"]
-                host.save(update_fields=["zoom_user_id", "email", "display_name", "account_type", "assigned_instructor", "updated_at"])
+                host.max_concurrency = 1
+                host.save(update_fields=["zoom_user_id", "email", "display_name", "account_type", "assigned_instructor", "max_concurrency", "updated_at"])
                 updated_count += 1
                 self.stdout.write(f"Updated Host #{host.id}: {host.email} -> Teacher #{item['target_teacher'].id}")
 

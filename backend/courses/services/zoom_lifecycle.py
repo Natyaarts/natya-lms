@@ -590,6 +590,10 @@ def select_and_reserve_host(
                 raise HostCapacityExhaustedError(
                     f"Unauthorized host selection: host {preferred_host_id} is a dedicated host for another instructor."
                 )
+        if pref_host.assigned_instructor_id and pref_host.assigned_instructor_id != eff_inst_id:
+            raise HostCapacityExhaustedError(
+                f"Unauthorized host selection: host {preferred_host_id} is assigned to another instructor."
+            )
         if pref_host.email_lower in other_teacher_emails:
             raise HostCapacityExhaustedError(
                 f"Unauthorized host selection: host {preferred_host_id} ({pref_host.email}) belongs to another instructor."
@@ -597,7 +601,7 @@ def select_and_reserve_host(
         # If current teacher has a dedicated host, preferred host must match it
         if dedicated_host and dedicated_host.id != pref_host.id:
             raise HostCapacityExhaustedError(
-                f"Instructor '{teacher_email}' is bound to dedicated host {dedicated_host.id}; cannot use host {preferred_host_id}."
+                f"Instructor '{teacher_email or eff_inst}' is bound to dedicated host {dedicated_host.id}; cannot use host {preferred_host_id}."
             )
         host_query = host_query.filter(id=preferred_host_id)
 
@@ -632,7 +636,8 @@ def select_and_reserve_host(
             scheduled_end__gt=start_time,
         ).exclude(live_class=live_class).count()
 
-        if overlap_count < host.max_concurrency:
+        eff_max_concurrency = 1 if host.account_type == ZoomHostAccount.AccountType.DEDICATED else host.max_concurrency
+        if overlap_count < eff_max_concurrency:
             selected_host = host
             break
 
