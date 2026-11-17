@@ -35,7 +35,10 @@ from courses.services.zoom_lifecycle import (
 )
 from courses.views import LiveClassViewSet
 from courses.management.commands.sync_zoom_host_accounts import (
+    Command,
     EXCLUDED_TEACHER_IDS,
+    EXCLUDED_ZOOM_EMAILS,
+    PROTECTED_EXISTING_TEACHER_IDS,
     EXPLICIT_TEACHER_ZOOM_MAPPINGS,
     BUILTIN_EXPLICIT_TEACHER_MAPPINGS,
 )
@@ -685,7 +688,8 @@ class SyncZoomHostAccountsCommandTests(TestCase):
         self.assertFalse(ZoomHostAccount.objects.filter(assigned_instructor_id=189).exists())
 
     @mock.patch.object(ZoomService, "list_users")
-    def test_all_seven_explicit_synthetic_teacher_mappings_matched_by_instructor_id(self, mock_list_users):
+    def test_all_fourteen_explicit_synthetic_teacher_mappings_matched_by_instructor_id(self, mock_list_users):
+        self.assertEqual(len(BUILTIN_EXPLICIT_TEACHER_MAPPINGS), 14)
         created_teachers = {}
         for tid, data in BUILTIN_EXPLICIT_TEACHER_MAPPINGS.items():
             t = User.objects.create_user(
@@ -726,7 +730,7 @@ class SyncZoomHostAccountsCommandTests(TestCase):
         )
         output = out.getvalue()
 
-        # Verify all 7 host accounts created with max_concurrency = 1
+        # Verify all 14 host accounts created with max_concurrency = 1
         for tid, data in BUILTIN_EXPLICIT_TEACHER_MAPPINGS.items():
             host = ZoomHostAccount.objects.get(assigned_instructor_id=tid)
             self.assertEqual(host.email, data["email"])
@@ -1007,6 +1011,369 @@ class SyncZoomHostAccountsCommandTests(TestCase):
         with self.assertRaises(CommandError) as ctx:
             call_command("sync_zoom_host_accounts", explicit_mappings="not valid json")
         self.assertIn("Invalid --explicit-mappings format", str(ctx.exception))
+
+    @mock.patch.object(ZoomService, "list_users")
+    def test_existing_eight_host_assignments_preserved_without_alteration(self, mock_list_users):
+        """
+        Verify that all eight protected dedicated host assignments (Teacher IDs: 54, 57, 58, 59, 60, 61, 62, 63)
+        are never overwritten, reassigned, deleted, or deactivated.
+        """
+        self.assertEqual(PROTECTED_EXISTING_TEACHER_IDS, frozenset({54, 57, 58, 59, 60, 61, 62, 63}))
+        for tid in sorted(list(PROTECTED_EXISTING_TEACHER_IDS)):
+            t = User.objects.create_user(
+                id=tid,
+                username=f"teacher_{tid}",
+                email=f"teacher_{tid}@natyaarts.com",
+                first_name=f"Teacher{tid}",
+                is_teacher=True
+            )
+            ZoomHostAccount.objects.create(
+                zoom_user_id=f"zoom_protected_{tid}",
+                email=f"teacher_{tid}@natyaarts.com",
+                display_name=f"Teacher {tid} Display",
+                status=ZoomHostAccount.Status.ACTIVE,
+                account_type=ZoomHostAccount.AccountType.DEDICATED,
+                assigned_instructor=t,
+                max_concurrency=1
+            )
+
+        # Mock list_users returning existing protected hosts + sample users
+        users = self._sample_zoom_users()
+        for tid in sorted(list(PROTECTED_EXISTING_TEACHER_IDS)):
+            users.append({
+                "id": f"zoom_protected_{tid}",
+                "email": f"teacher_{tid}@natyaarts.com",
+                "display_name": f"Teacher {tid} Display",
+                "type": 2,
+                "status": "active"
+            })
+        mock_list_users.return_value = users
+
+        out = StringIO()
+        call_command(
+            "sync_zoom_host_accounts",
+            commit=True,
+            confirm="CONFIRM-ZOOM-HOST-SYNC",
+            stdout=out
+        )
+        output = out.getvalue()
+
+        # All 8 protected hosts remain intact
+        for tid in sorted(list(PROTECTED_EXISTING_TEACHER_IDS)):
+            host = ZoomHostAccount.objects.get(assigned_instructor_id=tid)
+            self.assertEqual(host.zoom_user_id, f"zoom_protected_{tid}")
+            self.assertEqual(host.email, f"teacher_{tid}@natyaarts.com")
+            self.assertEqual(host.status, ZoomHostAccount.Status.ACTIVE)
+            self.assertEqual(host.account_type, ZoomHostAccount.AccountType.DEDICATED)
+            self.assertEqual(host.max_concurrency, 1)
+
+    @mock.patch.object(ZoomService, "list_users")
+    def test_reassignment_of_protected_host_fails_closed(self, mock_list_users):
+        """
+        Verify that if an existing host is bound to a protected teacher (e.g. #54),
+        it CANNOT be reassigned to a different teacher (#182), failing closed with CONFLICT_PROTECTED_HOST_REASSIGNMENT.
+        """
+        t54 = User.objects.create_user(
+            id=54, username="teacher_54", email="t54@natyaarts.com", is_teacher=True
+        )
+        host54 = ZoomHostAccount.objects.create(
+            zoom_user_id="zoom_54",
+            email="shared_protected@gmail.com",
+            status=ZoomHostAccount.Status.ACTIVE,
+            account_type=ZoomHostAccount.AccountType.DEDICATED,
+            assigned_instructor=t54,
+            max_concurrency=1
+        )
+        t182 = User.objects.create_user(
+            id=182, username="teacher_182", email="t182@natya.internal", is_teacher=True,
+            first_name="Kalamandalam Vaishnavi", phone_number="+916235528825"
+        )
+
+        # Incoming Zoom user has email 'shared_protected@gmail.com' and attempts to map to 182
+        users = self._sample_zoom_users()
+        users.append({
+            "id": "zoom_54",
+            "email": "shared_protected@gmail.com",
+            "display_name": "Shared Protected",
+            "type": 2,
+            "status": "active"
+        })
+        mock_list_users.return_value = users
+
+        out = StringIO()
+        call_command(
+            "sync_zoom_host_accounts",
+            stdout=out,
+            explicit_mappings={182: "shared_protected@gmail.com"}
+        )
+        output = out.getvalue()
+
+        self.assertIn("CONFLICT_PROTECTED_HOST_REASSIGNMENT", output)
+        host54.refresh_from_db()
+        self.assertEqual(host54.assigned_instructor_id, 54)
+
+    @mock.patch.object(ZoomService, "list_users")
+    def test_zoom_owner_account_and_non_teachers_40_49_rejected(self, mock_list_users):
+        """
+        Verify:
+        - Tenant owner account 'vijay.pn@natyaarts.com' is excluded from host creation and explicit mappings.
+        - Non-teacher IDs 40 and 49 are excluded in EXCLUDED_TEACHER_IDS and cannot be mapped.
+        """
+        self.assertIn("vijay.pn@natyaarts.com", EXCLUDED_ZOOM_EMAILS)
+        self.assertIn(40, EXCLUDED_TEACHER_IDS)
+        self.assertIn(49, EXCLUDED_TEACHER_IDS)
+
+        # 1. Attempt explicit mapping with tenant owner email
+        t182 = User.objects.create_user(
+            id=182, username="t182", email="t182@natya.internal", is_teacher=True
+        )
+        out = StringIO()
+        call_command(
+            "sync_zoom_host_accounts",
+            stdout=out,
+            explicit_mappings={182: "vijay.pn@natyaarts.com"}
+        )
+        output = out.getvalue()
+        self.assertIn("CONFLICT_EXCLUDED_ZOOM_OWNER", output)
+
+        # 2. Attempt explicit mapping with excluded non-teachers 40 and 49
+        u40 = User.objects.create_user(id=40, username="user_40", email="u40@natya.internal", is_teacher=False)
+        u49 = User.objects.create_user(id=49, username="user_49", email="u49@natya.internal", is_teacher=False)
+
+        out2 = StringIO()
+        call_command(
+            "sync_zoom_host_accounts",
+            stdout=out2,
+            explicit_mappings={40: "u40@gmail.com", 49: "u49@gmail.com"}
+        )
+        output2 = out2.getvalue()
+        self.assertIn("CONFLICT_EXCLUDED_TEACHER", output2)
+        self.assertFalse(ZoomHostAccount.objects.filter(assigned_instructor_id__in=[40, 49]).exists())
+
+        # 3. Verify owner email in Zoom inventory is placed in owner_users and not created
+        users = self._sample_zoom_users()
+        users.append({
+            "id": "zoom_owner_vijay",
+            "email": "vijay.pn@natyaarts.com",
+            "display_name": "Vijay PN Owner",
+            "type": 2,
+            "status": "active"
+        })
+        mock_list_users.return_value = users
+
+        out3 = StringIO()
+        call_command(
+            "sync_zoom_host_accounts",
+            commit=True,
+            confirm="CONFIRM-ZOOM-HOST-SYNC",
+            stdout=out3
+        )
+        output3 = out3.getvalue()
+        self.assertIn("Excluded Owner Accounts:    1", output3)
+        self.assertFalse(ZoomHostAccount.objects.filter(email="vijay.pn@natyaarts.com").exists())
+
+    @mock.patch.object(ZoomService, "list_users")
+    def test_pending_invitation_zoom_account_not_assigned_as_active_host(self, mock_list_users):
+        """
+        Verify that pending Zoom invitations (status='pending') are never allocated as active hosts.
+        """
+        t183 = User.objects.create_user(
+            id=183, username="t183", email="teacher_183@natya.internal", is_teacher=True,
+            first_name="AMRITHA", phone_number="+917356597816"
+        )
+        def side_effect(status="active", page_size=300):
+            if status == "active":
+                return self._sample_zoom_users()
+            elif status == "pending":
+                return [{
+                    "id": "zoom_pending_amritha",
+                    "email": "amrithasivakumar3@gmail.com",
+                    "first_name": "AMRITHA",
+                    "type": 2,
+                    "status": "pending"
+                }]
+            return []
+        mock_list_users.side_effect = side_effect
+
+        out = StringIO()
+        call_command(
+            "sync_zoom_host_accounts",
+            apply_explicit_mappings=True,
+            commit=True,
+            confirm="CONFIRM-ZOOM-HOST-SYNC",
+            stdout=out
+        )
+        output = out.getvalue()
+        self.assertIn("CONFLICT_EXPLICIT_ZOOM_ACCOUNT_MISSING", output)
+        self.assertIn("invitation must be accepted", output)
+        self.assertFalse(ZoomHostAccount.objects.filter(email="amrithasivakumar3@gmail.com").exists())
+        self.assertFalse(ZoomHostAccount.objects.filter(assigned_instructor_id=183).exists())
+
+    @mock.patch.object(ZoomService, "list_users")
+    def test_execution_loop_skips_proposed_update_for_protected_host_even_if_target_teacher_same(self, mock_list_users):
+        """
+        Safety Correction 1:
+        For teacher IDs in PROTECTED_EXISTING_TEACHER_IDS ({54, 57, 58, 59, 60, 61, 62, 63}),
+        the execution loop must skip every proposed update whose existing host is assigned
+        to one of these IDs, even when the proposed target teacher is the same.
+        Preserve all existing fields unchanged.
+        """
+        t54 = User.objects.create_user(
+            id=54,
+            username="teacher_54",
+            email="yathivandyaks@gmail.com",
+            first_name="Yathivandya K.S",
+            is_teacher=True
+        )
+        orig_host = ZoomHostAccount.objects.create(
+            id=54,
+            zoom_user_id="orig_zoom_54",
+            email="yathivandyaks@gmail.com",
+            display_name="Yathivandya K.S Original",
+            status=ZoomHostAccount.Status.ACTIVE,
+            account_type=ZoomHostAccount.AccountType.DEDICATED,
+            assigned_instructor=t54,
+            max_concurrency=1
+        )
+
+        # Zoom API returns a user for yathivandyaks@gmail.com with modified attributes
+        users = self._sample_zoom_users()
+        users.append({
+            "id": "new_zoom_id_54",
+            "email": "yathivandyaks@gmail.com",
+            "display_name": "Yathivandya Changed Display",
+            "type": 2,
+            "status": "active"
+        })
+        mock_list_users.return_value = users
+
+        out = StringIO()
+        call_command(
+            "sync_zoom_host_accounts",
+            commit=True,
+            confirm="CONFIRM-ZOOM-HOST-SYNC",
+            stdout=out
+        )
+        output = out.getvalue()
+
+        self.assertIn("SKIPPED Update: Existing host #54 is bound to protected Teacher #54; preserved unchanged.", output)
+        orig_host.refresh_from_db()
+        self.assertEqual(orig_host.zoom_user_id, "orig_zoom_54")
+        self.assertEqual(orig_host.display_name, "Yathivandya K.S Original")
+        self.assertEqual(orig_host.email, "yathivandyaks@gmail.com")
+        self.assertEqual(orig_host.assigned_instructor_id, 54)
+
+    @mock.patch.object(ZoomService, "list_users")
+    def test_failed_explicit_mapping_teacher_id_blocked_from_ordinary_email_fallback(self, mock_list_users):
+        """
+        Safety Correction 2:
+        Failed explicit mapping teacher IDs are tracked in blocked_explicit_teacher_ids.
+        They must be excluded from ordinary email fallback matching as well as excluding invalid Zoom emails.
+        A failed explicit mapping must never be silently reassigned through fallback.
+        """
+        # Teacher #189 exists with legitimate LMS email and name
+        t189 = User.objects.create_user(
+            id=189,
+            username="teacher_189",
+            email="abhinanda.lms@natyaarts.com",
+            first_name="ABHINANDA",
+            phone_number="+918921902179",
+            is_teacher=True
+        )
+
+        # Explicit mapping configured with mismatched phone -> fails validation
+        mismatched_explicit_mappings = {
+            189: {
+                "email": "abhinandapadman@gmail.com",
+                "expected_name": "ABHINANDA",
+                "expected_phone": "+910000000000"  # Deliberate mismatch
+            }
+        }
+
+        # Zoom API returns TWO licensed users:
+        # User A: abhinandapadman@gmail.com (the explicit Zoom email that failed validation)
+        # User B: abhinanda.lms@natyaarts.com (matches Teacher #189's LMS email directly!)
+        users = self._sample_zoom_users()
+        users.append({
+            "id": "zoom_explicit_189",
+            "email": "abhinandapadman@gmail.com",
+            "display_name": "Abhinanda Pro",
+            "type": 2,
+            "status": "active"
+        })
+        users.append({
+            "id": "zoom_fallback_189",
+            "email": "abhinanda.lms@natyaarts.com",
+            "display_name": "Abhinanda LMS Match",
+            "type": 2,
+            "status": "active"
+        })
+        mock_list_users.return_value = users
+
+        out = StringIO()
+        call_command(
+            "sync_zoom_host_accounts",
+            explicit_mappings=mismatched_explicit_mappings,
+            commit=True,
+            confirm="CONFIRM-ZOOM-HOST-SYNC",
+            stdout=out
+        )
+        output = out.getvalue()
+
+        # Both the explicit Zoom email and the fallback LMS email must NOT be assigned to Teacher #189
+        self.assertIn("CONFLICT_EXPLICIT_MAPPING_PHONE_MISMATCH", output)
+        self.assertFalse(ZoomHostAccount.objects.filter(assigned_instructor_id=189).exists())
+        self.assertFalse(ZoomHostAccount.objects.filter(email="abhinandapadman@gmail.com").exists())
+        self.assertFalse(ZoomHostAccount.objects.filter(email="abhinanda.lms@natyaarts.com").exists())
+
+    @mock.patch.object(ZoomService, "list_users")
+    def test_all_validation_failure_reasons_add_teacher_to_blocked_explicit_ids(self, mock_list_users):
+        """
+        Verify that all failure conditions (missing user, inactive, non-teacher, name mismatch,
+        phone mismatch, excluded teacher, duplicate explicit mapping) populate blocked_explicit_teacher_ids.
+        """
+        # User 201: Non-teacher
+        User.objects.create_user(id=201, username="u201", email="u201@natya.internal", is_teacher=False)
+        # User 202: Inactive teacher
+        User.objects.create_user(id=202, username="u202", email="u202@natya.internal", is_teacher=True, is_active=False)
+        # User 203: Name mismatch
+        User.objects.create_user(id=203, username="u203", email="u203@natya.internal", first_name="Real Name", is_teacher=True)
+        # User 204: Phone mismatch
+        User.objects.create_user(id=204, username="u204", email="u204@natya.internal", first_name="Valid Name", phone_number="+911111111111", is_teacher=True)
+        # User 205 & 206: Duplicate explicit zoom email
+        User.objects.create_user(id=205, username="u205", email="u205@natya.internal", is_teacher=True)
+        User.objects.create_user(id=206, username="u206", email="u206@natya.internal", is_teacher=True)
+
+        explicit_dict = {
+            1: "excluded@gmail.com",
+            9999: "missing@gmail.com",
+            201: "nonteacher@gmail.com",
+            202: "inactive@gmail.com",
+            203: {"email": "namemismatch@gmail.com", "expected_name": "Wrong Name"},
+            204: {"email": "phonemismatch@gmail.com", "expected_name": "Valid Name", "expected_phone": "+919999999999"},
+            205: "duplicate@gmail.com",
+            206: "duplicate@gmail.com",
+        }
+
+        mock_list_users.return_value = self._sample_zoom_users()
+
+        cmd = Command()
+        recon = cmd._reconcile(
+            db_snapshot={"hosts": [], "by_user_id": {}, "by_email": {}},
+            zoom_inventory={"licensed_users": [], "duplicate_zoom_emails": {}, "basic_users": [], "pending_users": []},
+            expected_seats=40,
+            explicit_mappings=explicit_dict
+        )
+
+        blocked_ids = recon["blocked_explicit_teacher_ids"]
+        self.assertIn(1, blocked_ids)      # Excluded
+        self.assertIn(9999, blocked_ids)   # Missing
+        self.assertIn(201, blocked_ids)    # Non-teacher
+        self.assertIn(202, blocked_ids)    # Inactive
+        self.assertIn(203, blocked_ids)    # Name mismatch
+        self.assertIn(204, blocked_ids)    # Phone mismatch
+        self.assertIn(205, blocked_ids)    # Duplicate explicit
+        self.assertIn(206, blocked_ids)    # Duplicate explicit
 
     # -------------------------------------------------------------------------
     # 11. Dedicated Host Concurrency, Overlap Rejection, and Isolation
