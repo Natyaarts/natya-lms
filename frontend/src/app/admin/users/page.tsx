@@ -703,9 +703,9 @@ export default function AdminUsers() {
                       className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
                     />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Phone Number *</label>
-                    <div className="flex gap-2 h-[42px]">
+                    <div className="flex gap-2 h-[42px] min-w-0">
                       <CountrySelect
                         value={countryCode}
                         onChange={setCountryCode}
@@ -716,7 +716,7 @@ export default function AdminUsers() {
                         placeholder="e.g. 8113900860"
                         value={formFields.phone_number}
                         onChange={e => setFormFields({ ...formFields, phone_number: e.target.value })}
-                        className="flex-1 bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15] h-full"
+                        className="flex-1 min-w-0 w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15] h-full"
                       />
                     </div>
                   </div>
@@ -804,9 +804,9 @@ export default function AdminUsers() {
                           className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
                         />
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Parent Phone</label>
-                        <div className="flex gap-2 h-[42px]">
+                        <div className="flex gap-2 h-[42px] min-w-0">
                           <CountrySelect
                             value={parentCountryCode}
                             onChange={setParentCountryCode}
@@ -816,7 +816,7 @@ export default function AdminUsers() {
                             placeholder="e.g. 8888888888"
                             value={formFields.parent_phone}
                             onChange={e => setFormFields({ ...formFields, parent_phone: e.target.value })}
-                            className="flex-1 bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15] h-full"
+                            className="flex-1 min-w-0 w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15] h-full"
                           />
                         </div>
                       </div>
