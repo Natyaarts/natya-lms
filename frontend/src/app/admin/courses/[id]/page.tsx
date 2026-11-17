@@ -928,7 +928,7 @@ export default function CourseManager() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Left Column: Course Details */}
         <div className="lg:col-span-4 space-y-6">
-          <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 sticky top-6">
+          <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6">
             <div className="aspect-video bg-black rounded-lg mb-4 overflow-hidden flex items-center justify-center border border-white/5 relative group">
               {course.thumbnail ? (
                 <img src={course.thumbnail} alt={course.title} className="w-full h-full object-cover group-hover:opacity-50 transition-opacity" />
