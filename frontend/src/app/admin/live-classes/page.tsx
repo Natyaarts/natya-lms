@@ -1437,7 +1437,7 @@ export default function LiveClassesPage() {
       {/* Tabs and View Switcher */}
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div className="flex gap-1.5 p-1 bg-[#0e0e12] border border-white/10 rounded-xl w-max shadow-inner flex-wrap">
-          {(["today", "upcoming", "history", "cancelled", "batches", "settings"] as const).map((t) => (
+          {(["today", "upcoming", "history", "cancelled", "batches", ...(isFullAdmin ? (["settings"] as const) : [])] as const).map((t) => (
             <button
               key={t}
               onClick={() => {
@@ -1762,7 +1762,7 @@ export default function LiveClassesPage() {
               )}
               </>
             )
-          ) : tab === "settings" ? (
+          ) : tab === "settings" && isFullAdmin ? (
             <div className="p-6 space-y-6">
               {/* Header */}
               <div className="flex items-center justify-between pb-4 border-b border-white/10">

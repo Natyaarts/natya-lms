@@ -373,13 +373,13 @@ export default function AdminUsers() {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-white/5 border-b border-white/10 text-xs text-zinc-400 uppercase tracking-wider">
-                <th className="p-4 font-semibold">User details</th>
-                <th className="p-4 font-semibold">Contact Info</th>
-                <th className="p-4 font-semibold">{activeTab === 'students' ? 'Track & Location' : 'Parent details'}</th>
-                <th className="p-4 font-semibold text-center">{activeTab === 'students' ? 'Courses & Status' : 'Role'}</th>
-                <th className="p-4 font-semibold">Joined Date</th>
-                <th className="p-4 font-semibold text-center">Status</th>
-                <th className="p-4 font-semibold text-center">Actions</th>
+                <th className="px-3 py-3.5 font-semibold">User details</th>
+                <th className="px-3 py-3.5 font-semibold">Contact Info</th>
+                <th className="px-3 py-3.5 font-semibold">{activeTab === 'students' ? 'Track & Location' : 'Parent details'}</th>
+                <th className="px-3 py-3.5 font-semibold text-center whitespace-nowrap">{activeTab === 'students' ? 'Courses & Status' : 'Role'}</th>
+                <th className="px-3 py-3.5 font-semibold whitespace-nowrap">Joined Date</th>
+                <th className="px-3 py-3.5 font-semibold text-center whitespace-nowrap">Status</th>
+                <th className="px-3 py-3.5 font-semibold text-center whitespace-nowrap">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5 text-sm text-zinc-300">
@@ -461,10 +461,10 @@ export default function AdminUsers() {
                     </td>
 
                     {/* Enrolled Count & Onboarded Status OR Teacher/Mentor Badge */}
-                    <td className="p-4 text-center">
+                    <td className="px-3 py-3.5 text-center whitespace-nowrap">
                       {activeTab === 'students' ? (
-                        <div className="flex flex-col items-center gap-0.5">
-                          <span className="px-2 py-0.5 bg-zinc-800 text-zinc-200 rounded text-xs font-semibold">
+                        <div className="flex flex-col items-center gap-1">
+                          <span className="inline-flex items-center whitespace-nowrap px-2.5 py-0.5 bg-zinc-800 text-zinc-200 rounded-md text-xs font-semibold">
                             {user.courses_count || 0} Enrolled
                           </span>
                           {user.is_onboarded ? (
@@ -474,14 +474,14 @@ export default function AdminUsers() {
                           )}
                         </div>
                       ) : (
-                        <span className="px-2 py-1 bg-zinc-800 text-[#facc15] rounded text-xs font-semibold">
+                        <span className="inline-flex items-center whitespace-nowrap px-2.5 py-1 bg-zinc-800 text-[#facc15] rounded-md text-xs font-semibold">
                           {activeTab === 'mentors' ? 'Active Mentor' : 'Active Teacher'}
                         </span>
                       )}
                     </td>
 
                     {/* Joined Date */}
-                    <td className="p-4 text-xs text-zinc-400">
+                    <td className="px-3 py-3.5 text-xs text-zinc-400 whitespace-nowrap">
                       {new Date(user.date_joined).toLocaleDateString()}
                     </td>
 
