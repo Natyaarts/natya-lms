@@ -165,6 +165,13 @@ export default function CourseManager() {
   const [instructorError, setInstructorError] = useState("");
   const [removingInstructorId, setRemovingInstructorId] = useState<number | null>(null);
 
+  // Assigned Students state (Course Enrollment + LiveBatchStudent, filtered server-side)
+  const [assignedStudents, setAssignedStudents] = useState<any[]>([]);
+  const [assignedStudentsCount, setAssignedStudentsCount] = useState(0);
+  const [courseBatches, setCourseBatches] = useState<any[]>([]);
+  const [selectedBatchId, setSelectedBatchId] = useState<string>("");
+  const [studentsLoading, setStudentsLoading] = useState(true);
+
   // Reordering visual feedback & toasts
   const [highlightedLessonId, setHighlightedLessonId] = useState<number | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -333,11 +340,43 @@ export default function CourseManager() {
     }
   };
 
+  const fetchAssignedStudents = async (batchId = selectedBatchId) => {
+    setStudentsLoading(true);
+    try {
+      const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const query = batchId ? `?batch_id=${encodeURIComponent(batchId)}` : "";
+      const res = await fetch(`${apiBase}/api/courses/${id}/students/${query}`, {
+        credentials: "include"
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAssignedStudents(Array.isArray(data.students) ? data.students : []);
+        setAssignedStudentsCount(typeof data.count === "number" ? data.count : 0);
+        setCourseBatches(Array.isArray(data.batches) ? data.batches : []);
+      } else {
+        setAssignedStudents([]);
+        setAssignedStudentsCount(0);
+      }
+    } catch (e) {
+      console.error("Failed to fetch assigned students", e);
+      setAssignedStudents([]);
+      setAssignedStudentsCount(0);
+    } finally {
+      setStudentsLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (id) {
       fetchInstructors();
     }
   }, [id]);
+
+  useEffect(() => {
+    if (id) {
+      fetchAssignedStudents(selectedBatchId);
+    }
+  }, [id, selectedBatchId]);
 
   useEffect(() => {
     if (id) fetchCourse();
@@ -1164,6 +1203,72 @@ export default function CourseManager() {
                 </motion.form>
               )}
             </AnimatePresence>
+          </div>
+
+          {/* Assigned Students: strictly filtered server-side by selected course/batch */}
+          <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6">
+            <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-bold">Assigned Students</h2>
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-[#facc15]/15 text-[#facc15] border border-[#facc15]/30">
+                  {assignedStudentsCount}
+                </span>
+              </div>
+              {courseBatches.length > 0 && (
+                <select
+                  aria-label="Filter assigned students by batch"
+                  value={selectedBatchId}
+                  onChange={(e) => setSelectedBatchId(e.target.value)}
+                  className="px-2.5 py-1.5 bg-zinc-950 border border-white/10 rounded-lg text-xs text-white focus:outline-none focus:border-[#facc15]"
+                >
+                  <option value="">All Batches & Enrollments</option>
+                  {courseBatches.map((b: any) => (
+                    <option key={b.id} value={String(b.id)}>
+                      Batch #{b.id} ({b.batch_type === "ONE_TO_ONE" ? "1-on-1" : "Group"}){b.instructor_name ? ` - ${b.instructor_name}` : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            {studentsLoading ? (
+              <div className="text-xs text-zinc-500 py-4">Loading assigned students...</div>
+            ) : assignedStudents.length === 0 ? (
+              <div className="text-center py-6 text-zinc-500 text-xs border border-dashed border-white/10 rounded-xl">
+                No students assigned to this {selectedBatchId ? "batch" : "course"} yet.
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                {assignedStudents.map((st: any) => (
+                  <div key={st.id} className="bg-zinc-950 border border-white/5 rounded-xl px-4 py-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-white text-sm truncate">{st.name}</span>
+                      <span className="text-[10px] font-mono text-zinc-400 shrink-0">ID #{st.id}</span>
+                    </div>
+                    <div className="text-[11px] text-zinc-400 mt-1 truncate">
+                      {st.email || "No email"}
+                      {st.phone_number ? ` · ${st.phone_number}` : ""}
+                    </div>
+                    {Array.isArray(st.assignment_sources) && st.assignment_sources.length > 0 && (
+                      <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                        {st.assignment_sources.map((src: string) => (
+                          <span
+                            key={src}
+                            className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide ${
+                              src === "LIVE_BATCH"
+                                ? "bg-purple-500/10 text-purple-300 border border-purple-500/20"
+                                : "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
+                            }`}
+                          >
+                            {src === "LIVE_BATCH" ? "Live Batch" : "Enrolled"}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 

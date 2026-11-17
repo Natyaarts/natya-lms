@@ -793,15 +793,13 @@ class LiveClassSerializer(serializers.ModelSerializer):
         else:
             ret['meeting_url'] = None
 
-        # Secure host_url: only superuser, staff, or the batch's instructor can see it
+        # Secure host_url: only superuser or staff (admins) can see host_url in serializer output.
+        # Teachers still join via LiveClassViewSet.join_class(), which preserves Zoom host/joining functionality.
         can_host = False
         if request and request.user:
             user = request.user
             if user.is_superuser or user.is_staff:
                 can_host = True
-            elif getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False):
-                if instance.batch and instance.batch.instructor == user:
-                    can_host = True
         if not can_host:
             ret.pop('host_url', None)
 

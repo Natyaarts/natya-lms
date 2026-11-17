@@ -30,6 +30,7 @@ export default function StudentLiveClassesPage() {
   const [error, setError] = useState("");
   const [attendanceById, setAttendanceById] = useState<Record<number, { status: string; duration_minutes: number }>>({});
   const [watchTarget, setWatchTarget] = useState<any>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const activeHeartbeats = useRef<Record<number, NodeJS.Timeout>>({});
 
   const [reportTarget, setReportTarget] = useState<any>(null);
@@ -108,6 +109,15 @@ export default function StudentLiveClassesPage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    authedFetch("/api/auth/user/")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((u) => {
+        if (u) setIsAdmin(Boolean(u.is_superuser || u.is_staff));
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     fetchClasses();
@@ -285,7 +295,7 @@ export default function StudentLiveClassesPage() {
                         canJoin(lc) ? "bg-[#facc15] text-black hover:bg-yellow-400 shadow-sm cursor-pointer" : "bg-zinc-800 text-zinc-500 cursor-not-allowed"
                       }`}
                     >
-                      <PlayCircle className="w-4 h-4" /> {lc.status === "LIVE" ? (lc.host_url ? "Start as Host" : "Join Now") : (lc.host_url ? "Start Class" : "Join")}
+                      <PlayCircle className="w-4 h-4" /> {lc.status === "LIVE" ? (isAdmin && lc.host_url ? "Start as Host" : "Join Now") : (isAdmin && lc.host_url ? "Start Class" : "Join")}
                     </button>
                   )}
                   {lc.status === "COMPLETED" && (lc.report_visible_to_students || lc.report) && (

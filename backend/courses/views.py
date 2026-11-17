@@ -335,6 +335,99 @@ class CourseViewSet(viewsets.ModelViewSet):
 
         return Response(status=drf_status.HTTP_204_NO_CONTENT)
 
+    @action(detail=True, methods=['get'], url_path='students')
+    def students(self, request, pk=None):
+        """
+        GET: return only students actually assigned/enrolled in this course
+        (or a specific batch_id within this course), deduplicated across
+        recorded Enrollment and LiveBatchStudent relationships.
+        """
+        course = self.get_object()
+        user = request.user
+        is_admin = bool(user.is_superuser or user.is_staff)
+        is_course_instructor = (
+            getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False)
+        ) and (
+            CourseInstructor.objects.filter(course=course, user=user).exists()
+            or LiveBatch.objects.filter(course=course).filter(Q(instructor=user) | Q(mentor=user)).exists()
+        )
+        if not (is_admin or is_course_instructor):
+            return Response(
+                {"detail": "Only administrators or course instructors can view assigned students."},
+                status=drf_status.HTTP_403_FORBIDDEN,
+            )
+
+        batch_id_param = request.query_params.get('batch_id')
+        selected_batch = None
+        if batch_id_param not in (None, ''):
+            try:
+                batch_id_int = int(batch_id_param)
+            except (TypeError, ValueError):
+                return Response({"error": "Invalid batch_id."}, status=drf_status.HTTP_400_BAD_REQUEST)
+            selected_batch = LiveBatch.objects.filter(id=batch_id_int, course=course).first()
+            if not selected_batch:
+                return Response({"error": "Batch not found for this course."}, status=drf_status.HTTP_404_NOT_FOUND)
+
+        students_by_id = {}
+
+        def _register_student(student_obj, source_label, batch_id=None):
+            if not student_obj:
+                return
+            sid = student_obj.id
+            if sid not in students_by_id:
+                full_name = f"{getattr(student_obj, 'first_name', '') or ''} {getattr(student_obj, 'last_name', '') or ''}".strip()
+                students_by_id[sid] = {
+                    "id": sid,
+                    "name": full_name or student_obj.username,
+                    "username": student_obj.username,
+                    "email": getattr(student_obj, 'email', '') or '',
+                    "phone_number": getattr(student_obj, 'phone_number', '') or '',
+                    "assignment_sources": [],
+                    "batch_ids": [],
+                }
+            entry = students_by_id[sid]
+            if source_label not in entry["assignment_sources"]:
+                entry["assignment_sources"].append(source_label)
+            if batch_id is not None and batch_id not in entry["batch_ids"]:
+                entry["batch_ids"].append(batch_id)
+
+        if selected_batch is not None:
+            batch_rows = LiveBatchStudent.objects.filter(batch=selected_batch).select_related('student')
+            for row in batch_rows:
+                _register_student(row.student, "LIVE_BATCH", batch_id=row.batch_id)
+        else:
+            enrollment_rows = Enrollment.objects.filter(course=course).select_related('user')
+            for enr in enrollment_rows:
+                _register_student(enr.user, "COURSE_ENROLLMENT")
+
+            batch_rows = LiveBatchStudent.objects.filter(batch__course=course).select_related('student')
+            for row in batch_rows:
+                _register_student(row.student, "LIVE_BATCH", batch_id=row.batch_id)
+
+        students_list = sorted(students_by_id.values(), key=lambda s: (s["name"].lower(), s["id"]))
+        for s in students_list:
+            s["batch_ids"].sort()
+
+        course_batches = [
+            {
+                "id": b.id,
+                "batch_type": b.batch_type,
+                "instructor_name": (
+                    f"{b.instructor.first_name} {b.instructor.last_name}".strip() or b.instructor.username
+                    if b.instructor else None
+                ),
+            }
+            for b in LiveBatch.objects.filter(course=course).select_related('instructor').order_by('id')
+        ]
+
+        return Response({
+            "course_id": course.id,
+            "batch_id": selected_batch.id if selected_batch else None,
+            "count": len(students_list),
+            "students": students_list,
+            "batches": course_batches,
+        })
+
 class ModuleViewSet(viewsets.ModelViewSet):
     """
     Course-content security follow-up (post-3.4.4): this viewset's GET

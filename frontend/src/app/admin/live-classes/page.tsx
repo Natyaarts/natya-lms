@@ -871,7 +871,7 @@ export default function LiveClassesPage() {
     const updated = res.ok ? await res.json().catch(() => null) : null;
     setBusyId(null);
     fetchClasses();
-    const hostLink = updated?.host_url || lc.host_url || updated?.meeting_url || lc.meeting_url;
+    const hostLink = (isFullAdmin ? (updated?.host_url || lc.host_url) : null) || updated?.meeting_url || lc.meeting_url;
     if (hostLink) {
       window.open(hostLink, "_blank");
     }
@@ -2249,12 +2249,12 @@ export default function LiveClassesPage() {
                             <>
                               {(lc.host_url || lc.meeting_url) && (
                                 <a
-                                  href={lc.host_url || lc.meeting_url}
+                                  href={(isFullAdmin ? lc.host_url : null) || lc.meeting_url || lc.host_url}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 shadow-sm"
                                 >
-                                  <ExternalLink className="w-3.5 h-3.5" /> {lc.host_url ? "Enter as Host" : "Enter Class"}
+                                  <ExternalLink className="w-3.5 h-3.5" /> {isFullAdmin && lc.host_url ? "Enter as Host" : "Enter Class"}
                                 </a>
                               )}
                               <button
@@ -2274,7 +2274,7 @@ export default function LiveClassesPage() {
                             </>
                           ) : (
                             <>
-                              {lc.host_url ? (
+                              {isFullAdmin && lc.host_url ? (
                                 <a
                                   href={lc.host_url}
                                   target="_blank"
@@ -2284,7 +2284,7 @@ export default function LiveClassesPage() {
                                 >
                                   <ExternalLink className="w-3.5 h-3.5" /> Start Host (Zoom)
                                 </a>
-                              ) : lc.meeting_provider === "ZOOM" ? (
+                              ) : isFullAdmin && lc.meeting_provider === "ZOOM" ? (
                                 <button
                                   disabled={busyId === lc.id}
                                   onClick={() => regenerateZoom(lc)}
