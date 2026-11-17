@@ -960,3 +960,37 @@ def zoom_provisioning_watchdog_task(self, limit=50):
     counts = {k: len(v) for k, v in report.items()}
     counts["cancellations_finalized"] = sum(report["cancellations_finalized"])
     return {"status": "ok", **counts}
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=15)
+def process_zoom_participant_webhook_task(self, webhook_event_id):
+    """
+    Processes a queued Zoom participant_joined / participant_left webhook event
+    asynchronously so bursty student join events do not block Gunicorn threads.
+    """
+    from courses.models import ZoomWebhookEvent
+    from courses.services.zoom_attendance import ZoomAttendanceService
+
+    webhook_event = ZoomWebhookEvent.objects.filter(id=webhook_event_id).first()
+    if not webhook_event:
+        logger.warning(f"[ZoomParticipantWebhookTask] ZoomWebhookEvent #{webhook_event_id} not found.")
+        return {"status": "not_found", "webhook_event_id": webhook_event_id}
+
+    if webhook_event.status == ZoomWebhookEvent.Status.PROCESSED:
+        return {"status": "already_processed", "event_id": webhook_event.event_id}
+
+    payload = (webhook_event.payload or {}).get("payload", {})
+    if not isinstance(payload, dict):
+        payload = {}
+
+    if webhook_event.event_type == "meeting.participant_joined":
+        success = ZoomAttendanceService.handle_participant_joined(payload)
+    elif webhook_event.event_type == "meeting.participant_left":
+        success = ZoomAttendanceService.handle_participant_left(payload)
+    else:
+        return {"status": "ignored_event_type", "event_type": webhook_event.event_type}
+
+    webhook_event.status = ZoomWebhookEvent.Status.PROCESSED if success else ZoomWebhookEvent.Status.FAILED
+    webhook_event.processed_at = timezone.now()
+    webhook_event.save(update_fields=["status", "processed_at"])
+    return {"status": webhook_event.status, "handled": success, "event_id": webhook_event.event_id}

@@ -644,6 +644,21 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_BROKER_POOL_LIMIT = 10
+CELERY_TASK_DEFAULT_QUEUE = 'default'
+CELERY_TASK_ROUTES = {
+    'courses.tasks.zoom_provisioning_watchdog_task': {'queue': 'zoom_lifecycle'},
+    'courses.tasks.process_zoom_lifecycle_outbox_task': {'queue': 'zoom_lifecycle'},
+    'courses.tasks.recover_stale_zoom_outbox_task': {'queue': 'zoom_lifecycle'},
+    'courses.tasks.process_zoom_recording_completed': {'queue': 'recordings'},
+    'courses.tasks.recover_stale_zoom_recordings': {'queue': 'recordings'},
+    'courses.tasks.generate_dubbed_audio_task': {'queue': 'recordings'},
+    'courses.tasks.send_class_reminder': {'queue': 'notifications'},
+    'courses.tasks.reconcile_zoom_attendance_task': {'queue': 'notifications'},
+    'courses.tasks.process_zoom_participant_webhook_task': {'queue': 'notifications'},
+    'billing.tasks.billing_daily_automation': {'queue': 'notifications'},
+}
 
 from celery.schedules import crontab
 # Celery Beat Schedule

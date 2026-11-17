@@ -95,6 +95,11 @@ class EvidenceRejectedError(ZoomLifecycleError):
     pass
 
 
+class RetryableZoomProvisionError(ZoomLifecycleError):
+    """Raised when provisioning fails due to a retryable Zoom rate-limit (429) or pre-create transient error."""
+    pass
+
+
 # ---------------------------------------------------------------------------
 # Phase B.5 repair (B2/B3/B4/B5): actual Zoom call outcomes and verified evidence
 # ---------------------------------------------------------------------------
@@ -506,13 +511,25 @@ def select_and_reserve_host(
     """
     from django.db.models.functions import Lower
     from django.contrib.auth import get_user_model
+    from django.conf import settings
 
     end_time = start_time + datetime.timedelta(minutes=duration_minutes)
     UserModel = get_user_model()
 
+    excluded_emails = {
+        str(e).strip().lower()
+        for e in getattr(settings, "ZOOM_EXCLUDED_HOST_EMAILS", ["vijay.pn@natyaarts.com"])
+        if e and str(e).strip()
+    }
+    excluded_teacher_ids = set(getattr(settings, "ZOOM_EXCLUDED_TEACHER_IDS", [1, 25, 96, 40, 49]))
+
     # 1. Resolve Effective Instructor and Teacher Email safely
     eff_inst = live_class.effective_instructor
     eff_inst_id = live_class.effective_instructor_id
+    if eff_inst_id in excluded_teacher_ids:
+        raise HostCapacityExhaustedError(
+            f"Instructor #{eff_inst_id} is excluded from Zoom host allocation."
+        )
     raw_email = getattr(eff_inst, 'email', None) if eff_inst else None
     teacher_email = raw_email.strip().lower() if (raw_email and raw_email.strip() and '@' in raw_email) else None
 
@@ -554,6 +571,10 @@ def select_and_reserve_host(
         )
 
     if dedicated_host:
+        if (dedicated_host.email or "").strip().lower() in excluded_emails or dedicated_host.assigned_instructor_id in excluded_teacher_ids:
+            raise HostCapacityExhaustedError(
+                f"Zoom host account {dedicated_host.id} ({dedicated_host.email}) is excluded from class allocation."
+            )
         # If dedicated host exists but is not ACTIVE, fail closed! Never silently fall back.
         if dedicated_host.status != ZoomHostAccount.Status.ACTIVE:
             raise HostCapacityExhaustedError(
@@ -562,11 +583,13 @@ def select_and_reserve_host(
             )
 
     # 4. Formulate Host Query
-    # Exclude UNCLASSIFIED hosts strictly!
+    # Exclude UNCLASSIFIED and personal/test/owner hosts strictly!
     host_query = (
         ZoomHostAccount.objects.annotate(email_lower=Lower('email'))
         .filter(status=ZoomHostAccount.Status.ACTIVE)
         .exclude(account_type=ZoomHostAccount.AccountType.UNCLASSIFIED)
+        .exclude(email_lower__in=excluded_emails)
+        .exclude(assigned_instructor_id__in=excluded_teacher_ids)
         .order_by('id')
     )
 
@@ -579,6 +602,10 @@ def select_and_reserve_host(
         if not pref_host:
             raise HostCapacityExhaustedError(
                 f"Preferred host account {preferred_host_id} is not active or does not exist."
+            )
+        if pref_host.email_lower in excluded_emails or pref_host.assigned_instructor_id in excluded_teacher_ids:
+            raise HostCapacityExhaustedError(
+                f"Unauthorized host selection: host {preferred_host_id} ({pref_host.email}) is excluded from class allocation."
             )
         if pref_host.account_type == ZoomHostAccount.AccountType.UNCLASSIFIED:
             raise HostCapacityExhaustedError(
@@ -896,6 +923,24 @@ def provision_zoom_meeting(
                 "reservation_id": reservation.id,
                 "error": str(zoom_error)
             }
+
+        elif isinstance(zoom_error, (ZoomRateLimitError, ZoomTransientError)):
+            # Retryable non-ambiguous failure (e.g. HTTP 429 rate limit or pre-create token transient failure):
+            # Release the provisional reservation so the host is not consumed, mark DOP FAILED,
+            # and raise RetryableZoomProvisionError so callers preserve the LiveClass record for retry.
+            dop.version += 1
+            dop.lease_worker = None
+            dop.lease_expires_at = None
+            dop.status = LiveClassDurableOperation.Status.FAILED
+            dop.error_message = f"Retryable Zoom failure: {str(zoom_error)}"
+            dop.save(update_fields=['status', 'error_message', 'version', 'lease_worker',
+                                    'lease_expires_at', 'updated_at'])
+
+            reservation.status = HostReservation.Status.CANCELLED
+            reservation.release_reason = f"Retryable failure during CREATE: {str(zoom_error)}"
+            reservation.save(update_fields=['status', 'release_reason', 'updated_at'])
+
+            definite_failure_exc = RetryableZoomProvisionError(f"Retryable Zoom provisioning error: {str(zoom_error)}")
 
         else:
             # Definite failure: Cancel reservation and mark DOP FAILED
@@ -1419,6 +1464,226 @@ def cancel_zoom_meeting(live_class_id: int, reason: str = "Class cancelled") -> 
 
     if cancel_failure_exc:
         raise cancel_failure_exc
+
+
+@execute_with_deadlock_retry()
+def complete_zoom_meeting_reservation(
+    live_class_id: int,
+    meeting_id: Optional[str] = None,
+    meeting_uuid: Optional[str] = None,
+    source: str = "explicit_end",
+    end_on_zoom: bool = False,
+    zoom_client=None,
+) -> Dict[str, Any]:
+    """
+    Idempotently completes a Zoom meeting's ZoomMeetingRecord and HostReservation
+    ONLY upon authoritative evidence of remote meeting termination:
+    1. Verified matching `meeting.ended` webhook (`source="webhook_meeting_ended"`), OR
+    2. Successful explicit `ZoomService.end_meeting()` call (`end_on_zoom=True`, HTTP 204 or 404).
+
+    Never releases a reservation merely because Zoom GET returns `waiting` or because
+    scheduled duration has elapsed. Never touches another teacher's reservation or
+    MANUAL_REVIEW / already-terminal reservations.
+    """
+    client = zoom_client if zoom_client is not None else ZoomService
+    clean_incoming_mid = str(meeting_id).strip() if meeting_id else None
+    clean_incoming_uuid = str(meeting_uuid).strip() if meeting_uuid else None
+
+    # Phase 1: Inspect under deterministic locks (L1 LiveClass -> L3 ZMR -> L5 HostReservation)
+    with transaction.atomic():
+        try:
+            live_class = LiveClass.objects.select_for_update().get(id=live_class_id)
+        except LiveClass.DoesNotExist:
+            raise ZoomLifecycleError(f"LiveClass {live_class_id} does not exist.")
+
+        zmr = ZoomMeetingRecord.objects.select_for_update().filter(
+            live_class=live_class,
+            is_current=True,
+        ).first()
+
+        target_meeting_id = (
+            (zmr.zoom_meeting_id if zmr else None)
+            or (live_class.zoom_meeting_id or "").strip()
+            or None
+        )
+
+        # If a specific meeting_id was supplied (e.g. webhook), it must match the current meeting
+        if clean_incoming_mid and target_meeting_id and str(target_meeting_id) != clean_incoming_mid:
+            return {
+                "status": "IGNORED_MISMATCH",
+                "live_class_id": live_class_id,
+                "expected_meeting_id": target_meeting_id,
+                "received_meeting_id": clean_incoming_mid,
+            }
+
+        # If both stored live_class.zoom_uuid and incoming meeting_uuid are populated, they must match
+        stored_uuid = (live_class.zoom_uuid or "").strip() or None
+        if clean_incoming_uuid and stored_uuid and stored_uuid != clean_incoming_uuid:
+            return {
+                "status": "IGNORED_UUID_MISMATCH",
+                "live_class_id": live_class_id,
+                "expected_meeting_uuid": stored_uuid,
+                "received_meeting_uuid": clean_incoming_uuid,
+            }
+
+        if not target_meeting_id:
+            return {"status": "NO_ZOOM_MEETING", "live_class_id": live_class_id}
+
+        # Locate the exact HostReservation bound to this ZMR / LiveClass
+        res_qs = HostReservation.objects.select_for_update().filter(live_class=live_class)
+        if zmr and zmr.durable_operation_id:
+            res_qs = res_qs.filter(
+                durable_operation_id=zmr.durable_operation_id,
+                host_account_id=zmr.host_account_id,
+                generation=zmr.generation,
+            )
+        elif zmr:
+            res_qs = res_qs.filter(
+                host_account_id=zmr.host_account_id,
+                generation=zmr.generation,
+            )
+
+        reservation = res_qs.order_by('-generation', '-id').first()
+        if not reservation:
+            return {"status": "NO_RESERVATION", "live_class_id": live_class_id, "meeting_id": target_meeting_id}
+
+        if reservation.status in (
+            HostReservation.Status.COMPLETED,
+            HostReservation.Status.RELEASED,
+            HostReservation.Status.CANCELLED,
+        ):
+            return {
+                "status": "ALREADY_COMPLETED",
+                "live_class_id": live_class_id,
+                "meeting_id": target_meeting_id,
+                "reservation_id": reservation.id,
+            }
+
+        if reservation.status == HostReservation.Status.MANUAL_REVIEW:
+            return {
+                "status": "HELD_MANUAL_REVIEW",
+                "live_class_id": live_class_id,
+                "meeting_id": target_meeting_id,
+                "reservation_id": reservation.id,
+            }
+
+        if reservation.status != HostReservation.Status.ACTIVE:
+            return {
+                "status": "NOT_ACTIVE",
+                "live_class_id": live_class_id,
+                "meeting_id": target_meeting_id,
+                "reservation_status": reservation.status,
+            }
+
+        zmr_id = zmr.id if zmr else None
+        res_id = reservation.id
+
+    # Phase 2: Verify authoritative remote termination outside DB locks
+    termination_confirmed = False
+    termination_detail = ""
+
+    if source == "webhook_meeting_ended" and clean_incoming_mid and str(target_meeting_id) == clean_incoming_mid:
+        termination_confirmed = True
+        termination_detail = f"Verified Zoom meeting.ended webhook for meeting {target_meeting_id}"
+    elif end_on_zoom:
+        try:
+            client.end_meeting(target_meeting_id)
+            termination_confirmed = True
+            termination_detail = f"Explicit Zoom end_meeting confirmed for meeting {target_meeting_id}"
+        except ZoomNotFoundError:
+            termination_confirmed = True
+            termination_detail = f"Zoom meeting {target_meeting_id} not found (404 / already ended) during explicit end"
+        except Exception as exc:
+            logger.warning(
+                f"[ZoomLifecycle] Cannot confirm termination of meeting {target_meeting_id} "
+                f"for LiveClass #{live_class_id} ({type(exc).__name__}: {exc}). Reservation #{res_id} remains held."
+            )
+            return {
+                "status": "HELD_UNCONFIRMED_END",
+                "live_class_id": live_class_id,
+                "meeting_id": target_meeting_id,
+                "reservation_id": res_id,
+                "error": str(exc),
+            }
+    else:
+        return {
+            "status": "UNVERIFIED_NOT_RELEASED",
+            "live_class_id": live_class_id,
+            "meeting_id": target_meeting_id,
+            "reservation_id": res_id,
+            "reason": "Authoritative termination evidence (meeting.ended webhook or explicit end_meeting) is required.",
+        }
+
+    if not termination_confirmed:
+        return {
+            "status": "UNVERIFIED_NOT_RELEASED",
+            "live_class_id": live_class_id,
+            "meeting_id": target_meeting_id,
+            "reservation_id": res_id,
+        }
+
+    # Phase 3: Atomic transition under L1 -> L3 -> L5 locks
+    with transaction.atomic():
+        live_class = LiveClass.objects.select_for_update().get(id=live_class_id)
+        zmr = ZoomMeetingRecord.objects.select_for_update().filter(id=zmr_id).first() if zmr_id else None
+        reservation = HostReservation.objects.select_for_update().get(id=res_id)
+
+        # Re-verify nothing superseded this meeting/reservation while Phase 2 ran
+        if zmr and (not zmr.is_current or str(zmr.zoom_meeting_id) != str(target_meeting_id)):
+            return {
+                "status": "IGNORED_SUPERSEDED",
+                "live_class_id": live_class_id,
+                "meeting_id": target_meeting_id,
+                "reservation_id": reservation.id,
+            }
+
+        if reservation.status in (
+            HostReservation.Status.COMPLETED,
+            HostReservation.Status.RELEASED,
+            HostReservation.Status.CANCELLED,
+        ):
+            return {
+                "status": "ALREADY_COMPLETED",
+                "live_class_id": live_class_id,
+                "meeting_id": target_meeting_id,
+                "reservation_id": reservation.id,
+            }
+
+        if reservation.status != HostReservation.Status.ACTIVE:
+            return {
+                "status": "HELD_STATUS_CHANGED",
+                "live_class_id": live_class_id,
+                "meeting_id": target_meeting_id,
+                "reservation_status": reservation.status,
+            }
+
+        reservation.status = HostReservation.Status.COMPLETED
+        reservation.release_reason = termination_detail
+        reservation.save(update_fields=['status', 'release_reason', 'updated_at'])
+
+        if zmr and zmr.state == ZoomMeetingRecord.State.ASSIGNED and zmr.is_current:
+            zmr.state = ZoomMeetingRecord.State.RELEASED
+            zmr.is_current = False
+            zmr.save(update_fields=['state', 'is_current', 'updated_at'])
+
+        ZoomLifecycleOutbox.objects.create(
+            aggregate_id=live_class.id,
+            event_type="ZOOM_MEETING_COMPLETED",
+            status=ZoomLifecycleOutbox.Status.COMPLETED,
+            payload={
+                "live_class_id": live_class.id,
+                "meeting_id": target_meeting_id,
+                "reservation_id": reservation.id,
+                "source": source,
+            },
+        )
+
+        return {
+            "status": "COMPLETED",
+            "live_class_id": live_class.id,
+            "meeting_id": target_meeting_id,
+            "reservation_id": reservation.id,
+        }
 
 
 @execute_with_deadlock_retry()

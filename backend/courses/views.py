@@ -1734,19 +1734,37 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 cancel_zoom_meeting,
                 HostCapacityExhaustedError,
                 ZeroTeardownInvariantViolation,
+                RetryableZoomProvisionError,
                 ZoomLifecycleError,
             )
+            import time as _time
             provisioned_instances = []
             failure_reason = None
             for instance in created_instances:
                 when = instance.scheduled_start.strftime('%Y-%m-%d %H:%M')
-                try:
-                    result = provision_zoom_meeting(live_class_id=instance.id)
-                except HostCapacityExhaustedError as e:
-                    failure_reason = f"Host capacity exhausted for occurrence on {when}: {str(e)}"
-                    break
-                except Exception as e:
-                    failure_reason = f"Failed to provision Zoom meeting for occurrence on {when}: {str(e)}"
+                result = None
+                for attempt in range(2):
+                    try:
+                        result = provision_zoom_meeting(live_class_id=instance.id)
+                        break
+                    except RetryableZoomProvisionError as e:
+                        if attempt == 0:
+                            logger.warning(
+                                f"[LiveClassViewSet] Transient Zoom failure for recurring occurrence LC {instance.id} on {when}; retrying once: {e}"
+                            )
+                            _time.sleep(0.5)
+                            continue
+                        failure_reason = f"Failed to provision Zoom meeting for occurrence on {when}: {str(e)}"
+                        result = None
+                    except HostCapacityExhaustedError as e:
+                        failure_reason = f"Host capacity exhausted for occurrence on {when}: {str(e)}"
+                        result = None
+                        break
+                    except Exception as e:
+                        failure_reason = f"Failed to provision Zoom meeting for occurrence on {when}: {str(e)}"
+                        result = None
+                        break
+                if failure_reason:
                     break
                 # Release-closure B10: an ambiguous CREATE (OUTCOME_UNKNOWN) is not a success --
                 # a meeting may exist, so the series stops and that occurrence is held, not deleted.
@@ -1792,6 +1810,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 provision_zoom_meeting,
                 HostCapacityExhaustedError,
                 ZeroTeardownInvariantViolation,
+                RetryableZoomProvisionError,
                 ZoomLifecycleError,
             )
             try:
@@ -1814,6 +1833,17 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 from rest_framework.exceptions import APIException
                 exc = APIException(detail=f"Scheduling conflict: {str(e)}")
                 exc.status_code = drf_status.HTTP_409_CONFLICT
+                raise exc
+            except RetryableZoomProvisionError as e:
+                # Preserve LiveClass record on retryable rate-limit / transient Zoom failure so teacher can retry.
+                logger.warning(f"[LiveClassViewSet] Retryable Zoom failure for LC {live_class.id} (LiveClass preserved): {e}")
+                from rest_framework.exceptions import APIException
+                exc = APIException(detail=f"Zoom temporarily rate-limited or unavailable; class saved for retry: {str(e)}")
+                exc.status_code = (
+                    drf_status.HTTP_429_TOO_MANY_REQUESTS
+                    if "429" in str(e) or "rate" in str(e).lower()
+                    else drf_status.HTTP_503_SERVICE_UNAVAILABLE
+                )
                 raise exc
             except Exception as e:
                 logger.error(f"[LiveClassViewSet] Failed to auto-generate Zoom meeting for LC {live_class.id}: {e}")
@@ -1918,6 +1948,17 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             )
         live_class.status = LiveClass.ClassStatus.COMPLETED
         live_class.save(update_fields=['status'])
+        if live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM and live_class.zoom_meeting_id:
+            try:
+                from courses.services.zoom_lifecycle import complete_zoom_meeting_reservation
+                complete_zoom_meeting_reservation(
+                    live_class_id=live_class.id,
+                    meeting_id=live_class.zoom_meeting_id,
+                    source="explicit_end",
+                    end_on_zoom=True,
+                )
+            except Exception as comp_err:
+                logger.warning(f"[LiveClassViewSet.end] Could not finalize Zoom reservation for LC {live_class.id}: {comp_err}")
         self._auto_populate_attendance(live_class)
         if live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM and not live_class.recording_url:
             try:
@@ -4474,23 +4515,41 @@ class ZoomWebhookView(APIView):
                 webhook_event.save(update_fields=['status'])
                 return Response({"status": "disabled", "event_id": event_id}, status=drf_status.HTTP_200_OK)
 
-            from courses.services.zoom_attendance import ZoomAttendanceService
-            if event == 'meeting.participant_joined':
-                success = ZoomAttendanceService.handle_participant_joined(payload)
-            else:
-                success = ZoomAttendanceService.handle_participant_left(payload)
+            from courses.tasks import process_zoom_participant_webhook_task
+            webhook_event.status = ZoomWebhookEvent.Status.PROCESSING
+            webhook_event.save(update_fields=['status'])
+            try:
+                process_zoom_participant_webhook_task.delay(webhook_event.id)
+            except Exception as dispatch_err:
+                logger.error(f"[ZoomWebhook] Failed to dispatch participant webhook {event_id}: {dispatch_err}")
+                webhook_event.status = ZoomWebhookEvent.Status.RECEIVED
+                webhook_event.error_message = f"Participant task dispatch failed: {str(dispatch_err)}"
+                webhook_event.save(update_fields=['status', 'error_message'])
+                return Response(
+                    {"error": "Task queue temporarily unavailable. Please retry.", "event_id": event_id},
+                    status=drf_status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
 
-            webhook_event.status = ZoomWebhookEvent.Status.PROCESSED if success else ZoomWebhookEvent.Status.FAILED
-            webhook_event.processed_at = timezone.now()
-            webhook_event.save(update_fields=['status', 'processed_at'])
             return Response(
-                {"status": "received", "handled": success, "event_id": event_id},
+                {"status": "queued", "event_id": event_id},
                 status=drf_status.HTTP_200_OK
             )
 
-        # 6b. Meeting ended event -> trigger report reconciliation
+        # 6b. Meeting ended event -> safely complete host reservation + trigger report reconciliation
         if event == 'meeting.ended':
             from django.conf import settings
+            if live_class:
+                try:
+                    from courses.services.zoom_lifecycle import complete_zoom_meeting_reservation
+                    complete_zoom_meeting_reservation(
+                        live_class_id=live_class.id,
+                        meeting_id=meeting_id,
+                        meeting_uuid=meeting_uuid,
+                        source="webhook_meeting_ended",
+                    )
+                except Exception as comp_err:
+                    logger.warning(f"[ZoomWebhook] Failed to complete reservation for LiveClass #{live_class.id} on meeting.ended: {comp_err}")
+
             if live_class and getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False):
                 from courses.tasks import reconcile_zoom_attendance_task
                 try:

@@ -1,5 +1,6 @@
 import os
 import logging
+import random
 import requests
 import base64
 import time
@@ -70,9 +71,13 @@ class ZoomService:
     CACHE_KEY_ACCESS_TOKEN = "zoom:s2s:access_token"
     CACHE_KEY_REFRESH_LOCK = "zoom:s2s:token_refresh_lock"
     CACHE_KEY_LOCK_TOKEN_REFRESH = CACHE_KEY_REFRESH_LOCK
+    CACHE_KEY_REFRESH_FAILURE = "zoom:s2s:token_refresh_failure"
     DEFAULT_TIMEOUT_SECONDS = 12
     LOCK_TIMEOUT_SECONDS = 25  # Safely exceeds DEFAULT_TIMEOUT_SECONDS
-    LOCK_WAIT_TIMEOUT = 10     # Max seconds a waiter thread polls cache
+    LOCK_WAIT_TIMEOUT = 18     # Exceeds DEFAULT_TIMEOUT_SECONDS (12s) so waiters outlast slow OAuth exchange
+    REFRESH_FAILURE_COOLDOWN_SECONDS = 2
+    MAX_429_RETRIES = 2
+    MAX_429_RETRY_AFTER_SECONDS = 5
 
     EMAIL_REGEX = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$')
     USER_ID_REGEX = re.compile(r'^[a-zA-Z0-9_-]{10,64}$')
@@ -305,11 +310,55 @@ class ZoomService:
             pass
 
     @classmethod
+    def _parse_retry_after(cls, response, attempt: int = 0) -> float:
+        """
+        Parses Zoom's Retry-After header (seconds) with safe capping and jitter.
+        Falls back to bounded exponential backoff when header is absent or non-numeric.
+        """
+        raw_val = None
+        if getattr(response, "headers", None):
+            raw_val = response.headers.get("Retry-After") or response.headers.get("retry-after")
+
+        base_delay = None
+        if raw_val is not None:
+            try:
+                parsed = float(str(raw_val).strip())
+                if parsed > 0:
+                    base_delay = min(float(cls.MAX_429_RETRY_AFTER_SECONDS), parsed)
+            except (ValueError, TypeError):
+                base_delay = None
+
+        if base_delay is None:
+            base_delay = min(float(cls.MAX_429_RETRY_AFTER_SECONDS), 0.5 * (2 ** attempt))
+
+        jitter = random.uniform(0.05, 0.25)
+        return base_delay + jitter
+
+    @classmethod
+    def _request_with_429_retry(cls, request_fn, *args, max_429_retries=None, context="", **kwargs):
+        """
+        Executes an HTTP request via `request_fn` with bounded retries on HTTP 429,
+        honoring Retry-After headers and adding jitter. Never retries indefinitely.
+        """
+        retries = cls.MAX_429_RETRIES if max_429_retries is None else max(0, int(max_429_retries))
+        for attempt in range(retries + 1):
+            res = request_fn(*args, **kwargs)
+            if getattr(res, "status_code", None) != 429 or attempt >= retries:
+                return res
+            delay = cls._parse_retry_after(res, attempt=attempt)
+            logger.warning(
+                f"[ZoomService] HTTP 429 rate-limited during {context or 'Zoom API call'} "
+                f"(attempt {attempt + 1}/{retries + 1}). Retrying in {delay:.2f}s..."
+            )
+            time.sleep(delay)
+        return res
+
+    @classmethod
     def get_access_token(cls, force_refresh=False, rejected_token=None):
         """
         Retrieves an active Zoom Server-to-Server OAuth access token.
         Utilizes Redis-backed caching with atomic owner-verified distributed locking,
-        bounded waiter loop, and safe token invalidation.
+        bounded waiter loop, storm-prevention failure cooldown, and safe token invalidation.
         """
         # 1. Invalidate rejected token upfront if provided; otherwise clear cache on force refresh
         if force_refresh:
@@ -340,6 +389,18 @@ class ZoomService:
             except Exception:
                 pass
 
+        # 3b. Guard against refresh storm when a concurrent refresh just failed
+        if not force_refresh:
+            try:
+                if cache.get(cls.CACHE_KEY_REFRESH_FAILURE):
+                    raise ZoomTransientError(
+                        "Zoom token refresh recently failed; cooling down briefly to prevent refresh storm."
+                    )
+            except ZoomTransientError:
+                raise
+            except Exception:
+                pass
+
         # 4. Acquire distributed lock
         owner_token = str(uuid.uuid4())
         try:
@@ -353,15 +414,21 @@ class ZoomService:
 
         # 5. If lock not acquired, wait for the holder to refresh the token
         if not lock_acquired:
-            poll_start = time.time()
-            while (time.time() - poll_start) < cls.LOCK_WAIT_TIMEOUT:
-                time.sleep(0.5)
+            poll_start = time.monotonic()
+            while (time.monotonic() - poll_start) < cls.LOCK_WAIT_TIMEOUT:
+                time.sleep(0.2 + random.uniform(0.0, 0.05))
                 try:
                     cached_token = cache.get(cls.CACHE_KEY_ACCESS_TOKEN)
                     if cached_token:
                         if rejected_token and cached_token == rejected_token:
                             continue
                         return cached_token
+                    if cache.get(cls.CACHE_KEY_REFRESH_FAILURE):
+                        raise ZoomTransientError(
+                            "Concurrent Zoom token refresh failed; backing off to prevent refresh storm."
+                        )
+                except ZoomTransientError:
+                    raise
                 except Exception:
                     pass
 
@@ -382,7 +449,11 @@ class ZoomService:
             }
 
             try:
-                res = requests.post(url, headers=headers, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+                res = requests.post(
+                    url,
+                    headers=headers,
+                    timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                )
             except (requests.Timeout, requests.ConnectionError) as conn_err:
                 clean_err = cls._sanitize_string(str(conn_err))
                 logger.error(f"[ZoomService] Network error during OAuth token exchange: {clean_err}")
@@ -401,13 +472,40 @@ class ZoomService:
 
             if cache_ttl > 0:
                 try:
+                    cache.delete(cls.CACHE_KEY_REFRESH_FAILURE)
                     cache.set(cls.CACHE_KEY_ACCESS_TOKEN, token, timeout=cache_ttl)
                 except Exception as cache_err:
                     logger.warning(f"[ZoomService] Cache write error for access token: {cache_err}")
 
             return token
+        except Exception:
+            try:
+                cache.set(cls.CACHE_KEY_REFRESH_FAILURE, "1", timeout=cls.REFRESH_FAILURE_COOLDOWN_SECONDS)
+            except Exception:
+                pass
+            raise
         finally:
             cls._release_lock(cls.CACHE_KEY_REFRESH_LOCK, owner_token)
+
+    @classmethod
+    def _raise_if_5xx_ambiguous(cls, res, encoded_host_id: str, topic: str):
+        if 500 <= res.status_code < 600:
+            sanitized_body = cls._sanitize_string(res.text)
+            logger.error(f"[ZoomService] Ambiguous 5xx response from Zoom during create_meeting [HTTP {res.status_code}]: {sanitized_body}")
+            raise ZoomAmbiguousOutcomeError(
+                f"Zoom returned HTTP {res.status_code} during meeting creation on host {encoded_host_id}. "
+                "The meeting may have been created on Zoom cloud before the gateway error; caller must NOT blindly repeat creation without reconciliation.",
+                status_code=res.status_code,
+                response_data={
+                    "raw_text": sanitized_body,
+                    "sanitized_text": sanitized_body,
+                    "status_code": res.status_code,
+                    "host_id": encoded_host_id,
+                    "topic": topic,
+                },
+                host_id=encoded_host_id,
+                topic=topic,
+            )
 
     @classmethod
     def create_meeting(cls, host_id=None, topic=None, start_time_iso=None, duration_minutes=60,
@@ -451,7 +549,11 @@ class ZoomService:
         url = f"https://api.zoom.us/v2/users/{encoded_host_id}/meetings"
 
         try:
-            res = requests.post(url, headers=headers, json=payload, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+            res = cls._request_with_429_retry(
+                requests.post, url, headers=headers, json=payload,
+                timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                context=f"create_meeting for host {encoded_host_id}",
+            )
         except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as conn_err:
             clean_err = cls._sanitize_string(str(conn_err))
             logger.error(f"[ZoomService] Network error during meeting creation on host {encoded_host_id}: {clean_err}")
@@ -464,23 +566,7 @@ class ZoomService:
             ) from conn_err
 
         # Treat all 5xx responses (500, 502, 503, 504) as ZoomAmbiguousOutcomeError
-        if 500 <= res.status_code < 600:
-            sanitized_body = cls._sanitize_string(res.text)
-            logger.error(f"[ZoomService] Ambiguous 5xx response from Zoom during create_meeting [HTTP {res.status_code}]: {sanitized_body}")
-            raise ZoomAmbiguousOutcomeError(
-                f"Zoom returned HTTP {res.status_code} during meeting creation on host {encoded_host_id}. "
-                "The meeting may have been created on Zoom cloud before the gateway error; caller must NOT blindly repeat creation without reconciliation.",
-                status_code=res.status_code,
-                response_data={
-                    "raw_text": sanitized_body,
-                    "sanitized_text": sanitized_body,
-                    "status_code": res.status_code,
-                    "host_id": encoded_host_id,
-                    "topic": payload.get("topic")
-                },
-                host_id=encoded_host_id,
-                topic=payload.get("topic")
-            )
+        cls._raise_if_5xx_ambiguous(res, encoded_host_id, payload.get("topic"))
 
         if res.status_code == 401:
             logger.info(f"[ZoomService] Received 401 on create_meeting for host {encoded_host_id}; refreshing token and retrying once")
@@ -488,7 +574,11 @@ class ZoomService:
             token = cls.get_access_token(force_refresh=True, rejected_token=token)
             headers["Authorization"] = f"Bearer {token}"
             try:
-                res = requests.post(url, headers=headers, json=payload, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+                res = cls._request_with_429_retry(
+                    requests.post, url, headers=headers, json=payload,
+                    timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                    context=f"create_meeting retry for host {encoded_host_id}",
+                )
             except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as conn_err:
                 clean_err = cls._sanitize_string(str(conn_err))
                 logger.error(f"[ZoomService] Network error during retry of meeting creation on host {encoded_host_id}: {clean_err}")
@@ -499,6 +589,7 @@ class ZoomService:
                     host_id=encoded_host_id,
                     topic=payload.get("topic")
                 ) from conn_err
+            cls._raise_if_5xx_ambiguous(res, encoded_host_id, payload.get("topic"))
 
         if res.status_code != 201:
             logger.error(f"[ZoomService] Definite failure during create_meeting for host {encoded_host_id}: {res.status_code}")
@@ -526,7 +617,10 @@ class ZoomService:
         url = f"https://api.zoom.us/v2/meetings/{encoded_meeting_id}"
 
         try:
-            res = requests.get(url, headers=headers, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+            res = cls._request_with_429_retry(
+                requests.get, url, headers=headers, timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                context=f"get_meeting {encoded_meeting_id}",
+            )
         except (requests.Timeout, requests.ConnectionError) as conn_err:
             clean_err = cls._sanitize_string(str(conn_err))
             logger.error(f"[ZoomService] Network error fetching meeting {encoded_meeting_id}: {clean_err}")
@@ -538,7 +632,10 @@ class ZoomService:
             token = cls.get_access_token(force_refresh=True, rejected_token=token)
             headers["Authorization"] = f"Bearer {token}"
             try:
-                res = requests.get(url, headers=headers, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+                res = cls._request_with_429_retry(
+                    requests.get, url, headers=headers, timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                    context=f"get_meeting retry {encoded_meeting_id}",
+                )
             except (requests.Timeout, requests.ConnectionError) as conn_err:
                 clean_err = cls._sanitize_string(str(conn_err))
                 logger.error(f"[ZoomService] Network error fetching meeting {encoded_meeting_id}: {clean_err}")
@@ -594,7 +691,11 @@ class ZoomService:
         url = f"https://api.zoom.us/v2/meetings/{encoded_meeting_id}"
 
         try:
-            res = requests.patch(url, headers=headers, json=payload, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+            res = cls._request_with_429_retry(
+                requests.patch, url, headers=headers, json=payload,
+                timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                context=f"update_meeting {encoded_meeting_id}",
+            )
         except (requests.Timeout, requests.ConnectionError) as conn_err:
             clean_err = cls._sanitize_string(str(conn_err))
             logger.error(f"[ZoomService] Network error updating meeting {encoded_meeting_id}: {clean_err}")
@@ -606,7 +707,11 @@ class ZoomService:
             token = cls.get_access_token(force_refresh=True, rejected_token=token)
             headers["Authorization"] = f"Bearer {token}"
             try:
-                res = requests.patch(url, headers=headers, json=payload, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+                res = cls._request_with_429_retry(
+                    requests.patch, url, headers=headers, json=payload,
+                    timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                    context=f"update_meeting retry {encoded_meeting_id}",
+                )
             except (requests.Timeout, requests.ConnectionError) as conn_err:
                 clean_err = cls._sanitize_string(str(conn_err))
                 logger.error(f"[ZoomService] Network error updating meeting {encoded_meeting_id}: {clean_err}")
@@ -632,7 +737,10 @@ class ZoomService:
             params["schedule_for_reminder"] = "true"
 
         try:
-            res = requests.delete(url, headers=headers, params=params, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+            res = cls._request_with_429_retry(
+                requests.delete, url, headers=headers, params=params, timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                context=f"delete_meeting {encoded_meeting_id}",
+            )
         except (requests.Timeout, requests.ConnectionError) as conn_err:
             clean_err = cls._sanitize_string(str(conn_err))
             logger.error(f"[ZoomService] Network error deleting meeting {encoded_meeting_id}: {clean_err}")
@@ -644,7 +752,10 @@ class ZoomService:
             token = cls.get_access_token(force_refresh=True, rejected_token=token)
             headers["Authorization"] = f"Bearer {token}"
             try:
-                res = requests.delete(url, headers=headers, params=params, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+                res = cls._request_with_429_retry(
+                    requests.delete, url, headers=headers, params=params, timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                    context=f"delete_meeting retry {encoded_meeting_id}",
+                )
             except (requests.Timeout, requests.ConnectionError) as conn_err:
                 clean_err = cls._sanitize_string(str(conn_err))
                 logger.error(f"[ZoomService] Network error deleting meeting {encoded_meeting_id}: {clean_err}")
@@ -670,7 +781,10 @@ class ZoomService:
         payload = {"action": "end"}
 
         try:
-            res = requests.put(url, headers=headers, json=payload, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+            res = cls._request_with_429_retry(
+                requests.put, url, headers=headers, json=payload, timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                context=f"end_meeting {encoded_meeting_id}",
+            )
         except (requests.Timeout, requests.ConnectionError) as conn_err:
             clean_err = cls._sanitize_string(str(conn_err))
             logger.error(f"[ZoomService] Network error ending meeting {encoded_meeting_id}: {clean_err}")
@@ -682,7 +796,10 @@ class ZoomService:
             token = cls.get_access_token(force_refresh=True, rejected_token=token)
             headers["Authorization"] = f"Bearer {token}"
             try:
-                res = requests.put(url, headers=headers, json=payload, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+                res = cls._request_with_429_retry(
+                    requests.put, url, headers=headers, json=payload, timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                    context=f"end_meeting retry {encoded_meeting_id}",
+                )
             except (requests.Timeout, requests.ConnectionError) as conn_err:
                 clean_err = cls._sanitize_string(str(conn_err))
                 logger.error(f"[ZoomService] Network error ending meeting {encoded_meeting_id}: {clean_err}")
@@ -783,7 +900,11 @@ class ZoomService:
 
             url = "https://api.zoom.us/v2/users"
             try:
-                res = requests.get(url, headers=headers, params=params, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+                res = cls._request_with_429_retry(
+                    requests.get, url, headers=headers, params=params,
+                    timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                    context="list_users",
+                )
             except (requests.Timeout, requests.ConnectionError) as conn_err:
                 clean_err = cls._sanitize_string(str(conn_err))
                 logger.error(f"[ZoomService] Network error listing users: {clean_err}")
@@ -795,7 +916,11 @@ class ZoomService:
                 token = cls.get_access_token(force_refresh=True, rejected_token=token)
                 headers["Authorization"] = f"Bearer {token}"
                 try:
-                    res = requests.get(url, headers=headers, params=params, timeout=cls.DEFAULT_TIMEOUT_SECONDS)
+                    res = cls._request_with_429_retry(
+                        requests.get, url, headers=headers, params=params,
+                        timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                        context="list_users retry",
+                    )
                 except (requests.Timeout, requests.ConnectionError) as conn_err:
                     clean_err = cls._sanitize_string(str(conn_err))
                     logger.error(f"[ZoomService] Network error listing users: {clean_err}")

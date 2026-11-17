@@ -1214,8 +1214,9 @@ class SyncZoomHostAccountsCommandTests(TestCase):
         """
         Safety Correction 1:
         For teacher IDs in PROTECTED_EXISTING_TEACHER_IDS ({54, 57, 58, 59, 60, 61, 62, 63}),
-        the execution loop must skip every proposed update whose existing host is assigned
-        to one of these IDs, even when the proposed target teacher is the same.
+        the synchronization command must never create, update, reassign, deactivate, or delete
+        their existing host records. In the execution loop, skip every proposed update whose
+        existing host is assigned to one of these IDs, even when the proposed target teacher is the same.
         Preserve all existing fields unchanged.
         """
         t54 = User.objects.create_user(
@@ -1247,6 +1248,7 @@ class SyncZoomHostAccountsCommandTests(TestCase):
         })
         mock_list_users.return_value = users
 
+        # 1. Full command execution: protected host is never proposed for update or modified
         out = StringIO()
         call_command(
             "sync_zoom_host_accounts",
@@ -1254,9 +1256,33 @@ class SyncZoomHostAccountsCommandTests(TestCase):
             confirm="CONFIRM-ZOOM-HOST-SYNC",
             stdout=out
         )
-        output = out.getvalue()
+        orig_host.refresh_from_db()
+        self.assertEqual(orig_host.zoom_user_id, "orig_zoom_54")
+        self.assertEqual(orig_host.display_name, "Yathivandya K.S Original")
+        self.assertEqual(orig_host.email, "yathivandyaks@gmail.com")
+        self.assertEqual(orig_host.assigned_instructor_id, 54)
 
-        self.assertIn("SKIPPED Update: Existing host #54 is bound to protected Teacher #54; preserved unchanged.", output)
+        # 2. Direct execution loop verification: even if a proposed_update entry is passed for host #54
+        # with the same target_teacher (t54), the execution loop skips it and preserves all fields.
+        cmd = Command()
+        cmd.stdout = StringIO()
+        cmd._execute_sync({
+            "proposed_creates": [],
+            "proposed_updates": [{
+                "host": orig_host,
+                "target_teacher": t54,
+                "preserved_status": ZoomHostAccount.Status.ACTIVE,
+                "status_note": "",
+                "changes": {"zoom_user_id": ("orig_zoom_54", "new_zoom_id_54")},
+                "zoom_user_id": "new_zoom_id_54",
+                "email": "yathivandyaks@gmail.com",
+                "display_name": "Yathivandya Changed Display",
+                "max_concurrency": 1,
+            }],
+            "blocked_explicit_teacher_ids": [],
+        })
+        exec_output = cmd.stdout.getvalue()
+        self.assertIn("SKIPPED Update: Existing host #54 is bound to protected Teacher #54; preserved unchanged.", exec_output)
         orig_host.refresh_from_db()
         self.assertEqual(orig_host.zoom_user_id, "orig_zoom_54")
         self.assertEqual(orig_host.display_name, "Yathivandya K.S Original")
@@ -1374,6 +1400,293 @@ class SyncZoomHostAccountsCommandTests(TestCase):
         self.assertIn(204, blocked_ids)    # Phone mismatch
         self.assertIn(205, blocked_ids)    # Duplicate explicit
         self.assertIn(206, blocked_ids)    # Duplicate explicit
+
+    @mock.patch.object(ZoomService, "list_users")
+    def test_audit_report_counts_matched_plus_unmatched_equals_eligible_with_8_protected_and_14_explicit(self, mock_list_users):
+        """
+        Regression test verifying:
+        - Audit report counting uses one consistent eligible-teacher population.
+        - matched + unmatched == eligible holds exactly.
+        - raw_active == excluded + protected + eligible holds exactly.
+        - Separate counts are shown for raw active teachers, excluded teachers,
+          protected existing-host teachers, eligible teachers, eligible teachers matched,
+          eligible teachers without Zoom accounts, existing protected hosts (8),
+          and proposed new host creations (14).
+        """
+        # Remove setUp sample teachers to simulate exact production composition
+        User.objects.all().delete()
+
+        # 1. Create 3 excluded active teachers (IDs 1, 25, 96) and 2 excluded non-teachers (IDs 40, 49)
+        for ex_id in [1, 25, 96]:
+            User.objects.create_user(
+                id=ex_id, username=f"vijay_{ex_id}", email=f"vijay_{ex_id}@natyaarts.com", is_teacher=True
+            )
+        for non_t_id in [40, 49]:
+            User.objects.create_user(
+                id=non_t_id, username=f"user_{non_t_id}", email=f"user_{non_t_id}@natya.internal", is_teacher=False
+            )
+
+        # 2. Create 8 protected existing-host teachers with synthetic LMS emails and real Gmail Zoom hosts
+        protected_emails = {
+            54: "yathivandyaks@gmail.com",
+            57: "athirajayakumar2086@gmail.com",
+            58: "bhaghyareshmi25@gmail.com",
+            59: "jismakk@gmail.com",
+            60: "ammusree24mar2000@gmail.com",
+            61: "schoolmargi15@gmail.com",
+            62: "pranijap99@gmail.com",
+            63: "sreelakshmiedathara555@gmail.com",
+        }
+        for tid, z_mail in protected_emails.items():
+            t = User.objects.create_user(
+                id=tid,
+                username=f"teacher_{tid}",
+                email=f"teacher_{tid}@natya.internal",  # Synthetic LMS email differs from Zoom host email
+                first_name=f"ProtectedTeacher{tid}",
+                is_teacher=True
+            )
+            ZoomHostAccount.objects.create(
+                zoom_user_id=f"zoom_protected_{tid}",
+                email=z_mail,
+                display_name=f"Protected {tid}",
+                status=ZoomHostAccount.Status.ACTIVE,
+                account_type=ZoomHostAccount.AccountType.DEDICATED,
+                assigned_instructor=t,
+                max_concurrency=1
+            )
+
+        # 3. Create 14 explicitly mapped teachers
+        for tid, data in BUILTIN_EXPLICIT_TEACHER_MAPPINGS.items():
+            User.objects.create_user(
+                id=tid,
+                username=f"teacher_{tid}",
+                email=f"teacher_{tid}@natya.internal",
+                first_name=data["expected_name"],
+                phone_number=data["expected_phone"],
+                is_teacher=True
+            )
+
+        # 4. Create 5 additional active eligible teachers without Zoom accounts
+        for u_id in [301, 302, 303, 304, 305]:
+            User.objects.create_user(
+                id=u_id,
+                username=f"unmatched_teacher_{u_id}",
+                email=f"unmatched_{u_id}@natya.internal",
+                first_name=f"Unmatched {u_id}",
+                is_teacher=True
+            )
+
+        # Zoom inventory contains the 8 protected accounts, 14 explicit accounts, and 1 owner account
+        zoom_users = [
+            {
+                "id": "zoom_owner",
+                "email": "vijay.pn@natyaarts.com",
+                "display_name": "Vijay Owner",
+                "type": 2,
+                "status": "active",
+            }
+        ]
+        for tid, z_mail in protected_emails.items():
+            zoom_users.append({
+                "id": f"zoom_protected_{tid}",
+                "email": z_mail,
+                "display_name": f"Protected {tid}",
+                "type": 2,
+                "status": "active",
+            })
+        for tid, data in BUILTIN_EXPLICIT_TEACHER_MAPPINGS.items():
+            zoom_users.append({
+                "id": f"zoom_explicit_{tid}",
+                "email": data["email"],
+                "display_name": data["expected_name"],
+                "type": 2,
+                "status": "active",
+            })
+        mock_list_users.return_value = zoom_users
+
+        cmd = Command()
+        db_snapshot = cmd._inspect_database_hosts()
+        zoom_inv = cmd._fetch_zoom_inventory()
+        recon = cmd._reconcile(
+            db_snapshot=db_snapshot,
+            zoom_inventory=zoom_inv,
+            expected_seats=40,
+            apply_builtin_explicit=True
+        )
+
+        # Verify exact partition math
+        self.assertEqual(recon["raw_active_teachers_count"], 30)  # 3 excluded + 8 protected + 14 explicit + 5 unmatched
+        self.assertEqual(recon["excluded_teachers_count"], 3)
+        self.assertEqual(recon["protected_existing_host_teachers_count"], 8)
+        self.assertEqual(recon["eligible_teachers_count"], 19)    # 14 explicit + 5 unmatched
+        self.assertEqual(recon["eligible_teachers_matched_count"], 14)
+        self.assertEqual(recon["eligible_teachers_unmatched_count"], 5)
+        self.assertEqual(recon["existing_protected_hosts_count"], 8)
+        self.assertEqual(recon["proposed_new_host_creations_count"], 14)
+        self.assertEqual(len(recon["conflicts"]), 0)
+        self.assertEqual(len(recon["proposed_updates"]), 0)
+
+        # Core invariants:
+        # 1) matched + unmatched == eligible
+        self.assertEqual(
+            recon["eligible_teachers_matched_count"] + recon["eligible_teachers_unmatched_count"],
+            recon["eligible_teachers_count"]
+        )
+        # 2) excluded + protected + eligible == raw_active
+        self.assertEqual(
+            recon["excluded_teachers_count"] + recon["protected_existing_host_teachers_count"] + recon["eligible_teachers_count"],
+            recon["raw_active_teachers_count"]
+        )
+
+        # Verify printed audit report shows all 8 separate counts clearly
+        out = StringIO()
+        call_command("sync_zoom_host_accounts", apply_explicit_mappings=True, stdout=out)
+        report = out.getvalue()
+        self.assertIn("Raw Active Teachers:        30", report)
+        self.assertIn("Permanently Excluded:       3", report)
+        self.assertIn("Protected Existing-Host Teachers: 8", report)
+        self.assertIn("Eligible Teachers:          19", report)
+        self.assertIn("Eligible Teachers Matched:  14", report)
+        self.assertIn("Eligible Teachers Without Zoom Accounts: 5", report)
+        self.assertIn("Existing Protected Hosts:   8", report)
+        self.assertIn("Proposed New Host Creations:14", report)
+
+    @mock.patch.object(ZoomService, "list_users")
+    def test_protected_eight_assignments_preserved_when_absent_from_zoom_inventory(self, mock_list_users):
+        """
+        Verify that the 8 protected assignments (54, 57, 58, 59, 60, 61, 62, 63) are never
+        reassigned, deactivated, or modified even when their Zoom accounts are absent from
+        the current Zoom API inventory, and matched + unmatched == eligible still holds.
+        """
+        User.objects.all().delete()
+
+        protected_emails = {
+            54: "yathivandyaks@gmail.com",
+            57: "athirajayakumar2086@gmail.com",
+            58: "bhaghyareshmi25@gmail.com",
+            59: "jismakk@gmail.com",
+            60: "ammusree24mar2000@gmail.com",
+            61: "schoolmargi15@gmail.com",
+            62: "pranijap99@gmail.com",
+            63: "sreelakshmiedathara555@gmail.com",
+        }
+        for tid, z_mail in protected_emails.items():
+            t = User.objects.create_user(
+                id=tid,
+                username=f"teacher_{tid}",
+                email=f"teacher_{tid}@natya.internal",
+                first_name=f"ProtectedTeacher{tid}",
+                is_teacher=True
+            )
+            ZoomHostAccount.objects.create(
+                zoom_user_id=f"zoom_protected_{tid}",
+                email=z_mail,
+                display_name=f"Protected {tid} Original",
+                status=ZoomHostAccount.Status.ACTIVE,
+                account_type=ZoomHostAccount.AccountType.DEDICATED,
+                assigned_instructor=t,
+                max_concurrency=1
+            )
+
+        for tid, data in BUILTIN_EXPLICIT_TEACHER_MAPPINGS.items():
+            User.objects.create_user(
+                id=tid,
+                username=f"teacher_{tid}",
+                email=f"teacher_{tid}@natya.internal",
+                first_name=data["expected_name"],
+                phone_number=data["expected_phone"],
+                is_teacher=True
+            )
+
+        # Zoom inventory ONLY contains the 14 explicit mappings; the 8 protected Zoom accounts are absent
+        zoom_users = []
+        for tid, data in BUILTIN_EXPLICIT_TEACHER_MAPPINGS.items():
+            zoom_users.append({
+                "id": f"zoom_explicit_{tid}",
+                "email": data["email"],
+                "display_name": data["expected_name"],
+                "type": 2,
+                "status": "active",
+            })
+        mock_list_users.return_value = zoom_users
+
+        out = StringIO()
+        call_command(
+            "sync_zoom_host_accounts",
+            apply_explicit_mappings=True,
+            commit=True,
+            confirm="CONFIRM-ZOOM-HOST-SYNC",
+            stdout=out
+        )
+        report = out.getvalue()
+
+        # Verify all 8 protected hosts remain ACTIVE, assigned, and completely unmodified
+        for tid, z_mail in protected_emails.items():
+            host = ZoomHostAccount.objects.get(assigned_instructor_id=tid)
+            self.assertEqual(host.zoom_user_id, f"zoom_protected_{tid}")
+            self.assertEqual(host.email, z_mail)
+            self.assertEqual(host.display_name, f"Protected {tid} Original")
+            self.assertEqual(host.status, ZoomHostAccount.Status.ACTIVE)
+            self.assertEqual(host.account_type, ZoomHostAccount.AccountType.DEDICATED)
+            self.assertEqual(host.max_concurrency, 1)
+
+        # Verify all 14 new hosts were created (total = 22)
+        self.assertEqual(ZoomHostAccount.objects.count(), 22)
+        self.assertIn("Protected Existing-Host Teachers: 8", report)
+        self.assertIn("Eligible Teachers:          14", report)
+        self.assertIn("Eligible Teachers Matched:  14", report)
+        self.assertIn("Eligible Teachers Without Zoom Accounts: 0", report)
+
+    @mock.patch.object(ZoomService, "list_users")
+    def test_explicit_mappings_not_double_counted_in_eligible_teacher_set(self, mock_list_users):
+        """
+        Verify that explicit mappings are represented once in the eligible teacher set
+        without double-counting (whether the teacher has a non-empty LMS email or blank LMS email).
+        """
+        User.objects.all().delete()
+
+        # Create all 14 explicit teachers: half with synthetic LMS emails, half with empty LMS emails
+        for idx, (tid, data) in enumerate(BUILTIN_EXPLICIT_TEACHER_MAPPINGS.items()):
+            lms_email = f"teacher_{tid}@natya.internal" if idx % 2 == 0 else ""
+            User.objects.create_user(
+                id=tid,
+                username=f"teacher_{tid}",
+                email=lms_email,
+                first_name=data["expected_name"],
+                phone_number=data["expected_phone"],
+                is_teacher=True
+            )
+
+        zoom_users = [
+            {
+                "id": f"zoom_explicit_{tid}",
+                "email": data["email"],
+                "display_name": data["expected_name"],
+                "type": 2,
+                "status": "active",
+            }
+            for tid, data in BUILTIN_EXPLICIT_TEACHER_MAPPINGS.items()
+        ]
+        mock_list_users.return_value = zoom_users
+
+        cmd = Command()
+        db_snapshot = cmd._inspect_database_hosts()
+        zoom_inv = cmd._fetch_zoom_inventory()
+        recon = cmd._reconcile(
+            db_snapshot=db_snapshot,
+            zoom_inventory=zoom_inv,
+            expected_seats=40,
+            apply_builtin_explicit=True
+        )
+
+        self.assertEqual(recon["raw_active_teachers_count"], 14)
+        self.assertEqual(recon["eligible_teachers_count"], 14)
+        self.assertEqual(recon["eligible_teachers_matched_count"], 14)
+        self.assertEqual(recon["eligible_teachers_unmatched_count"], 0)
+        self.assertEqual(
+            recon["eligible_teachers_matched_count"] + recon["eligible_teachers_unmatched_count"],
+            recon["eligible_teachers_count"]
+        )
 
     # -------------------------------------------------------------------------
     # 11. Dedicated Host Concurrency, Overlap Rejection, and Isolation

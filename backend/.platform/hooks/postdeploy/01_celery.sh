@@ -12,10 +12,12 @@ chmod 755 /var/log/celery /var/run/celery
 echo "[01_celery.sh] Running systemctl daemon-reload..."
 systemctl daemon-reload
 
-# 3. Enable and restart Celery Worker on every EB instance
-echo "[01_celery.sh] Enabling and restarting celery-worker.service..."
+# 3. Enable and restart Celery Workers on every EB instance
+echo "[01_celery.sh] Enabling and restarting celery-worker.service and celery-recordings-worker.service..."
 systemctl enable celery-worker.service || true
 systemctl restart --no-block celery-worker.service || true
+systemctl enable celery-recordings-worker.service || true
+systemctl restart --no-block celery-recordings-worker.service || true
 
 # 4. Manage Celery Beat singleton
 # In Elastic Beanstalk multi-instance environments, EB_IS_COMMAND_LEADER is 'true' on the leader

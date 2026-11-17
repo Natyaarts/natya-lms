@@ -501,6 +501,19 @@ class Command(BaseCommand):
                 blocked_explicit_teacher_ids.add(tid)
                 continue
 
+            # Invariant 1a: Protected existing-host teacher IDs must NEVER be altered or reassigned via explicit mappings
+            if tid in PROTECTED_EXISTING_TEACHER_IDS:
+                conflicts.append({
+                    "type": "CONFLICT_PROTECTED_HOST_REASSIGNMENT",
+                    "zoom_user_id": "",
+                    "email": z_mail,
+                    "instructor_id": tid,
+                    "detail": f"Teacher #{tid} is a protected existing-host teacher in PROTECTED_EXISTING_TEACHER_IDS; cannot alter or reassign."
+                })
+                invalid_explicit_zoom_emails.add(z_mail)
+                blocked_explicit_teacher_ids.add(tid)
+                continue
+
             # Invariant 1b: Excluded Zoom emails (such as tenant owner) must NEVER be in explicit mappings
             if z_mail in EXCLUDED_ZOOM_EMAILS:
                 conflicts.append({
@@ -615,29 +628,53 @@ class Command(BaseCommand):
                 blocked_explicit_teacher_ids.add(dup_tid)
                 valid_explicit_teachers.pop(dup_tid, None)
 
-        # 1. Index active LMS Teachers and detect duplicate emails (excluding EXCLUDED_TEACHER_IDS and blocked_explicit_teacher_ids)
-        raw_teachers = list(
-            User.objects.filter(is_teacher=True, is_active=True)
-            .exclude(email__isnull=True)
-            .exclude(email__exact="")
+        # 1. Index active LMS Teachers and construct consistent, non-overlapping teacher populations
+        raw_teachers_qs = list(
+            User.objects.filter(is_teacher=True, is_active=True).order_by("id")
         )
+        raw_active_by_id = {t.id: t for t in raw_teachers_qs}
+        for tid, t_obj in valid_explicit_teachers.items():
+            if getattr(t_obj, "is_teacher", False) and getattr(t_obj, "is_active", True):
+                raw_active_by_id.setdefault(tid, t_obj)
+
+        raw_teachers = list(raw_active_by_id.values())
         total_lms_teachers_raw = len(raw_teachers)
 
-        teachers = [
-            t for t in raw_teachers
-            if t.id not in EXCLUDED_TEACHER_IDS and t.id not in blocked_explicit_teacher_ids
+        excluded_active_teachers = [
+            t for t in raw_teachers if t.id in EXCLUDED_TEACHER_IDS
         ]
-        teacher_by_id = {t.id: t for t in teachers}
-        # Merge verified valid explicit teachers
+        protected_active_teachers = [
+            t for t in raw_teachers
+            if t.id not in EXCLUDED_TEACHER_IDS and t.id in PROTECTED_EXISTING_TEACHER_IDS
+        ]
+        existing_protected_hosts = [
+            h for h in db_snapshot["hosts"]
+            if h.assigned_instructor_id in PROTECTED_EXISTING_TEACHER_IDS
+        ]
+
+        # Build deduplicated eligible teacher set (keyed by teacher ID to prevent double-counting)
+        eligible_by_id = {
+            t.id: t
+            for t in raw_teachers
+            if t.id not in EXCLUDED_TEACHER_IDS and t.id not in PROTECTED_EXISTING_TEACHER_IDS
+        }
+        # Merge verified valid explicit teachers without double-counting
         for tid, t_obj in valid_explicit_teachers.items():
-            if tid not in blocked_explicit_teacher_ids:
-                teacher_by_id[tid] = t_obj
+            if (
+                tid not in EXCLUDED_TEACHER_IDS
+                and tid not in PROTECTED_EXISTING_TEACHER_IDS
+                and tid not in blocked_explicit_teacher_ids
+            ):
+                eligible_by_id[tid] = t_obj
+
+        teachers = list(eligible_by_id.values())
+        teacher_by_id = dict(eligible_by_id)
 
         lms_email_to_teachers = defaultdict(list)
         for t in teachers:
-            if t.id in blocked_explicit_teacher_ids:
+            if t.id in blocked_explicit_teacher_ids or t.id in valid_explicit_teachers:
                 continue
-            norm_e = t.email.strip().lower()
+            norm_e = (t.email or "").strip().lower()
             if norm_e and "@" in norm_e:
                 lms_email_to_teachers[norm_e].append(t)
 
@@ -660,11 +697,13 @@ class Command(BaseCommand):
         proposed_updates = []
         unmatched_zoom_licensed = []
         matched_zoom_emails = set()
+        seen_licensed_zoom_emails = set()
         matched_teacher_ids = set()
 
         for zu in zoom_inventory["licensed_users"]:
             z_uid = zu["id"]
             z_email = zu["email"]
+            seen_licensed_zoom_emails.add(z_email)
 
             # Ambiguity Check: Duplicate Zoom email
             if z_email in dup_zoom_emails:
@@ -705,7 +744,11 @@ class Command(BaseCommand):
                 if z_email in duplicate_explicit_zoom_emails:
                     continue  # already flagged in conflicts
                 mapped_tid = explicit_zoom_to_tids[z_email][0]
-                if mapped_tid in EXCLUDED_TEACHER_IDS or mapped_tid in blocked_explicit_teacher_ids:
+                if (
+                    mapped_tid in EXCLUDED_TEACHER_IDS
+                    or mapped_tid in PROTECTED_EXISTING_TEACHER_IDS
+                    or mapped_tid in blocked_explicit_teacher_ids
+                ):
                     continue  # already flagged in conflicts
                 target_teacher = valid_explicit_teachers.get(mapped_tid)
             else:
@@ -713,9 +756,10 @@ class Command(BaseCommand):
                 lms_teachers = lms_email_to_teachers.get(z_email, [])
                 target_teacher = lms_teachers[0] if lms_teachers else None
 
-            # Hard safety invariant: Never allow an excluded, blocked, non-teacher, or inactive teacher to be target
+            # Hard safety invariant: Never allow an excluded, protected, blocked, non-teacher, or inactive teacher to be target
             if target_teacher:
                 if (target_teacher.id in EXCLUDED_TEACHER_IDS or
+                    target_teacher.id in PROTECTED_EXISTING_TEACHER_IDS or
                     target_teacher.id in blocked_explicit_teacher_ids or
                     not getattr(target_teacher, "is_teacher", False) or
                     not getattr(target_teacher, "is_active", True)):
@@ -751,7 +795,7 @@ class Command(BaseCommand):
                 protected_host = next(h for h in existing_hosts_by_email if h.assigned_instructor_id in PROTECTED_EXISTING_TEACHER_IDS)
 
             if protected_host:
-                if not target_teacher or target_teacher.id != protected_host.assigned_instructor_id:
+                if target_teacher and target_teacher.id != protected_host.assigned_instructor_id:
                     conflicts.append({
                         "type": "CONFLICT_PROTECTED_HOST_REASSIGNMENT",
                         "zoom_user_id": z_uid,
@@ -760,6 +804,8 @@ class Command(BaseCommand):
                         "detail": f"Existing host #{protected_host.id} is bound to protected Teacher #{protected_host.assigned_instructor_id}; cannot alter or reassign."
                     })
                     continue
+                # Protected existing host belongs to this protected teacher; preserve completely unchanged.
+                continue
 
             # Check for multi-key database integrity conflict: multiple hosts with same email
             if len(existing_hosts_by_email) > 1:
@@ -798,10 +844,9 @@ class Command(BaseCommand):
                         })
                         continue
 
-                matched_zoom_emails.add(z_email)
-                matched_teacher_ids.add(target_teacher.id)
-
                 if not existing_host:
+                    matched_zoom_emails.add(z_email)
+                    matched_teacher_ids.add(target_teacher.id)
                     # Clean new DEDICATED host creation
                     proposed_creates.append({
                         "zoom_user_id": z_uid,
@@ -844,6 +889,9 @@ class Command(BaseCommand):
                             "detail": "; ".join(conflict_reasons)
                         })
                         continue
+
+                    matched_zoom_emails.add(z_email)
+                    matched_teacher_ids.add(target_teacher.id)
 
                     # Plan safe update: preserve status, update assigned_instructor, account_type, max_concurrency
                     needs_update = False
@@ -891,7 +939,7 @@ class Command(BaseCommand):
         # Every verified valid teacher in explicit mappings MUST match an active licensed user in Zoom
         for tid, m_data in norm_explicit_mappings.items():
             z_mail = m_data["email"]
-            if tid in valid_explicit_teachers and z_mail not in matched_zoom_emails:
+            if tid in valid_explicit_teachers and z_mail not in seen_licensed_zoom_emails:
                 basic_match = next((u for u in zoom_inventory.get("basic_users", []) if u["email"] == z_mail), None)
                 pending_match = next((u for u in zoom_inventory.get("pending_users", []) if u["email"] == z_mail), None)
                 if basic_match:
@@ -909,15 +957,16 @@ class Command(BaseCommand):
                     "detail": f"Explicitly mapped Zoom account for Teacher #{tid} ({z_mail}) is unavailable: {reason}"
                 })
 
-        # Identify LMS teachers with NO matching Zoom account
-        missing_lms_teachers = []
-        for t in teachers:
-            if t.id not in matched_teacher_ids and t.email.strip().lower() not in duplicate_lms_teacher_emails:
-                missing_lms_teachers.append({
-                    "id": t.id,
-                    "name": t.get_full_name() or t.username,
-                    "email": t.email,
-                })
+        # Identify eligible LMS teachers with NO matching Zoom account (using the exact same eligible_teachers population)
+        missing_lms_teachers = [
+            {
+                "id": t.id,
+                "name": t.get_full_name() or t.username,
+                "email": t.email,
+            }
+            for t in teachers
+            if t.id not in matched_teacher_ids
+        ]
 
         return {
             "proposed_creates": proposed_creates,
@@ -926,11 +975,20 @@ class Command(BaseCommand):
             "unmatched_zoom_licensed": unmatched_zoom_licensed,
             "missing_lms_teachers": missing_lms_teachers,
             "duplicate_lms_teacher_emails": duplicate_lms_teacher_emails,
+            "raw_active_teachers_count": total_lms_teachers_raw,
             "total_lms_teachers_raw": total_lms_teachers_raw,
-            "total_lms_teachers": len(teachers),
+            "excluded_teachers_count": len(excluded_active_teachers),
             "excluded_teacher_ids": sorted(list(EXCLUDED_TEACHER_IDS)),
+            "protected_existing_host_teachers_count": len(protected_active_teachers),
+            "protected_teacher_ids": sorted(list(PROTECTED_EXISTING_TEACHER_IDS)),
             "blocked_explicit_teacher_ids": sorted(list(blocked_explicit_teacher_ids)),
+            "eligible_teachers_count": len(teachers),
+            "total_lms_teachers": len(teachers),
+            "eligible_teachers_matched_count": len(matched_teacher_ids),
             "matched_teacher_count": len(matched_teacher_ids),
+            "eligible_teachers_unmatched_count": len(missing_lms_teachers),
+            "existing_protected_hosts_count": len(existing_protected_hosts),
+            "proposed_new_host_creations_count": len(proposed_creates),
             "explicit_mappings_count": len(norm_explicit_mappings),
             "explicit_mappings_enabled": bool(explicit_mappings is not None or apply_builtin_explicit),
         }
@@ -947,6 +1005,19 @@ class Command(BaseCommand):
     ):
         licensed_count = len(zoom_inventory["licensed_users"])
         basic_count = len(zoom_inventory["basic_users"])
+        raw_active_count = recon.get("raw_active_teachers_count", recon.get("total_lms_teachers_raw", recon["total_lms_teachers"]))
+        excluded_count = recon.get("excluded_teachers_count", 0)
+        excluded_ids = recon.get("excluded_teacher_ids", sorted(list(EXCLUDED_TEACHER_IDS)))
+        protected_teachers_count = recon.get("protected_existing_host_teachers_count", 0)
+        protected_ids = recon.get("protected_teacher_ids", sorted(list(PROTECTED_EXISTING_TEACHER_IDS)))
+        eligible_count = recon.get("eligible_teachers_count", recon["total_lms_teachers"])
+        matched_count = recon.get("eligible_teachers_matched_count", recon["matched_teacher_count"])
+        unmatched_count = recon.get("eligible_teachers_unmatched_count", len(recon["missing_lms_teachers"]))
+        existing_protected_hosts_count = recon.get(
+            "existing_protected_hosts_count",
+            sum(1 for h in db_snapshot.get("hosts", []) if h.assigned_instructor_id in PROTECTED_EXISTING_TEACHER_IDS)
+        )
+        proposed_creates_count = recon.get("proposed_new_host_creations_count", len(recon["proposed_creates"]))
 
         self.stdout.write("\n" + "-" * 80)
         self.stdout.write("AUDIT REPORT SUMMARY")
@@ -955,6 +1026,7 @@ class Command(BaseCommand):
         self.stdout.write(f"  - Status:  {db_snapshot['status_counts']}")
         self.stdout.write(f"  - Types:   {db_snapshot['type_counts']}")
         self.stdout.write(f"  - Mapped:  {db_snapshot['assigned_count']}")
+        self.stdout.write(f"  - Existing Protected Hosts:   {existing_protected_hosts_count} (Teacher IDs: {protected_ids})")
         self.stdout.write(f"\nZoom API User Inventory:")
         self.stdout.write(f"  - Total Active Users:         {zoom_inventory.get('total_active', zoom_inventory['total_raw'])}")
         self.stdout.write(f"  - Licensed (type=2):          {licensed_count} (Expected: ~{expected_seats})")
@@ -962,9 +1034,9 @@ class Command(BaseCommand):
         self.stdout.write(f"  - Basic / Ineligible (type=1): {basic_count}")
         self.stdout.write(f"  - Pending Invitations:        {len(zoom_inventory.get('pending_users', []))} (Invited in Zoom, awaiting acceptance)")
         self.stdout.write(f"\nLMS Teachers:")
-        self.stdout.write(f"  - Registered Teachers (Total): {recon.get('total_lms_teachers_raw', recon['total_lms_teachers'])}")
-        self.stdout.write(f"  - Permanently Excluded:       {recon.get('excluded_teacher_ids', sorted(list(EXCLUDED_TEACHER_IDS)))} (Personal test accounts: 1, 25, 96; non-teachers: 40, 49)")
-        self.stdout.write(f"  - Protected Dedicated Hosts:  {sorted(list(PROTECTED_EXISTING_TEACHER_IDS))} (Existing host records never altered: 54, 57, 58, 59, 60, 61, 62, 63)")
+        self.stdout.write(f"  - Raw Active Teachers:        {raw_active_count}")
+        self.stdout.write(f"  - Permanently Excluded:       {excluded_count} (IDs: {excluded_ids} - Personal test accounts: 1, 25, 96; non-teachers: 40, 49)")
+        self.stdout.write(f"  - Protected Existing-Host Teachers: {protected_teachers_count} (IDs: {protected_ids})")
         
         explicit_enabled = recon.get("explicit_mappings_enabled", False)
         explicit_count = recon.get("explicit_mappings_count", 0)
@@ -974,11 +1046,12 @@ class Command(BaseCommand):
             explicit_desc = "OPT-IN DISABLED (0 applied; pass --apply-explicit-mappings to enable)"
         self.stdout.write(f"  - Explicit Synthetic Mappings:{explicit_desc}")
 
-        self.stdout.write(f"  - Net Eligible Teachers:       {recon['total_lms_teachers']}")
-        self.stdout.write(f"  - Exactly Matched with Zoom:  {recon['matched_teacher_count']}")
-        self.stdout.write(f"  - Unmatched Eligible Teachers: {len(recon['missing_lms_teachers'])}")
+        self.stdout.write(f"  - Eligible Teachers:          {eligible_count}")
+        self.stdout.write(f"  - Eligible Teachers Matched:  {matched_count}")
+        self.stdout.write(f"  - Eligible Teachers Without Zoom Accounts: {unmatched_count}")
         self.stdout.write(f"\nProposed Actions:")
-        self.stdout.write(f"  - New Host Records to Create: {len(recon['proposed_creates'])}")
+        self.stdout.write(f"  - Existing Protected Hosts:   {existing_protected_hosts_count} (Preserved unchanged)")
+        self.stdout.write(f"  - Proposed New Host Creations:{proposed_creates_count}")
         self.stdout.write(f"  - Existing Records to Update: {len(recon['proposed_updates'])}")
         self.stdout.write(f"  - Conflicts Requiring Review: {len(recon['conflicts'])}")
         self.stdout.write(f"  - Unmatched Licensed Zoom:    {len(recon['unmatched_zoom_licensed'])}")
