@@ -511,12 +511,12 @@ export default function UserDetailPage() {
             <h1 className="text-3xl font-bold">{user.first_name || user.username} {user.last_name || ""}</h1>
             {user.student_type === 'CAREER_ACADEMY' && (
               <span className="px-3 py-1 rounded-full text-xs font-bold bg-[#facc15]/15 text-[#facc15] border border-[#facc15]/30">
-                🎓 Career Academy
+                Career Academy
               </span>
             )}
             {user.student_type === 'REGULAR' && (
               <span className="px-3 py-1 rounded-full text-xs font-bold bg-purple-500/15 text-[#A78BFA] border border-purple-500/30">
-                🧘 Regular Track
+                Regular Track
               </span>
             )}
             {user.is_student && !user.student_type && (
@@ -1075,8 +1075,8 @@ export default function UserDetailPage() {
                         onChange={e => setStudentForm({ ...studentForm, student_type: e.target.value })}
                         className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
                       >
-                        <option value="CAREER_ACADEMY">🎓 Career Academy (Certified & Diploma)</option>
-                        <option value="REGULAR">🧘 Regular Track (Flexible & Hobby)</option>
+                        <option value="CAREER_ACADEMY">Career Academy (Certified & Diploma)</option>
+                        <option value="REGULAR">Regular Track (Flexible & Hobby)</option>
                       </select>
                     </div>
                     <div>
@@ -1207,11 +1207,11 @@ export default function UserDetailPage() {
                         <div>
                           {user.student_type === 'CAREER_ACADEMY' ? (
                             <span className="px-2.5 py-0.5 rounded text-xs font-bold bg-[#facc15]/15 text-[#facc15] border border-[#facc15]/30">
-                              🎓 Career Academy
+                              Career Academy
                             </span>
                           ) : user.student_type === 'REGULAR' ? (
                             <span className="px-2.5 py-0.5 rounded text-xs font-bold bg-purple-500/15 text-[#A78BFA] border border-purple-500/30">
-                              🧘 Regular Track
+                              Regular Track
                             </span>
                           ) : (
                             <span className="text-zinc-500 italic">Not Selected</span>
@@ -1233,7 +1233,7 @@ export default function UserDetailPage() {
                       <div className="flex justify-between py-2">
                         <span className="text-zinc-400">Onboarding Status</span>
                         <span className={user.is_onboarded ? "text-green-400 font-bold" : "text-amber-400 font-bold"}>
-                          {user.is_onboarded ? "✓ Completed" : "⏳ Pending"}
+                          {user.is_onboarded ? "Completed" : "Pending"}
                         </span>
                       </div>
                     </div>

@@ -429,11 +429,11 @@ export default function AdminUsers() {
                           <div>
                             {user.student_type === 'CAREER_ACADEMY' ? (
                               <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-[#facc15]/15 text-[#facc15] border border-[#facc15]/30">
-                                🎓 Career Academy
+                                Career Academy
                               </span>
                             ) : user.student_type === 'REGULAR' ? (
                               <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/15 text-[#A78BFA] border border-purple-500/30">
-                                🧘 Regular Track
+                                Regular Track
                               </span>
                             ) : (
                               <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-zinc-800 text-zinc-400 border border-zinc-700">
@@ -468,9 +468,9 @@ export default function AdminUsers() {
                             {user.courses_count || 0} Enrolled
                           </span>
                           {user.is_onboarded ? (
-                            <span className="text-[10px] text-green-400 font-medium">✓ Complete</span>
+                            <span className="text-[10px] text-green-400 font-medium">Complete</span>
                           ) : (
-                            <span className="text-[10px] text-amber-400/90 font-medium">⏳ Pending</span>
+                            <span className="text-[10px] text-amber-400/90 font-medium">Pending</span>
                           )}
                         </div>
                       ) : (
@@ -754,8 +754,8 @@ export default function AdminUsers() {
                         onChange={e => setFormFields({ ...formFields, student_type: e.target.value })}
                         className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15] cursor-pointer"
                       >
-                        <option value="CAREER_ACADEMY">🎓 Career Academy (Certified & Diploma)</option>
-                        <option value="REGULAR">🧘 Regular Track (Flexible & Hobby)</option>
+                        <option value="CAREER_ACADEMY">Career Academy (Certified & Diploma)</option>
+                        <option value="REGULAR">Regular Track (Flexible & Hobby)</option>
                       </select>
                     </div>
 

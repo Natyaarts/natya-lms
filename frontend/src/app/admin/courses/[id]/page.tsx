@@ -1242,7 +1242,12 @@ export default function CourseManager() {
                 {assignedStudents.map((st: any) => (
                   <div key={st.id} className="bg-zinc-950 border border-white/5 rounded-xl px-4 py-3">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-white text-sm truncate">{st.name}</span>
+                      <Link
+                        href={`/admin/users/${st.id}`}
+                        className="font-semibold text-white hover:text-[#facc15] hover:underline text-sm truncate transition-colors"
+                      >
+                        {st.name}
+                      </Link>
                       <span className="text-[10px] font-mono text-zinc-400 shrink-0">ID #{st.id}</span>
                     </div>
                     <div className="text-[11px] text-zinc-400 mt-1 truncate">
