@@ -41,6 +41,12 @@ def norm_name(val):
     return re.sub(r"\s+", " ", s).strip()
 
 
+def compact_key(val):
+    if not val:
+        return ""
+    return re.sub(r"[^a-z0-9]", "", str(val).strip().lower())
+
+
 def filter_eligible_teachers(users):
     return [
         u
@@ -51,21 +57,32 @@ def filter_eligible_teachers(users):
 
 def resolve_course_map(source_course_names, lms_courses):
     lms_by_norm = defaultdict(list)
+    lms_by_compact = defaultdict(list)
     for c in lms_courses:
         n = norm_name(c.title)
         if n:
             lms_by_norm[n].append(c)
+        ck = compact_key(c.title)
+        if ck:
+            lms_by_compact[ck].append(c)
 
     resolved = {}
     for src_name in source_course_names:
         matches = lms_by_norm.get(norm_name(src_name), [])
         if len(matches) == 1:
             resolved[src_name] = (matches[0], "")
-        elif len(matches) == 0:
-            resolved[src_name] = (None, f"No LMS Course matched '{src_name}'")
-        else:
+        elif len(matches) > 1:
             ids = ", ".join(str(m.id) for m in matches)
             resolved[src_name] = (None, f"Multiple LMS Courses matched '{src_name}': {ids}")
+        else:
+            c_matches = lms_by_compact.get(compact_key(src_name), [])
+            if len(c_matches) == 1:
+                resolved[src_name] = (c_matches[0], "")
+            elif len(c_matches) == 0:
+                resolved[src_name] = (None, f"No LMS Course matched '{src_name}'")
+            else:
+                ids = ", ".join(str(m.id) for m in c_matches)
+                resolved[src_name] = (None, f"Multiple LMS Courses matched '{src_name}': {ids}")
     return resolved
 
 
@@ -85,11 +102,13 @@ def run_self_tests():
 
     courses = [
         SimpleNamespace(id=10, title="G 117 CMJ"),
+        SimpleNamespace(id=11, title="G118 CMS"),
         SimpleNamespace(id=20, title="Dup Course"),
         SimpleNamespace(id=21, title="Dup Course"),
     ]
-    cmap = resolve_course_map([" G 117 CMJ", "Dup Course", "Unknown"], courses)
+    cmap = resolve_course_map([" G 117 CMJ", "G 118 CMS", "Dup Course", "Unknown"], courses)
     assert cmap[" G 117 CMJ"][0].id == 10
+    assert cmap["G 118 CMS"][0].id == 11
     assert cmap["Dup Course"][0] is None
     assert cmap["Unknown"][0] is None
     print("SELF_TEST_PASSED: Course resolution and active teacher eligibility checks passed.")
@@ -249,10 +268,12 @@ def main():
         )
     )
     eligible_teachers = filter_eligible_teachers(all_users)
+    eligible_by_id = {u.id: u for u in eligible_teachers}
 
     by_email = defaultdict(list)
     by_phone_exact = defaultdict(list)
     by_phone_last10 = defaultdict(list)
+    by_user_name = defaultdict(list)
     for u in eligible_teachers:
         em = norm_email(u.email)
         if em:
@@ -262,8 +283,12 @@ def main():
             by_phone_exact[d].append(u)
         if l10 and len(l10) == 10:
             by_phone_last10[l10].append(u)
+        uname = norm_name(f"{u.first_name} {u.last_name}".strip() or u.username)
+        if uname:
+            by_user_name[uname].append(u)
 
     teacher_key_to_lms = {}
+    teacher_name_to_lms = {}
     unmatched_teachers = []
     for t_key, info in source_teachers.items():
         matched_u = None
@@ -276,8 +301,49 @@ def main():
 
         if matched_u:
             teacher_key_to_lms[t_key] = matched_u
+            teacher_name_to_lms[norm_name(info["name"])] = matched_u
         else:
             unmatched_teachers.append(info)
+
+    # 2b. Also load All Sessions (class_name -> teacher_name) for courses missing from CTL
+    if "All Sessions" in wb.sheetnames:
+        ws_as = wb["All Sessions"]
+        as_rows = list(ws_as.iter_rows(values_only=True))
+        if as_rows:
+            as_hdr = [str(c).strip() if c is not None else "" for c in as_rows[0]]
+            as_idx = {name: i for i, name in enumerate(as_hdr)}
+            if "class_name" in as_idx and "teacher_name" in as_idx:
+                ctl_norm_courses = {norm_name(k) for k in course_teacher_keys.keys()}
+                ctl_compact_courses = {compact_key(k) for k in course_teacher_keys.keys()}
+                as_course_teachers = defaultdict(set)
+                for r in as_rows[1:]:
+                    if not r:
+                        continue
+                    c_name = str(get_cell(r, as_idx["class_name"]) or "").strip()
+                    t_name = str(get_cell(r, as_idx["teacher_name"]) or "").strip()
+                    if not c_name or not t_name:
+                        continue
+                    if norm_name(c_name) in ctl_norm_courses or compact_key(c_name) in ctl_compact_courses:
+                        continue
+                    t_norm = norm_name(t_name)
+                    u = teacher_name_to_lms.get(t_norm)
+                    if not u and len(by_user_name.get(t_norm, [])) == 1:
+                        u = by_user_name[t_norm][0]
+                    if u:
+                        as_course_teachers[c_name].add(u)
+                for c_name, u_set in as_course_teachers.items():
+                    for u in u_set:
+                        tk = (norm_name(f"{u.first_name} {u.last_name}"), "", norm_email(u.email))
+                        teacher_key_to_lms[tk] = u
+                        if tk not in source_teachers:
+                            source_teachers[tk] = {
+                                "name": f"{u.first_name} {u.last_name}".strip() or u.username,
+                                "phone_raw": u.phone_number or "",
+                                "phone_digits": "",
+                                "phone_last10": "",
+                                "email": norm_email(u.email),
+                            }
+                        course_teacher_keys[c_name].add(tk)
 
     # 3. Resolve source courses -> LMS Course
     lms_courses = list(Course.objects.only("id", "title"))
@@ -304,12 +370,16 @@ def main():
             lms_course_to_teachers[lms_c.id] = matched_users
             lms_course_to_src_name[lms_c.id] = src_c_name
 
-    # 4. Plan CourseInstructor assignments
+    # 4. Plan CourseInstructor assignments & build existing CourseInstructor(TEACHER) fallback map
     existing_ci = set(
         CourseInstructor.objects.filter(role=CourseInstructor.InstructorRole.TEACHER).values_list(
             "course_id", "user_id"
         )
     )
+    existing_ci_eligible_by_course = defaultdict(list)
+    for cid, uid in existing_ci:
+        if uid in eligible_by_id:
+            existing_ci_eligible_by_course[cid].append(eligible_by_id[uid])
     ci_plan = []
     for cid, t_users in sorted(lms_course_to_teachers.items()):
         is_single = len(t_users) == 1
@@ -360,8 +430,19 @@ def main():
             status = "MANUAL_REVIEW_EXCLUDED_CURRENT_INSTRUCTOR"
             reason = f"current_instructor_id={curr_id} is excluded"
         elif not t_users:
-            status = "MANUAL_REVIEW_UNMATCHED_COURSE_OR_TEACHER"
-            reason = f"Course '{b.course.title if b.course else ''}' not unambiguously resolved in sheet"
+            ci_teachers = existing_ci_eligible_by_course.get(b.course_id, [])
+            if curr_id is None and len(ci_teachers) == 1:
+                exp_user = ci_teachers[0]
+                status = "MISSING_CONFIRMED"
+                reason = f"NULL -> LMS#{exp_user.id} (from existing single CourseInstructor TEACHER)"
+                batch_updates.append((b.id, exp_user.id, status))
+            elif curr_id is not None and len(ci_teachers) == 1 and curr_id == ci_teachers[0].id:
+                exp_user = ci_teachers[0]
+                status = "CONFIRMED_CORRECT"
+                reason = f"Matches existing single CourseInstructor TEACHER LMS#{exp_user.id}"
+            else:
+                status = "MANUAL_REVIEW_UNMATCHED_COURSE_OR_TEACHER"
+                reason = f"Course '{b.course.title if b.course else ''}' not unambiguously resolved in sheet or CourseInstructor"
         elif len(t_users) > 1:
             t_ids = {u.id for u in t_users}
             if curr_id in t_ids:
