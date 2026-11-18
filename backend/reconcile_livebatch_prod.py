@@ -56,20 +56,49 @@ def filter_eligible_teachers(users):
     ]
 
 
-def courses_match(source_course_name, lms_course_title):
-    """Independently verify that the source course matches the LMS course title."""
-    s_norm = norm_name(source_course_name)
-    l_norm = norm_name(lms_course_title)
-    return bool(s_norm and l_norm and s_norm == l_norm)
-
-
-def resolve_batch_teacher(matched_students, total_students, lms_course_title, course_student_hits, course_teachers):
+def build_source_course_to_lms_map(source_course_names, lms_courses):
     """
-    Require strict course-level evidence:
+    Resolve each source workbook Course Name to an unambiguous LMS Course (via Course.id).
+    Returns dict: source_course_name -> (lms_course_or_None, reason_if_unverified).
+    """
+    lms_by_norm = defaultdict(list)
+    for c in lms_courses:
+        n = norm_name(c.title)
+        if n:
+            lms_by_norm[n].append(c)
+
+    resolved = {}
+    for src_name in source_course_names:
+        n = norm_name(src_name)
+        matches = lms_by_norm.get(n, [])
+        if len(matches) == 1:
+            resolved[src_name] = (matches[0], "")
+        elif len(matches) == 0:
+            resolved[src_name] = (None, f"source_course='{src_name}' did not resolve to any LMS Course")
+        else:
+            ids = ", ".join(str(m.id) for m in matches)
+            resolved[src_name] = (
+                None,
+                f"source_course='{src_name}' ambiguously matched multiple LMS Courses (ids: {ids})",
+            )
+    return resolved
+
+
+def resolve_batch_teacher(
+    matched_students,
+    total_students,
+    lms_course_id,
+    lms_course_title,
+    course_student_hits,
+    course_teachers,
+    source_course_to_lms,
+):
+    """
+    Require strict batch-specific + course-level evidence:
     - 100% of enrolled batch students must be matched (total_students > 0 and matched_students == total_students).
     - All matched students must resolve to exactly one source course.
+    - That source course must unambiguously resolve to the batch's LMS Course (via LiveBatch.course_id).
     - That source course must have exactly one distinct source teacher.
-    - The source course must independently match the LMS course title.
     Returns (chosen_teacher_key_or_None, status_or_None, detail_reason).
     """
     if total_students == 0 or matched_students == 0:
@@ -90,14 +119,20 @@ def resolve_batch_teacher(matched_students, total_students, lms_course_title, co
 
     if len(full_coverage_courses) == 1:
         course_name, c_teachers = full_coverage_courses[0]
-        if not courses_match(course_name, lms_course_title):
+        resolved_course, unverified_reason = source_course_to_lms.get(
+            course_name, (None, f"source_course='{course_name}' not in course map")
+        )
+        if not resolved_course:
+            return None, "MANUAL_REVIEW_COURSE_MISMATCH", unverified_reason
+        if resolved_course.id != lms_course_id:
             return (
                 None,
                 "MANUAL_REVIEW_COURSE_MISMATCH",
-                f"source_course='{course_name}' does not match lms_course='{lms_course_title}'",
+                f"source_course='{course_name}' resolved to LMS Course#{resolved_course.id} ('{resolved_course.title}'), "
+                f"but LiveBatch.course_id={lms_course_id} ('{lms_course_title}')",
             )
         if len(c_teachers) == 1:
-            return next(iter(c_teachers)), None, f"course={course_name}"
+            return next(iter(c_teachers)), None, f"course={course_name} (LMS Course#{resolved_course.id})"
         return None, "MANUAL_REVIEW_MULTI_TEACHER", f"course={course_name} has {len(c_teachers)} source teachers"
 
     if len(full_coverage_courses) > 1:
@@ -113,9 +148,11 @@ def classify_batch(
     current_instructor_id,
     total_students,
     matched_students,
+    lms_course_id,
     lms_course_title,
     course_student_hits,
     course_teachers,
+    source_course_to_lms,
     teacher_student_hits,
     source_teachers,
     teacher_key_to_lms,
@@ -134,9 +171,11 @@ def classify_batch(
     chosen_t_key, review_status, course_detail = resolve_batch_teacher(
         matched_students=matched_students,
         total_students=total_students,
+        lms_course_id=lms_course_id,
         lms_course_title=lms_course_title,
         course_student_hits=course_student_hits,
         course_teachers=course_teachers,
+        source_course_to_lms=source_course_to_lms,
     )
 
     candidate_summary = []
@@ -219,15 +258,31 @@ def run_self_tests():
     u45 = SimpleNamespace(id=45, is_active=True, is_teacher=True)
     t_map = {t1: (u41, "email"), t2: (u45, "email")}
 
+    lms_courses = [
+        SimpleNamespace(id=10, title="Course A"),
+        SimpleNamespace(id=20, title="Different LMS Course"),
+        SimpleNamespace(id=30, title="Duplicate Course"),
+        SimpleNamespace(id=31, title="Duplicate Course"),
+    ]
+    src_course_map = build_source_course_to_lms_map(
+        ["Course A", "Course B", "Duplicate Course", "Missing Course"],
+        lms_courses,
+    )
+    assert src_course_map["Course A"][0].id == 10
+    assert src_course_map["Duplicate Course"][0] is None
+    assert src_course_map["Missing Course"][0] is None
+
     # 1. Existing excluded current instructor (1, 25, 39, 96) -> MANUAL_REVIEW_EXCLUDED_CURRENT_INSTRUCTOR
     for ex_id in (1, 25, 39, 96):
         st, exp, _ = classify_batch(
             current_instructor_id=ex_id,
             total_students=2,
             matched_students=2,
+            lms_course_id=10,
             lms_course_title="Course A",
             course_student_hits={"Course A": {101, 102}},
             course_teachers={"Course A": {t1}},
+            source_course_to_lms=src_course_map,
             teacher_student_hits={t1: {101, 102}},
             source_teachers=src_teachers,
             teacher_key_to_lms=t_map,
@@ -239,9 +294,11 @@ def run_self_tests():
         current_instructor_id=None,
         total_students=3,
         matched_students=2,
+        lms_course_id=10,
         lms_course_title="Course A",
         course_student_hits={"Course A": {101, 102}},
         course_teachers={"Course A": {t1}},
+        source_course_to_lms=src_course_map,
         teacher_student_hits={t1: {101, 102}},
         source_teachers=src_teachers,
         teacher_key_to_lms=t_map,
@@ -253,9 +310,11 @@ def run_self_tests():
         current_instructor_id=None,
         total_students=2,
         matched_students=2,
+        lms_course_id=10,
         lms_course_title="Course A",
         course_student_hits={"Course A": {101}, "Course B": {102}},
         course_teachers={"Course A": {t1}, "Course B": {t1}},
+        source_course_to_lms=src_course_map,
         teacher_student_hits={t1: {101, 102}},
         source_teachers=src_teachers,
         teacher_key_to_lms=t_map,
@@ -267,9 +326,11 @@ def run_self_tests():
         current_instructor_id=None,
         total_students=2,
         matched_students=2,
+        lms_course_id=10,
         lms_course_title="Course A",
         course_student_hits={"Course A": {101, 102}},
         course_teachers={"Course A": {t1, t2}},
+        source_course_to_lms=src_course_map,
         teacher_student_hits={t1: {101, 102}, t2: {101, 102}},
         source_teachers=src_teachers,
         teacher_key_to_lms=t_map,
@@ -281,23 +342,43 @@ def run_self_tests():
         current_instructor_id=None,
         total_students=2,
         matched_students=2,
+        lms_course_id=10,
         lms_course_title="Course A",
         course_student_hits={"Course A": {101, 102}, "Course B": {101, 102}},
         course_teachers={"Course A": {t1}, "Course B": {t1}},
+        source_course_to_lms=src_course_map,
         teacher_student_hits={t1: {101, 102}},
         source_teachers=src_teachers,
         teacher_key_to_lms=t_map,
     )
     assert st == "MANUAL_REVIEW_MULTI_COURSE" and exp is None, (st, exp)
 
-    # 6. Source course != LMS course title -> MANUAL_REVIEW_COURSE_MISMATCH
+    # 6. Source course resolved to different LMS Course.id -> MANUAL_REVIEW_COURSE_MISMATCH
     st, exp, _ = classify_batch(
         current_instructor_id=None,
         total_students=2,
         matched_students=2,
+        lms_course_id=20,
         lms_course_title="Different LMS Course",
         course_student_hits={"Course A": {101, 102}},
         course_teachers={"Course A": {t1}},
+        source_course_to_lms=src_course_map,
+        teacher_student_hits={t1: {101, 102}},
+        source_teachers=src_teachers,
+        teacher_key_to_lms=t_map,
+    )
+    assert st == "MANUAL_REVIEW_COURSE_MISMATCH" and exp is None, (st, exp)
+
+    # 6b. Ambiguous duplicate LMS Course title -> MANUAL_REVIEW_COURSE_MISMATCH
+    st, exp, _ = classify_batch(
+        current_instructor_id=None,
+        total_students=2,
+        matched_students=2,
+        lms_course_id=30,
+        lms_course_title="Duplicate Course",
+        course_student_hits={"Duplicate Course": {101, 102}},
+        course_teachers={"Duplicate Course": {t1}},
+        source_course_to_lms=src_course_map,
         teacher_student_hits={t1: {101, 102}},
         source_teachers=src_teachers,
         teacher_key_to_lms=t_map,
@@ -309,9 +390,11 @@ def run_self_tests():
         current_instructor_id=45,
         total_students=2,
         matched_students=2,
+        lms_course_id=10,
         lms_course_title="Course A",
         course_student_hits={"Course A": {101, 102}},
         course_teachers={"Course A": {t1}},
+        source_course_to_lms=src_course_map,
         teacher_student_hits={t1: {101, 102}},
         source_teachers=src_teachers,
         teacher_key_to_lms=t_map,
@@ -323,23 +406,27 @@ def run_self_tests():
         current_instructor_id=41,
         total_students=2,
         matched_students=2,
+        lms_course_id=10,
         lms_course_title="Course A",
         course_student_hits={"Course A": {101, 102}},
         course_teachers={"Course A": {t1}},
+        source_course_to_lms=src_course_map,
         teacher_student_hits={t1: {101, 102}},
         source_teachers=src_teachers,
         teacher_key_to_lms=t_map,
     )
     assert st == "CONFIRMED_CORRECT" and exp == u41, (st, exp)
 
-    # 9. Valid NULL batch with 100% matched students + verified course + single active teacher -> MISSING_CONFIRMED
+    # 9. Valid NULL batch with 100% matched students + verified Course.id + single active teacher -> MISSING_CONFIRMED
     st, exp, _ = classify_batch(
         current_instructor_id=None,
         total_students=2,
         matched_students=2,
+        lms_course_id=10,
         lms_course_title="Course A",
         course_student_hits={"Course A": {101, 102}},
         course_teachers={"Course A": {t1}},
+        source_course_to_lms=src_course_map,
         teacher_student_hits={t1: {101, 102}},
         source_teachers=src_teachers,
         teacher_key_to_lms=t_map,
@@ -440,7 +527,7 @@ def main():
     from django.contrib.auth import get_user_model
     from django.db import transaction
     from django.db.models import Prefetch
-    from courses.models import LiveBatch, LiveBatchStudent
+    from courses.models import Course, LiveBatch, LiveBatchStudent
 
     xlsx_path = Path(args.xlsx) if args.xlsx else Path(settings.BASE_DIR) / "data" / "natya_analytics.xlsx"
     if not xlsx_path.exists():
@@ -583,7 +670,11 @@ def main():
         else:
             unmatched_source_teachers.append(info)
 
-    # 3. Audit ALL LiveBatch records
+    # 2b. Resolve source workbook courses -> LMS Course (via Course.id / Course.title)
+    lms_courses = list(Course.objects.only("id", "title"))
+    source_course_to_lms = build_source_course_to_lms_map(course_teachers.keys(), lms_courses)
+
+    # 3. Audit ALL LiveBatch records (batch-specific via LiveBatch.course_id -> Course)
     batches = list(
         LiveBatch.objects.select_related("course", "instructor")
         .only(
@@ -674,9 +765,11 @@ def main():
             current_instructor_id=batch.instructor_id,
             total_students=total_students,
             matched_students=matched_students,
+            lms_course_id=batch.course_id,
             lms_course_title=lms_course_title,
             course_student_hits=course_student_hits,
             course_teachers=course_teachers,
+            source_course_to_lms=source_course_to_lms,
             teacher_student_hits=teacher_student_hits,
             source_teachers=source_teachers,
             teacher_key_to_lms=teacher_key_to_lms,
