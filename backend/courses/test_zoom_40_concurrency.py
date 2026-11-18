@@ -65,6 +65,7 @@ TEST_ZOOM_CREDS = {
     "ZOOM_CLIENT_ID": "client_test_40",
     "ZOOM_CLIENT_SECRET": "secret_test_40",
     "ZOOM_WEBHOOK_SECRET_TOKEN": "webhook_secret_test",
+    "ZOOM_EXCLUDED_TEACHER_IDS": [],
 }
 
 

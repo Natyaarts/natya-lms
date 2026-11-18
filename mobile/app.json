@@ -28,6 +28,20 @@
       "softwareKeyboardLayoutMode": "resize",
       "package": "com.natyaarts.academy",
       "versionCode": 9,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "academy.natyaarts.com",
+              "pathPrefix": "/live-classes/join"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ],
       "blockedPermissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO"

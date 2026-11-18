@@ -1,0 +1,13 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.natyaarts.academy",
+      "sha256_cert_fingerprints": [
+        "86:C7:1F:7F:22:B1:FB:E8:E9:39:0C:33:17:9E:12:94:33:8B:B2:EE:0C:CA:1A:CE:4E:C1:EE:2D:18:BA:41:B5"
+      ]
+    }
+  }
+]
+

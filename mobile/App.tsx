@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { StatusBar, ActivityIndicator, View, StyleSheet, Platform } from 'react-native';
+import { StatusBar, ActivityIndicator, View, StyleSheet, Platform, Linking } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -109,6 +109,25 @@ function App() {
   // for one notification tap. Tracked by the response's own stable identifier.
   const lastHandledNotificationId = useRef<string | null>(null);
 
+  const extractJoinClassId = (url: string | null | undefined): string | null => {
+    if (!url) return null;
+    const match = url.match(/\/live-classes\/join\/(\d+)/i);
+    return match ? match[1] : null;
+  };
+
+  const navigateToJoinClass = (joinClassId: string) => {
+    let attempts = 0;
+    const tryNav = () => {
+      if (navigationRef.isReady()) {
+        (navigationRef.navigate as any)('LiveClasses', { joinClassId });
+      } else if (attempts < 10) {
+        attempts += 1;
+        setTimeout(tryNav, 250);
+      }
+    };
+    tryNav();
+  };
+
   useEffect(() => {
     const checkToken = async () => {
       const token = await AsyncStorage.getItem('access_token');
@@ -126,10 +145,6 @@ function App() {
             setInitialRoute('Onboarding');
           }
         } catch (err) {
-          // Token missing/expired/unrefreshable, or a genuine network
-          // failure on cold start -- either way there is nothing else this
-          // screen can safely show, so fall back to Login (unchanged from
-          // the app's existing behavior).
           setInitialRoute('Login');
         }
       } else {
@@ -138,16 +153,31 @@ function App() {
     };
     checkToken();
 
-    // A session that was valid when a screen loaded but expires (and fails
-    // to silently refresh) DURING use -- e.g. mid-way through Learn or
-    // Assessment -- resets straight to Login rather than leaving the
-    // student stranded on a screen full of failed requests.
+    const handleDeepLinkUrl = async (url: string | null | undefined) => {
+      const joinClassId = extractJoinClassId(url);
+      if (!joinClassId) return;
+      const token = await AsyncStorage.getItem('access_token');
+      if (token) {
+        navigateToJoinClass(joinClassId);
+      } else {
+        await AsyncStorage.setItem('pending_join_class_id', joinClassId);
+      }
+    };
+
+    Linking.getInitialURL().then(handleDeepLinkUrl).catch(() => {});
+    const urlSub = Linking.addEventListener('url', ({ url }) => {
+      handleDeepLinkUrl(url);
+    });
+
     const unsubscribe = onSessionExpired(() => {
       if (navigationRef.isReady()) {
         navigationRef.reset({ index: 0, routes: [{ name: 'Login' }] });
       }
     });
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      urlSub.remove();
+    };
   }, []);
 
   useEffect(() => {
@@ -230,7 +260,28 @@ function App() {
   return (
     <>
       <StatusBar barStyle="light-content" backgroundColor={colors.bg} translucent />
-      <NavigationContainer ref={navigationRef}>
+      <NavigationContainer
+        ref={navigationRef}
+        onStateChange={async (state) => {
+          const current = state?.routes?.[state.index]?.name;
+          if (current === 'MainTabs') {
+            const pendingId = await AsyncStorage.getItem('pending_join_class_id');
+            if (pendingId) {
+              await AsyncStorage.removeItem('pending_join_class_id');
+              navigateToJoinClass(pendingId);
+            }
+          }
+        }}
+        onReady={async () => {
+          if (initialRoute === 'MainTabs') {
+            const pendingId = await AsyncStorage.getItem('pending_join_class_id');
+            if (pendingId) {
+              await AsyncStorage.removeItem('pending_join_class_id');
+              navigateToJoinClass(pendingId);
+            }
+          }
+        }}
+      >
         <Stack.Navigator initialRouteName={initialRoute} screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }}>
           <Stack.Screen name="Login" component={LoginScreen} />
           <Stack.Screen name="Onboarding" component={OnboardingScreen} />

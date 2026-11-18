@@ -109,3 +109,44 @@ class Announcement(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class WhatsAppDeliveryLog(models.Model):
+    """
+    Database-backed idempotency and retry audit log for outbound Interakt
+    WhatsApp live-class notifications.
+    """
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        SENT = 'SENT', 'Sent'
+        FAILED = 'FAILED', 'Failed'
+        SKIPPED = 'SKIPPED', 'Skipped'
+
+    idempotency_key = models.CharField(max_length=255, unique=True, db_index=True)
+    recipient = models.ForeignKey(
+        User,
+        related_name="whatsapp_delivery_logs",
+        on_delete=models.CASCADE,
+        db_index=True,
+    )
+    live_class_id = models.IntegerField(null=True, blank=True, db_index=True)
+    event_type = models.CharField(max_length=32)
+    template_name = models.CharField(max_length=128)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    attempts = models.PositiveIntegerField(default=0)
+    last_error = models.TextField(blank=True, default='')
+    provider_message_id = models.CharField(max_length=128, blank=True, default='')
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"WA {self.event_type} -> User #{self.recipient_id} [{self.status}]"

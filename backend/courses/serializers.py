@@ -675,7 +675,17 @@ class LiveClassSerializer(serializers.ModelSerializer):
             # only real gate for mentors.
             user = self.context['request'].user
             if (getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False)) and not (user.is_superuser or user.is_staff):
-                if batch.instructor != user:
+                if self.instance and self.instance.substitute_instructor_id == user.id and batch != self.instance.batch:
+                    raise serializers.ValidationError({"batch": "Substitute instructors cannot move an existing class to another batch."})
+                is_existing_class_assignee = bool(
+                    self.instance
+                    and batch == self.instance.batch
+                    and (
+                        self.instance.instructor_id == user.id
+                        or self.instance.substitute_instructor_id == user.id
+                    )
+                )
+                if batch.instructor != user and not is_existing_class_assignee:
                     raise serializers.ValidationError({"batch": "Teachers/mentors can only create/update sessions for their own batches."})
 
         duration_minutes = attrs.get('duration_minutes')

@@ -1,103 +1,119 @@
-"""
-Push delivery gap fix. Extends this project's EXISTING Celery pattern
-(courses/tasks.py's send_class_reminder, orders/tasks.py's
-notify_subscription_grace_period_expired -- both @shared_task, both
-already use NotificationService) rather than introducing a second/
-parallel task-queue architecture.
-
-Exactly one task: deliver an already-created, already-persisted
-Notification row to every active DeviceToken its recipient owns, via
-Expo. This never creates/modifies/deletes the Notification row itself --
-the in-app notification (list, unread-count, mark-read) is entirely
-unaffected by whether push delivery succeeds, partially succeeds, or
-fails outright.
-"""
 import logging
-
 from celery import shared_task
-
-from .push import ExpoPushTransientError, send_expo_push_messages
+from django.db import transaction
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-# DeviceNotRegistered is Expo's own documented terminal error code -- the
-# token was for an app install that no longer exists (uninstalled, or the
-# OS revoked it). It will never succeed again, so the corresponding
-# DeviceToken is deactivated rather than left to fail forever on every
-# future notification. Every OTHER Expo error (MessageTooBig,
-# MessageRateExceeded, InvalidCredentials, etc.) is logged but leaves the
-# token active -- those are about this specific message, not proof the
-# token itself is dead.
-_PERMANENTLY_INVALID_ERROR_CODES = {"DeviceNotRegistered"}
-
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
-def send_push_notification_for_notification(self, notification_id):
+def send_live_class_whatsapp_task(
+    self,
+    recipient_id,
+    live_class_id,
+    event_type,
+    template_name,
+    body_values,
+    button_values=None,
+    idempotency_key="",
+):
     """
-    Best-effort, asynchronous push delivery for one Notification. Safe
-    against:
-      - the Notification no longer existing (race with a concurrent
-        delete, or a test calling this directly) -- logs and returns.
-      - the recipient having no active DeviceToken at all -- returns
-        immediately, no error, nothing to send.
-      - a transient Expo/network failure -- retried up to max_retries
-        times with a backoff delay (Celery's own retry mechanism);
-        NEVER retried endlessly (max_retries=3, not unbounded).
-      - a permanently invalid (DeviceNotRegistered) token -- deactivated
-        on that ticket alone, no retry, every other token in the same
-        batch is still processed normally.
+    Asynchronously dispatches an Interakt WhatsApp live-class notification
+    with database-backed idempotency, opt-in enforcement, and bounded retries.
     """
-    from .models import DeviceToken, Notification
+    from django.contrib.auth import get_user_model
+    from courses.models import LiveClass
+    from notifications.models import WhatsAppDeliveryLog
+    from notifications.services import (
+        InteraktPermanentError,
+        InteraktTransientError,
+        InteraktWhatsAppService,
+    )
 
-    try:
-        notification = Notification.objects.select_related('recipient').get(pk=notification_id)
-    except Notification.DoesNotExist:
-        logger.warning(f"Push delivery: Notification {notification_id} no longer exists; skipping.")
-        return
+    User = get_user_model()
+    if not idempotency_key:
+        idempotency_key = f"wa:liveclass:{live_class_id}:{event_type.lower()}:{recipient_id}"
 
-    device_tokens = list(DeviceToken.objects.filter(user=notification.recipient, is_active=True))
-    if not device_tokens:
-        return
-
-    messages = [
-        {
-            "to": device_token.token,
-            "title": notification.title,
-            "body": notification.body,
-            "data": {
-                "notification_id": notification.id,
-                "notification_type": notification.notification_type,
-                "action_url": notification.action_url,
+    with transaction.atomic():
+        log, _ = WhatsAppDeliveryLog.objects.select_for_update().get_or_create(
+            idempotency_key=idempotency_key,
+            defaults={
+                "recipient_id": recipient_id,
+                "live_class_id": live_class_id,
+                "event_type": event_type,
+                "template_name": template_name,
+                "status": WhatsAppDeliveryLog.Status.PENDING,
             },
-        }
-        for device_token in device_tokens
-    ]
+        )
+        if log.status == WhatsAppDeliveryLog.Status.SENT:
+            return {"status": "duplicate_ignored", "idempotency_key": idempotency_key}
+
+    recipient = User.objects.filter(id=recipient_id, is_active=True).first()
+    if not recipient or not getattr(recipient, "whatsapp_opt_in", False) or not (recipient.phone_number or "").strip():
+        WhatsAppDeliveryLog.objects.filter(id=log.id).update(
+            status=WhatsAppDeliveryLog.Status.SKIPPED,
+            last_error="Recipient inactive, missing phone, or not opted in to WhatsApp notifications.",
+            updated_at=timezone.now(),
+        )
+        return {"status": "skipped", "idempotency_key": idempotency_key}
+
+    live_class = LiveClass.objects.filter(id=live_class_id).first()
+    if not live_class:
+        WhatsAppDeliveryLog.objects.filter(id=log.id).update(
+            status=WhatsAppDeliveryLog.Status.SKIPPED,
+            last_error="LiveClass not found.",
+            updated_at=timezone.now(),
+        )
+        return {"status": "skipped", "reason": "missing_live_class"}
+
+    if event_type in ("SCHEDULED", "RESCHEDULED") and live_class.meeting_provider == LiveClass.MeetingProvider.ZOOM:
+        if not ((live_class.zoom_meeting_id or "").strip() and (live_class.meeting_url or "").strip()):
+            WhatsAppDeliveryLog.objects.filter(id=log.id).update(
+                status=WhatsAppDeliveryLog.Status.SKIPPED,
+                last_error="Zoom meeting URL not persisted.",
+                updated_at=timezone.now(),
+            )
+            return {"status": "skipped", "reason": "missing_zoom_join_url"}
 
     try:
-        tickets = send_expo_push_messages(messages)
-    except ExpoPushTransientError as exc:
-        logger.warning(f"Push delivery: transient failure for notification {notification_id}, retrying: {exc}")
-        raise self.retry(exc=exc)
-    except Exception:
-        # An unexpected (non-transient-classified) error -- logged, not
-        # retried (retrying a bug indefinitely helps no one), and never
-        # allowed to propagate into a task-failure state that could ever
-        # be mistaken for "the Notification itself failed."
-        logger.exception(f"Push delivery: unexpected error sending notification {notification_id}")
-        return
+        res = InteraktWhatsAppService.send_template(
+            phone_number=recipient.phone_number,
+            template_name=template_name,
+            body_values=body_values,
+            button_values=button_values,
+        )
+        WhatsAppDeliveryLog.objects.filter(id=log.id).update(
+            status=WhatsAppDeliveryLog.Status.SENT,
+            attempts=log.attempts + 1,
+            provider_message_id=res.get("message_id", ""),
+            last_error="",
+            sent_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        return {"status": res.get("status", "SENT"), "idempotency_key": idempotency_key}
+    except InteraktTransientError as exc:
+        next_attempts = log.attempts + 1
+        if self.request.retries >= self.max_retries:
+            WhatsAppDeliveryLog.objects.filter(id=log.id).update(
+                status=WhatsAppDeliveryLog.Status.FAILED,
+                attempts=next_attempts,
+                last_error=str(exc),
+                updated_at=timezone.now(),
+            )
+            return {"status": "failed", "error": str(exc), "idempotency_key": idempotency_key}
 
-    invalid_token_ids = []
-    for device_token, ticket in zip(device_tokens, tickets):
-        status_value = ticket.get("status")
-        if status_value == "error":
-            error_code = (ticket.get("details") or {}).get("error")
-            if error_code in _PERMANENTLY_INVALID_ERROR_CODES:
-                invalid_token_ids.append(device_token.id)
-            else:
-                logger.warning(
-                    f"Push delivery: Expo reported an error for DeviceToken {device_token.id} "
-                    f"(notification {notification_id}): {ticket.get('message')}"
-                )
-
-    if invalid_token_ids:
-        DeviceToken.objects.filter(id__in=invalid_token_ids).update(is_active=False)
+        WhatsAppDeliveryLog.objects.filter(id=log.id).update(
+            status=WhatsAppDeliveryLog.Status.PENDING,
+            attempts=next_attempts,
+            last_error=str(exc),
+            updated_at=timezone.now(),
+        )
+        raise self.retry(exc=exc, countdown=30 * (2 ** self.request.retries))
+    except InteraktPermanentError as exc:
+        WhatsAppDeliveryLog.objects.filter(id=log.id).update(
+            status=WhatsAppDeliveryLog.Status.FAILED,
+            attempts=log.attempts + 1,
+            last_error=str(exc),
+            updated_at=timezone.now(),
+        )
+        return {"status": "failed", "error": str(exc), "idempotency_key": idempotency_key}

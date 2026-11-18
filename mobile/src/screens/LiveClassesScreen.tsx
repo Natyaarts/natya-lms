@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Linking } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Linking, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import client from '../api/client';
 import ScreenHeader from '../components/ScreenHeader';
@@ -19,7 +19,7 @@ function statusMeta(status: string) {
   }
 }
 
-export default function LiveClassesScreen({ navigation }: any) {
+export default function LiveClassesScreen({ navigation, route }: any) {
   const [classes, setClasses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -37,6 +37,31 @@ export default function LiveClassesScreen({ navigation }: any) {
   };
 
   useEffect(() => { fetchClasses(); }, []);
+  useEffect(() => {
+    const joinClassId = route?.params?.joinClassId;
+    if (!joinClassId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await client.post(`courses/live-classes/${encodeURIComponent(String(joinClassId))}/join/`);
+        const targetUrl = res.data?.meeting_url;
+        if (!cancelled && targetUrl) {
+          Linking.openURL(targetUrl);
+        } else if (!cancelled) {
+          Alert.alert('Unable to Join', 'Meeting link is not available yet.');
+        }
+      } catch (err: any) {
+        if (!cancelled) {
+          const msg =
+            err?.response?.data?.detail ||
+            err?.response?.data?.error ||
+            'You are not enrolled in this live class or batch.';
+          Alert.alert('Unable to Join', msg);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [route?.params?.joinClassId]);
   const onRefresh = useCallback(() => { setRefreshing(true); fetchClasses(); }, []);
 
   const handleJoin = async (item: any) => {

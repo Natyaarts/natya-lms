@@ -47,11 +47,12 @@ class CustomUserDetailsSerializer(UserDetailsSerializer):
             'pk', 'username', 'email', 'phone_number', 'student_id', 'first_name', 'last_name',
             'is_superuser', 'is_staff', 'is_teacher', 'is_student', 'is_mentor',
             'parent_name', 'parent_phone',
+            'whatsapp_opt_in', 'whatsapp_opt_in_updated_at',
             'student_type', 'state', 'district', 'pincode', 'onboarding_data', 'is_onboarded',
         )
         read_only_fields = (
             'pk', 'email', 'phone_number', 'student_id', 'is_superuser', 'is_staff',
-            'is_teacher', 'is_student', 'is_mentor', 'is_onboarded',
+            'is_teacher', 'is_student', 'is_mentor', 'is_onboarded', 'whatsapp_opt_in_updated_at',
         )
 
 class AdminUserSerializer(serializers.ModelSerializer):
@@ -63,10 +64,11 @@ class AdminUserSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'username', 'email', 'phone_number', 'student_id', 'first_name', 'last_name',
             'is_superuser', 'is_staff', 'is_teacher', 'is_student', 'is_mentor', 'is_active',
-            'date_joined', 'parent_name', 'parent_phone', 'courses_count', 'password',
+            'date_joined', 'parent_name', 'parent_phone', 'whatsapp_opt_in', 'whatsapp_opt_in_updated_at',
+            'courses_count', 'password',
             'student_type', 'state', 'district', 'pincode', 'onboarding_data', 'is_onboarded',
         )
-        read_only_fields = ('id', 'student_id', 'date_joined', 'courses_count')
+        read_only_fields = ('id', 'student_id', 'date_joined', 'courses_count', 'whatsapp_opt_in_updated_at')
 
     def validate_phone_number(self, value):
         if value and not value.startswith('+'):

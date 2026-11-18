@@ -39,6 +39,11 @@ class User(AbstractUser):
     phone_number = models.CharField(max_length=15, blank=True, null=True)
     parent_name = models.CharField(max_length=255, blank=True, null=True)
     parent_phone = models.CharField(max_length=15, blank=True, null=True)
+    whatsapp_opt_in = models.BooleanField(
+        default=False,
+        help_text="Explicit student consent to receive WhatsApp live class notifications."
+    )
+    whatsapp_opt_in_updated_at = models.DateTimeField(null=True, blank=True)
 
     @property
     def is_profile_complete(self):

@@ -1470,15 +1470,21 @@ class IsSuperAdminOrAuthorizedTeacherOrReadOnly(permissions.BasePermission):
         # If batch is NULL, students/teachers/mentors have NO access (legacy/orphaned isolation)
         if not obj.batch:
             return False
-        # Teachers/mentors can access classes where they are the batch instructor or assigned mentor
+        # Teachers/mentors can access classes where they are the batch instructor, direct/substitute instructor, or assigned mentor
         if getattr(request.user, 'is_teacher', False) or getattr(request.user, 'is_mentor', False):
+            is_assigned_instructor = (
+                obj.instructor_id == request.user.id
+                or obj.substitute_instructor_id == request.user.id
+                or obj.batch.instructor_id == request.user.id
+            )
+            is_assigned_mentor = (obj.batch.mentor_id == request.user.id)
             if request.method in permissions.SAFE_METHODS:
-                return obj.batch.instructor == request.user or obj.batch.mentor == request.user
+                return is_assigned_instructor or is_assigned_mentor
             if getattr(view, 'action', None) in ('report', 'toggle_report_visibility'):
-                return obj.batch.instructor == request.user or obj.batch.mentor == request.user
+                return is_assigned_instructor or is_assigned_mentor
             if view.__class__.__name__ == 'AdminZoomMeetingCreateView':
-                return obj.batch.instructor == request.user or obj.batch.mentor == request.user
-            return obj.batch.instructor == request.user
+                return is_assigned_instructor or is_assigned_mentor
+            return is_assigned_instructor
         # Students can only access classes they are assigned to via LiveBatchStudent (Safe methods only)
         if request.method in permissions.SAFE_METHODS:
             from .models import LiveBatchStudent
@@ -1735,8 +1741,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 Q(batch__instructor=user) |
                 Q(batch__mentor=user) |
                 Q(instructor=user) |
-                Q(course__instructors__user=user) |
-                Q(batch__course__instructors__user=user)
+                Q(substitute_instructor=user)
             ).distinct().select_related(*related_fields).prefetch_related('attendance_records')
         else:
             queryset = LiveClass.objects.filter(
@@ -1948,7 +1953,11 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 exc.status_code = drf_status.HTTP_500_INTERNAL_SERVER_ERROR
                 raise exc
 
-        self._dispatch_scheduled_notifications(live_class)
+        if (
+            live_class.meeting_provider != LiveClass.MeetingProvider.ZOOM
+            or ((live_class.zoom_meeting_id or "").strip() and (live_class.meeting_url or "").strip())
+        ):
+            self._dispatch_scheduled_notifications(live_class)
 
     def perform_update(self, serializer):
         old_live_class = LiveClass.objects.get(pk=serializer.instance.pk)
@@ -3090,18 +3099,10 @@ class IsSuperAdminOrStaffOrReadOnlyBatches(permissions.BasePermission):
         if request.user.is_superuser or request.user.is_staff:
             return True
         if getattr(request.user, 'is_teacher', False) or getattr(request.user, 'is_mentor', False):
-            is_course_mentor = (
-                getattr(request.user, 'is_mentor', False)
-                and obj.course.instructors.filter(user=request.user, role='MENTOR').exists()
-            )
             if request.method in permissions.SAFE_METHODS:
-                return (
-                    obj.instructor == request.user
-                    or obj.mentor == request.user
-                    or obj.course.instructors.filter(user=request.user).exists()
-                )
-            # Write access to an existing batch: its own instructor, its assigned mentor, or a course mentor.
-            return obj.instructor == request.user or obj.mentor == request.user or is_course_mentor
+                return obj.instructor == request.user or obj.mentor == request.user
+            # Write access to an existing batch: its own instructor or assigned mentor.
+            return obj.instructor == request.user or obj.mentor == request.user
         if request.method in permissions.SAFE_METHODS:
             # Student visibility check
             return obj.students.filter(student=request.user).exists()
@@ -3121,7 +3122,7 @@ class LiveBatchViewSet(viewsets.ModelViewSet):
             queryset = LiveBatch.objects.all()
         elif getattr(user, 'is_teacher', False) or getattr(user, 'is_mentor', False):
             queryset = LiveBatch.objects.filter(
-                Q(instructor=user) | Q(mentor=user) | Q(course__instructors__user=user)
+                Q(instructor=user) | Q(mentor=user)
             ).distinct()
         else:
             queryset = LiveBatch.objects.filter(students__student=user)
@@ -3152,14 +3153,10 @@ class LiveBatchViewSet(viewsets.ModelViewSet):
             return Response(serializer.data)
 
         elif request.method == 'POST':
-            # Admin, the batch's own instructor/mentor, or a course-assigned mentor can assign students.
+            # Admin or the batch's own instructor/mentor can assign students.
             is_authorized = (
                 batch.instructor_id == request.user.id
                 or batch.mentor_id == request.user.id
-                or (
-                    getattr(request.user, 'is_mentor', False)
-                    and batch.course.instructors.filter(user=request.user, role='MENTOR').exists()
-                )
             )
             if not (request.user.is_superuser or request.user.is_staff or is_authorized):
                 return Response({"detail": "You do not have permission to assign students to a batch."}, status=status.HTTP_403_FORBIDDEN)
@@ -3188,14 +3185,10 @@ class LiveBatchViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['delete'], url_path=r'students/(?P<student_id>[^/.]+)')
     def remove_student(self, request, pk=None, student_id=None):
         batch = self.get_object()
-        # Admin, the batch's own instructor/mentor, or a course-assigned mentor can remove students.
+        # Admin or the batch's own instructor/mentor can remove students.
         is_authorized = (
             batch.instructor_id == request.user.id
             or batch.mentor_id == request.user.id
-            or (
-                getattr(request.user, 'is_mentor', False)
-                and batch.course.instructors.filter(user=request.user, role='MENTOR').exists()
-            )
         )
         if not (request.user.is_superuser or request.user.is_staff or is_authorized):
             return Response({"detail": "You do not have permission to remove students from a batch."}, status=status.HTTP_403_FORBIDDEN)

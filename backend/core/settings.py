@@ -566,6 +566,10 @@ else:
     if not INTERAKT_SECRET_KEY:
         raise ImproperlyConfigured("INTERAKT_SECRET_KEY environment variable must be set in production.")
 INTERAKT_TEMPLATE_NAME = os.getenv('INTERAKT_TEMPLATE_NAME', 'login_otp_v1')
+INTERAKT_LIVE_SCHEDULED_TEMPLATE = os.getenv('INTERAKT_LIVE_SCHEDULED_TEMPLATE', 'live_class_scheduled_v1')
+INTERAKT_LIVE_RESCHEDULED_TEMPLATE = os.getenv('INTERAKT_LIVE_RESCHEDULED_TEMPLATE', 'live_class_rescheduled_v1')
+INTERAKT_LIVE_CANCELLED_TEMPLATE = os.getenv('INTERAKT_LIVE_CANCELLED_TEMPLATE', 'live_class_cancelled_v1')
+FRONTEND_BASE_URL = os.getenv('FRONTEND_BASE_URL', 'https://academy.natyaarts.com').rstrip('/')
 
 # Razorpay Settings
 # Production Environment Verification gap fix: unlike SECRET_KEY/
@@ -657,6 +661,7 @@ CELERY_TASK_ROUTES = {
     'courses.tasks.send_class_reminder': {'queue': 'notifications'},
     'courses.tasks.reconcile_zoom_attendance_task': {'queue': 'notifications'},
     'courses.tasks.process_zoom_participant_webhook_task': {'queue': 'notifications'},
+    'notifications.tasks.send_live_class_whatsapp_task': {'queue': 'notifications'},
     'billing.tasks.billing_daily_automation': {'queue': 'notifications'},
 }
 
