@@ -17,8 +17,7 @@ from pathlib import Path
 
 import openpyxl
 
-EXCLUDED_INSTRUCTOR_IDS = {1, 25, 96}
-ELIGIBLE_TEACHER_ID_OVERRIDE = {39}
+EXCLUDED_INSTRUCTOR_IDS = {1, 25, 39, 96}
 
 
 def norm_email(val):
@@ -53,17 +52,36 @@ def filter_eligible_teachers(users):
         for u in users
         if u.is_active
         and u.id not in EXCLUDED_INSTRUCTOR_IDS
-        and (u.is_teacher or u.id in ELIGIBLE_TEACHER_ID_OVERRIDE)
+        and u.is_teacher
     ]
 
 
-def resolve_batch_teacher(matched_students, course_student_hits, course_teachers):
+def courses_match(source_course_name, lms_course_title):
+    """Independently verify that the source course matches the LMS course title."""
+    s_norm = norm_name(source_course_name)
+    l_norm = norm_name(lms_course_title)
+    return bool(s_norm and l_norm and s_norm == l_norm)
+
+
+def resolve_batch_teacher(matched_students, total_students, lms_course_title, course_student_hits, course_teachers):
     """
-    Require course-level evidence:
-    - All matched students must support the same single source course, AND
+    Require strict course-level evidence:
+    - 100% of enrolled batch students must be matched (total_students > 0 and matched_students == total_students).
+    - All matched students must resolve to exactly one source course.
     - That source course must have exactly one distinct source teacher.
+    - The source course must independently match the LMS course title.
     Returns (chosen_teacher_key_or_None, status_or_None, detail_reason).
     """
+    if total_students == 0 or matched_students == 0:
+        return None, "MANUAL_REVIEW_NO_EVIDENCE", f"total_students={total_students}, matched_students={matched_students}"
+
+    if matched_students < total_students:
+        return (
+            None,
+            "MANUAL_REVIEW_PARTIAL_MATCH",
+            f"only {matched_students}/{total_students} enrolled students matched source data",
+        )
+
     full_coverage_courses = [
         (course_name, course_teachers.get(course_name, set()))
         for course_name, hits in sorted(course_student_hits.items())
@@ -72,6 +90,12 @@ def resolve_batch_teacher(matched_students, course_student_hits, course_teachers
 
     if len(full_coverage_courses) == 1:
         course_name, c_teachers = full_coverage_courses[0]
+        if not courses_match(course_name, lms_course_title):
+            return (
+                None,
+                "MANUAL_REVIEW_COURSE_MISMATCH",
+                f"source_course='{course_name}' does not match lms_course='{lms_course_title}'",
+            )
         if len(c_teachers) == 1:
             return next(iter(c_teachers)), None, f"course={course_name}"
         return None, "MANUAL_REVIEW_MULTI_TEACHER", f"course={course_name} has {len(c_teachers)} source teachers"
@@ -85,60 +109,244 @@ def resolve_batch_teacher(matched_students, course_student_hits, course_teachers
     return None, "MANUAL_REVIEW_SPLIT_COURSES", f"no single course covers all matched students: {desc}"
 
 
+def classify_batch(
+    current_instructor_id,
+    total_students,
+    matched_students,
+    lms_course_title,
+    course_student_hits,
+    course_teachers,
+    teacher_student_hits,
+    source_teachers,
+    teacher_key_to_lms,
+):
+    """
+    Classify a single LiveBatch into (status, expected_user_or_None, reason).
+    Never recommends overwriting an existing non-null instructor or assigning an excluded ID.
+    """
+    if current_instructor_id in EXCLUDED_INSTRUCTOR_IDS:
+        return (
+            "MANUAL_REVIEW_EXCLUDED_CURRENT_INSTRUCTOR",
+            None,
+            f"current_instructor_id={current_instructor_id} is an excluded personal/test account",
+        )
+
+    chosen_t_key, review_status, course_detail = resolve_batch_teacher(
+        matched_students=matched_students,
+        total_students=total_students,
+        lms_course_title=lms_course_title,
+        course_student_hits=course_student_hits,
+        course_teachers=course_teachers,
+    )
+
+    candidate_summary = []
+    for tk, sids in sorted(teacher_student_hits.items(), key=lambda kv: -len(kv[1])):
+        t_info = source_teachers[tk]
+        lms_match = teacher_key_to_lms.get(tk)
+        lms_desc = f"LMS#{lms_match[0].id}" if lms_match else "UNMATCHED"
+        candidate_summary.append(
+            f"{t_info['name']} ({len(sids)}/{matched_students} students, {lms_desc})"
+        )
+
+    if chosen_t_key is None:
+        reason = course_detail
+        if candidate_summary:
+            reason = f"{course_detail} | teachers: {'; '.join(candidate_summary)}"
+        return review_status, None, reason
+
+    lms_match = teacher_key_to_lms.get(chosen_t_key)
+    if not lms_match:
+        t_info = source_teachers[chosen_t_key]
+        return (
+            "MANUAL_REVIEW_UNMATCHED_TEACHER",
+            None,
+            f"{course_detail} | Source teacher '{t_info['name']}' ({t_info['phone_raw']} / {t_info['email']}) "
+            f"not matched to eligible active LMS teacher",
+        )
+
+    expected_user = lms_match[0]
+    if expected_user.id in EXCLUDED_INSTRUCTOR_IDS or not expected_user.is_active or not expected_user.is_teacher:
+        return (
+            "MANUAL_REVIEW_UNMATCHED_TEACHER",
+            None,
+            f"{course_detail} | Proposed LMS#{expected_user.id} is excluded or ineligible",
+        )
+
+    if current_instructor_id == expected_user.id:
+        return (
+            "CONFIRMED_CORRECT",
+            expected_user,
+            f"{course_detail} | Matched via {lms_match[1]} ({matched_students}/{total_students} students)",
+        )
+
+    if current_instructor_id is None:
+        return (
+            "MISSING_CONFIRMED",
+            expected_user,
+            f"{course_detail} | NULL -> LMS#{expected_user.id} via {lms_match[1]} ({matched_students}/{total_students} students)",
+        )
+
+    return (
+        "MANUAL_REVIEW_EXISTING_MISMATCH",
+        expected_user,
+        f"{course_detail} | Existing LMS#{current_instructor_id} != LMS#{expected_user.id} via {lms_match[1]} (never auto-overwrite)",
+    )
+
+
 def run_self_tests():
-    """Local unit validation for eligibility and course-level teacher resolution."""
+    """Local unit validation for eligibility, excluded accounts, and strict batch classification."""
     from types import SimpleNamespace
 
     users = [
         SimpleNamespace(id=1, is_active=True, is_teacher=True),
         SimpleNamespace(id=25, is_active=True, is_teacher=True),
+        SimpleNamespace(id=39, is_active=True, is_teacher=True),
         SimpleNamespace(id=96, is_active=True, is_teacher=True),
-        SimpleNamespace(id=39, is_active=True, is_teacher=False),
         SimpleNamespace(id=40, is_active=False, is_teacher=True),
         SimpleNamespace(id=41, is_active=True, is_teacher=True),
-        SimpleNamespace(id=42, is_active=False, is_teacher=False),
+        SimpleNamespace(id=42, is_active=True, is_teacher=False),
     ]
     eligible_ids = {u.id for u in filter_eligible_teachers(users)}
-    assert eligible_ids == {39, 41}, f"Expected {{39, 41}}, got {eligible_ids}"
+    assert eligible_ids == {41}, f"Expected {{41}}, got {eligible_ids}"
 
-    # Inactive override ID 39 must also be excluded
-    assert filter_eligible_teachers([SimpleNamespace(id=39, is_active=False, is_teacher=True)]) == []
-
-    # Case 1: Students span different courses even with the same single teacher -> MANUAL_REVIEW
     t1 = ("teacher one", "9999999999", "t1@example.com")
     t2 = ("teacher two", "8888888888", "t2@example.com")
-    chosen, status, _ = resolve_batch_teacher(
+    src_teachers = {
+        t1: {"name": "Teacher One", "phone_raw": "9999999999", "email": "t1@example.com"},
+        t2: {"name": "Teacher Two", "phone_raw": "8888888888", "email": "t2@example.com"},
+    }
+    u41 = SimpleNamespace(id=41, is_active=True, is_teacher=True)
+    u45 = SimpleNamespace(id=45, is_active=True, is_teacher=True)
+    t_map = {t1: (u41, "email"), t2: (u45, "email")}
+
+    # 1. Existing excluded current instructor (1, 25, 39, 96) -> MANUAL_REVIEW_EXCLUDED_CURRENT_INSTRUCTOR
+    for ex_id in (1, 25, 39, 96):
+        st, exp, _ = classify_batch(
+            current_instructor_id=ex_id,
+            total_students=2,
+            matched_students=2,
+            lms_course_title="Course A",
+            course_student_hits={"Course A": {101, 102}},
+            course_teachers={"Course A": {t1}},
+            teacher_student_hits={t1: {101, 102}},
+            source_teachers=src_teachers,
+            teacher_key_to_lms=t_map,
+        )
+        assert st == "MANUAL_REVIEW_EXCLUDED_CURRENT_INSTRUCTOR" and exp is None, (ex_id, st, exp)
+
+    # 2. Partial match -> MANUAL_REVIEW_PARTIAL_MATCH
+    st, exp, _ = classify_batch(
+        current_instructor_id=None,
+        total_students=3,
         matched_students=2,
+        lms_course_title="Course A",
+        course_student_hits={"Course A": {101, 102}},
+        course_teachers={"Course A": {t1}},
+        teacher_student_hits={t1: {101, 102}},
+        source_teachers=src_teachers,
+        teacher_key_to_lms=t_map,
+    )
+    assert st == "MANUAL_REVIEW_PARTIAL_MATCH" and exp is None, (st, exp)
+
+    # 3. Students span different courses even with same teacher -> MANUAL_REVIEW_SPLIT_COURSES
+    st, exp, _ = classify_batch(
+        current_instructor_id=None,
+        total_students=2,
+        matched_students=2,
+        lms_course_title="Course A",
         course_student_hits={"Course A": {101}, "Course B": {102}},
         course_teachers={"Course A": {t1}, "Course B": {t1}},
+        teacher_student_hits={t1: {101, 102}},
+        source_teachers=src_teachers,
+        teacher_key_to_lms=t_map,
     )
-    assert chosen is None and status == "MANUAL_REVIEW_SPLIT_COURSES", (chosen, status)
+    assert st == "MANUAL_REVIEW_SPLIT_COURSES" and exp is None, (st, exp)
 
-    # Case 2: All matched students in one course, but course has 2 teachers -> MANUAL_REVIEW
-    chosen, status, _ = resolve_batch_teacher(
+    # 4. Multiple teachers in source course -> MANUAL_REVIEW_MULTI_TEACHER
+    st, exp, _ = classify_batch(
+        current_instructor_id=None,
+        total_students=2,
         matched_students=2,
+        lms_course_title="Course A",
         course_student_hits={"Course A": {101, 102}},
         course_teachers={"Course A": {t1, t2}},
+        teacher_student_hits={t1: {101, 102}, t2: {101, 102}},
+        source_teachers=src_teachers,
+        teacher_key_to_lms=t_map,
     )
-    assert chosen is None and status == "MANUAL_REVIEW_MULTI_TEACHER", (chosen, status)
+    assert st == "MANUAL_REVIEW_MULTI_TEACHER" and exp is None, (st, exp)
 
-    # Case 3: Multiple courses each cover all matched students -> MANUAL_REVIEW
-    chosen, status, _ = resolve_batch_teacher(
+    # 5. Multiple full-coverage courses -> MANUAL_REVIEW_MULTI_COURSE
+    st, exp, _ = classify_batch(
+        current_instructor_id=None,
+        total_students=2,
         matched_students=2,
+        lms_course_title="Course A",
         course_student_hits={"Course A": {101, 102}, "Course B": {101, 102}},
         course_teachers={"Course A": {t1}, "Course B": {t1}},
+        teacher_student_hits={t1: {101, 102}},
+        source_teachers=src_teachers,
+        teacher_key_to_lms=t_map,
     )
-    assert chosen is None and status == "MANUAL_REVIEW_MULTI_COURSE", (chosen, status)
+    assert st == "MANUAL_REVIEW_MULTI_COURSE" and exp is None, (st, exp)
 
-    # Case 4: All matched students support one source course with one teacher -> confirmed
-    chosen, status, _ = resolve_batch_teacher(
+    # 6. Source course != LMS course title -> MANUAL_REVIEW_COURSE_MISMATCH
+    st, exp, _ = classify_batch(
+        current_instructor_id=None,
+        total_students=2,
         matched_students=2,
-        course_student_hits={"Course A": {101, 102}, "Other": {101}},
-        course_teachers={"Course A": {t1}, "Other": {t2}},
+        lms_course_title="Different LMS Course",
+        course_student_hits={"Course A": {101, 102}},
+        course_teachers={"Course A": {t1}},
+        teacher_student_hits={t1: {101, 102}},
+        source_teachers=src_teachers,
+        teacher_key_to_lms=t_map,
     )
-    assert chosen == t1 and status is None, (chosen, status)
+    assert st == "MANUAL_REVIEW_COURSE_MISMATCH" and exp is None, (st, exp)
 
-    print("SELF_TEST_PASSED: All eligibility and course-level teacher resolution checks passed.")
+    # 7. Existing non-null instructor mismatch -> MANUAL_REVIEW_EXISTING_MISMATCH (never auto-overwrite)
+    st, exp, _ = classify_batch(
+        current_instructor_id=45,
+        total_students=2,
+        matched_students=2,
+        lms_course_title="Course A",
+        course_student_hits={"Course A": {101, 102}},
+        course_teachers={"Course A": {t1}},
+        teacher_student_hits={t1: {101, 102}},
+        source_teachers=src_teachers,
+        teacher_key_to_lms=t_map,
+    )
+    assert st == "MANUAL_REVIEW_EXISTING_MISMATCH" and exp == u41, (st, exp)
+
+    # 8. Existing non-null instructor matching expected -> CONFIRMED_CORRECT
+    st, exp, _ = classify_batch(
+        current_instructor_id=41,
+        total_students=2,
+        matched_students=2,
+        lms_course_title="Course A",
+        course_student_hits={"Course A": {101, 102}},
+        course_teachers={"Course A": {t1}},
+        teacher_student_hits={t1: {101, 102}},
+        source_teachers=src_teachers,
+        teacher_key_to_lms=t_map,
+    )
+    assert st == "CONFIRMED_CORRECT" and exp == u41, (st, exp)
+
+    # 9. Valid NULL batch with 100% matched students + verified course + single active teacher -> MISSING_CONFIRMED
+    st, exp, _ = classify_batch(
+        current_instructor_id=None,
+        total_students=2,
+        matched_students=2,
+        lms_course_title="Course A",
+        course_student_hits={"Course A": {101, 102}},
+        course_teachers={"Course A": {t1}},
+        teacher_student_hits={t1: {101, 102}},
+        source_teachers=src_teachers,
+        teacher_key_to_lms=t_map,
+    )
+    assert st == "MISSING_CONFIRMED" and exp == u41, (st, exp)
+
+    print("SELF_TEST_PASSED: All excluded IDs, partial/ambiguous course, and existing-assignment safety checks passed.")
 
 
 def load_eb_env_if_needed():
@@ -328,7 +536,7 @@ def main():
         if entry["learner_name_norm"]:
             src_by_name[entry["learner_name_norm"]].append(idx)
 
-    # 2. Index eligible LMS teacher accounts (exclude 1, 25, 96; keep 39 eligible)
+    # 2. Index eligible LMS teacher accounts (exclude 1, 25, 39, 96; active teachers only)
     teacher_fields = (
         "id",
         "username",
@@ -461,49 +669,18 @@ def main():
                 course_student_hits[sr["course_name"]].add(stu.id)
                 teacher_student_hits[sr["teacher_key"]].add(stu.id)
 
-        expected_user = None
-        if total_students == 0 or matched_students == 0:
-            status = "MANUAL_REVIEW_NO_EVIDENCE"
-            reason = f"total_students={total_students}, matched_students={matched_students}"
-        else:
-            chosen_t_key, review_status, course_detail = resolve_batch_teacher(
-                matched_students=matched_students,
-                course_student_hits=course_student_hits,
-                course_teachers=course_teachers,
-            )
-
-            candidate_summary = []
-            for tk, sids in sorted(teacher_student_hits.items(), key=lambda kv: -len(kv[1])):
-                t_info = source_teachers[tk]
-                lms_match = teacher_key_to_lms.get(tk)
-                lms_desc = f"LMS#{lms_match[0].id}" if lms_match else "UNMATCHED"
-                candidate_summary.append(
-                    f"{t_info['name']} ({len(sids)}/{matched_students} students, {lms_desc})"
-                )
-
-            if chosen_t_key is None:
-                status = review_status
-                reason = f"{course_detail} | teachers: {'; '.join(candidate_summary)}"
-            else:
-                lms_match = teacher_key_to_lms.get(chosen_t_key)
-                if not lms_match:
-                    status = "MANUAL_REVIEW_UNMATCHED_TEACHER"
-                    t_info = source_teachers[chosen_t_key]
-                    reason = (
-                        f"{course_detail} | Source teacher '{t_info['name']}' ({t_info['phone_raw']} / {t_info['email']}) "
-                        f"not matched to eligible active LMS user"
-                    )
-                else:
-                    expected_user = lms_match[0]
-                    if batch.instructor_id == expected_user.id:
-                        status = "CONFIRMED_CORRECT"
-                        reason = f"{course_detail} | Matched via {lms_match[1]} ({matched_students}/{total_students} students)"
-                    elif batch.instructor_id is None:
-                        status = "MISSING_CONFIRMED"
-                        reason = f"{course_detail} | NULL -> LMS#{expected_user.id} via {lms_match[1]} ({matched_students}/{total_students} students)"
-                    else:
-                        status = "WRONG_ASSIGNMENT"
-                        reason = f"{course_detail} | LMS#{batch.instructor_id} -> LMS#{expected_user.id} via {lms_match[1]} ({matched_students}/{total_students} students)"
+        lms_course_title = batch.course.title if batch.course else ""
+        status, expected_user, reason = classify_batch(
+            current_instructor_id=batch.instructor_id,
+            total_students=total_students,
+            matched_students=matched_students,
+            lms_course_title=lms_course_title,
+            course_student_hits=course_student_hits,
+            course_teachers=course_teachers,
+            teacher_student_hits=teacher_student_hits,
+            source_teachers=source_teachers,
+            teacher_key_to_lms=teacher_key_to_lms,
+        )
 
         counts[status] += 1
 
@@ -523,7 +700,7 @@ def main():
         row_dict = {
             "batch_id": batch.id,
             "course_id": batch.course_id,
-            "course_title": batch.course.title if batch.course else "",
+            "course_title": lms_course_title,
             "batch_type": batch.batch_type,
             "total_students": total_students,
             "matched_students": matched_students,
@@ -536,7 +713,7 @@ def main():
         }
         full_audit_rows.append(row_dict)
 
-        if status in ("WRONG_ASSIGNMENT", "MISSING_CONFIRMED"):
+        if status == "MISSING_CONFIRMED":
             correction_rows.append(row_dict)
         elif status.startswith("MANUAL_REVIEW"):
             review_rows.append(row_dict)
@@ -579,35 +756,47 @@ def main():
         for t in unmatched_source_teachers:
             w.writerow({k: t[k] for k in ["name", "phone_raw", "phone_digits", "phone_last10", "email"]})
 
-    # 5. Apply only if --apply is explicitly passed
+    # 5. Apply only if --apply is explicitly passed (never overwrite non-null instructors)
     updated_count = 0
     if args.apply and correction_rows:
         with transaction.atomic():
             for row in correction_rows:
-                LiveBatch.objects.filter(id=row["batch_id"]).update(
-                    instructor_id=row["expected_instructor_id"]
-                )
-                updated_count += 1
+                if row["status"] != "MISSING_CONFIRMED":
+                    continue
+                if row["expected_instructor_id"] in EXCLUDED_INSTRUCTOR_IDS:
+                    continue
+                updated_count += LiveBatch.objects.filter(
+                    id=row["batch_id"], instructor_id__isnull=True
+                ).update(instructor_id=row["expected_instructor_id"])
 
     manual_total = (
         counts["MANUAL_REVIEW_NO_EVIDENCE"]
+        + counts["MANUAL_REVIEW_PARTIAL_MATCH"]
         + counts["MANUAL_REVIEW_MULTI_TEACHER"]
         + counts["MANUAL_REVIEW_MULTI_COURSE"]
         + counts["MANUAL_REVIEW_SPLIT_COURSES"]
+        + counts["MANUAL_REVIEW_COURSE_MISMATCH"]
         + counts["MANUAL_REVIEW_UNMATCHED_TEACHER"]
+        + counts["MANUAL_REVIEW_EXCLUDED_CURRENT_INSTRUCTOR"]
+        + counts["MANUAL_REVIEW_EXISTING_MISMATCH"]
     )
     print("=== LIVEBATCH INSTRUCTOR RECONCILIATION REPORT ===")
     print(f"Mode: {'APPLY' if args.apply else 'DRY-RUN (no DB writes)'}")
     print(f"Total batches checked: {len(batches)}")
     print(f"Existing assignments confirmed: {counts['CONFIRMED_CORRECT']}")
-    print(f"Existing assignments identified as wrong: {counts['WRONG_ASSIGNMENT']}")
+    print(f"Existing assignments mismatch (manual review only): {counts['MANUAL_REVIEW_EXISTING_MISMATCH']}")
+    print(f"Existing excluded-ID assignments (manual review only): {counts['MANUAL_REVIEW_EXCLUDED_CURRENT_INSTRUCTOR']}")
     print(f"NULL assignments with confirmed teacher: {counts['MISSING_CONFIRMED']}")
     print(
         f"Requiring manual review: {manual_total} "
-        f"(multi-teacher={counts['MANUAL_REVIEW_MULTI_TEACHER']}, "
+        f"(partial-match={counts['MANUAL_REVIEW_PARTIAL_MATCH']}, "
+        f"multi-teacher={counts['MANUAL_REVIEW_MULTI_TEACHER']}, "
         f"multi-course={counts['MANUAL_REVIEW_MULTI_COURSE']}, "
         f"split-courses={counts['MANUAL_REVIEW_SPLIT_COURSES']}, "
+        f"course-mismatch={counts['MANUAL_REVIEW_COURSE_MISMATCH']}, "
         f"unmatched-teacher={counts['MANUAL_REVIEW_UNMATCHED_TEACHER']}, "
+        f"excluded-current={counts['MANUAL_REVIEW_EXCLUDED_CURRENT_INSTRUCTOR']}, "
+        f"existing-mismatch={counts['MANUAL_REVIEW_EXISTING_MISMATCH']}, "
         f"no-evidence={counts['MANUAL_REVIEW_NO_EVIDENCE']})"
     )
     print(f"Unmatched LMS students (unique): {len(unmatched_students_seen)}")
