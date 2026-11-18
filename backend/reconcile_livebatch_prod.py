@@ -46,6 +46,101 @@ def norm_name(val):
     return re.sub(r"\s+", " ", s).strip()
 
 
+def filter_eligible_teachers(users):
+    """Return active LMS users eligible as LiveBatch instructors."""
+    return [
+        u
+        for u in users
+        if u.is_active
+        and u.id not in EXCLUDED_INSTRUCTOR_IDS
+        and (u.is_teacher or u.id in ELIGIBLE_TEACHER_ID_OVERRIDE)
+    ]
+
+
+def resolve_batch_teacher(matched_students, course_student_hits, course_teachers):
+    """
+    Require course-level evidence:
+    - All matched students must support the same single source course, AND
+    - That source course must have exactly one distinct source teacher.
+    Returns (chosen_teacher_key_or_None, status_or_None, detail_reason).
+    """
+    full_coverage_courses = [
+        (course_name, course_teachers.get(course_name, set()))
+        for course_name, hits in sorted(course_student_hits.items())
+        if len(hits) == matched_students
+    ]
+
+    if len(full_coverage_courses) == 1:
+        course_name, c_teachers = full_coverage_courses[0]
+        if len(c_teachers) == 1:
+            return next(iter(c_teachers)), None, f"course={course_name}"
+        return None, "MANUAL_REVIEW_MULTI_TEACHER", f"course={course_name} has {len(c_teachers)} source teachers"
+
+    if len(full_coverage_courses) > 1:
+        desc = "; ".join(f"{c} ({len(ts)} teachers)" for c, ts in full_coverage_courses)
+        return None, "MANUAL_REVIEW_MULTI_COURSE", f"multiple full-coverage courses: {desc}"
+
+    top_courses = sorted(course_student_hits.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:3]
+    desc = "; ".join(f"{c} ({len(hits)}/{matched_students})" for c, hits in top_courses)
+    return None, "MANUAL_REVIEW_SPLIT_COURSES", f"no single course covers all matched students: {desc}"
+
+
+def run_self_tests():
+    """Local unit validation for eligibility and course-level teacher resolution."""
+    from types import SimpleNamespace
+
+    users = [
+        SimpleNamespace(id=1, is_active=True, is_teacher=True),
+        SimpleNamespace(id=25, is_active=True, is_teacher=True),
+        SimpleNamespace(id=96, is_active=True, is_teacher=True),
+        SimpleNamespace(id=39, is_active=True, is_teacher=False),
+        SimpleNamespace(id=40, is_active=False, is_teacher=True),
+        SimpleNamespace(id=41, is_active=True, is_teacher=True),
+        SimpleNamespace(id=42, is_active=False, is_teacher=False),
+    ]
+    eligible_ids = {u.id for u in filter_eligible_teachers(users)}
+    assert eligible_ids == {39, 41}, f"Expected {{39, 41}}, got {eligible_ids}"
+
+    # Inactive override ID 39 must also be excluded
+    assert filter_eligible_teachers([SimpleNamespace(id=39, is_active=False, is_teacher=True)]) == []
+
+    # Case 1: Students span different courses even with the same single teacher -> MANUAL_REVIEW
+    t1 = ("teacher one", "9999999999", "t1@example.com")
+    t2 = ("teacher two", "8888888888", "t2@example.com")
+    chosen, status, _ = resolve_batch_teacher(
+        matched_students=2,
+        course_student_hits={"Course A": {101}, "Course B": {102}},
+        course_teachers={"Course A": {t1}, "Course B": {t1}},
+    )
+    assert chosen is None and status == "MANUAL_REVIEW_SPLIT_COURSES", (chosen, status)
+
+    # Case 2: All matched students in one course, but course has 2 teachers -> MANUAL_REVIEW
+    chosen, status, _ = resolve_batch_teacher(
+        matched_students=2,
+        course_student_hits={"Course A": {101, 102}},
+        course_teachers={"Course A": {t1, t2}},
+    )
+    assert chosen is None and status == "MANUAL_REVIEW_MULTI_TEACHER", (chosen, status)
+
+    # Case 3: Multiple courses each cover all matched students -> MANUAL_REVIEW
+    chosen, status, _ = resolve_batch_teacher(
+        matched_students=2,
+        course_student_hits={"Course A": {101, 102}, "Course B": {101, 102}},
+        course_teachers={"Course A": {t1}, "Course B": {t1}},
+    )
+    assert chosen is None and status == "MANUAL_REVIEW_MULTI_COURSE", (chosen, status)
+
+    # Case 4: All matched students support one source course with one teacher -> confirmed
+    chosen, status, _ = resolve_batch_teacher(
+        matched_students=2,
+        course_student_hits={"Course A": {101, 102}, "Other": {101}},
+        course_teachers={"Course A": {t1}, "Other": {t2}},
+    )
+    assert chosen == t1 and status is None, (chosen, status)
+
+    print("SELF_TEST_PASSED: All eligibility and course-level teacher resolution checks passed.")
+
+
 def load_eb_env_if_needed():
     """If neither RDS_DB_NAME nor DATABASE_URL is in os.environ, load EB env file if present."""
     if "RDS_DB_NAME" in os.environ or "DATABASE_URL" in os.environ:
@@ -118,7 +213,16 @@ def main():
         action="store_true",
         help="Apply unambiguous LiveBatch.instructor updates inside a transaction. Omit for dry-run.",
     )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run local unit validation checks and exit.",
+    )
     args = parser.parse_args()
+
+    if args.self_test:
+        run_self_tests()
+        return
 
     app_dir = Path(args.app_dir)
     setup_django(app_dir)
@@ -236,12 +340,7 @@ def main():
         "is_active",
     )
     all_users = list(User.objects.only(*teacher_fields))
-    eligible_teachers = [
-        u
-        for u in all_users
-        if u.id not in EXCLUDED_INSTRUCTOR_IDS
-        and (u.is_teacher or u.id in ELIGIBLE_TEACHER_ID_OVERRIDE)
-    ]
+    eligible_teachers = filter_eligible_teachers(all_users)
 
     lms_t_by_email = defaultdict(list)
     lms_t_by_phone_exact = defaultdict(list)
@@ -367,20 +466,11 @@ def main():
             status = "MANUAL_REVIEW_NO_EVIDENCE"
             reason = f"total_students={total_students}, matched_students={matched_students}"
         else:
-            ranked_courses = sorted(
-                course_student_hits.items(),
-                key=lambda kv: len(kv[1]),
-                reverse=True,
+            chosen_t_key, review_status, course_detail = resolve_batch_teacher(
+                matched_students=matched_students,
+                course_student_hits=course_student_hits,
+                course_teachers=course_teachers,
             )
-            top_course, top_hits = ranked_courses[0]
-            top_course_teachers = course_teachers.get(top_course, set())
-
-            if len(teacher_student_hits) == 1:
-                chosen_t_key = next(iter(teacher_student_hits.keys()))
-            elif len(top_hits) == matched_students and len(top_course_teachers) == 1:
-                chosen_t_key = next(iter(top_course_teachers))
-            else:
-                chosen_t_key = None
 
             candidate_summary = []
             for tk, sids in sorted(teacher_student_hits.items(), key=lambda kv: -len(kv[1])):
@@ -392,28 +482,28 @@ def main():
                 )
 
             if chosen_t_key is None:
-                status = "MANUAL_REVIEW_MULTI_TEACHER"
-                reason = "; ".join(candidate_summary)
+                status = review_status
+                reason = f"{course_detail} | teachers: {'; '.join(candidate_summary)}"
             else:
                 lms_match = teacher_key_to_lms.get(chosen_t_key)
                 if not lms_match:
                     status = "MANUAL_REVIEW_UNMATCHED_TEACHER"
                     t_info = source_teachers[chosen_t_key]
                     reason = (
-                        f"Source teacher '{t_info['name']}' ({t_info['phone_raw']} / {t_info['email']}) "
-                        f"not matched to eligible LMS user"
+                        f"{course_detail} | Source teacher '{t_info['name']}' ({t_info['phone_raw']} / {t_info['email']}) "
+                        f"not matched to eligible active LMS user"
                     )
                 else:
                     expected_user = lms_match[0]
                     if batch.instructor_id == expected_user.id:
                         status = "CONFIRMED_CORRECT"
-                        reason = f"Matched via {lms_match[1]} ({matched_students}/{total_students} students)"
+                        reason = f"{course_detail} | Matched via {lms_match[1]} ({matched_students}/{total_students} students)"
                     elif batch.instructor_id is None:
                         status = "MISSING_CONFIRMED"
-                        reason = f"NULL -> LMS#{expected_user.id} via {lms_match[1]} ({matched_students}/{total_students} students)"
+                        reason = f"{course_detail} | NULL -> LMS#{expected_user.id} via {lms_match[1]} ({matched_students}/{total_students} students)"
                     else:
                         status = "WRONG_ASSIGNMENT"
-                        reason = f"LMS#{batch.instructor_id} -> LMS#{expected_user.id} via {lms_match[1]} ({matched_students}/{total_students} students)"
+                        reason = f"{course_detail} | LMS#{batch.instructor_id} -> LMS#{expected_user.id} via {lms_match[1]} ({matched_students}/{total_students} students)"
 
         counts[status] += 1
 
@@ -502,6 +592,8 @@ def main():
     manual_total = (
         counts["MANUAL_REVIEW_NO_EVIDENCE"]
         + counts["MANUAL_REVIEW_MULTI_TEACHER"]
+        + counts["MANUAL_REVIEW_MULTI_COURSE"]
+        + counts["MANUAL_REVIEW_SPLIT_COURSES"]
         + counts["MANUAL_REVIEW_UNMATCHED_TEACHER"]
     )
     print("=== LIVEBATCH INSTRUCTOR RECONCILIATION REPORT ===")
@@ -513,6 +605,8 @@ def main():
     print(
         f"Requiring manual review: {manual_total} "
         f"(multi-teacher={counts['MANUAL_REVIEW_MULTI_TEACHER']}, "
+        f"multi-course={counts['MANUAL_REVIEW_MULTI_COURSE']}, "
+        f"split-courses={counts['MANUAL_REVIEW_SPLIT_COURSES']}, "
         f"unmatched-teacher={counts['MANUAL_REVIEW_UNMATCHED_TEACHER']}, "
         f"no-evidence={counts['MANUAL_REVIEW_NO_EVIDENCE']})"
     )
