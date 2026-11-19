@@ -6,6 +6,7 @@ import Image from "next/image";
 import { Video, Calendar as CalendarIcon, List as ListIcon, ExternalLink, PlayCircle, CheckCircle2, Play, Film, X, Copy, Clock, FileText, Star, BookOpen, Sparkles, Loader2, MessageSquare } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
+import { requestStaffJoinUrl, openPendingTab, navigatePendingTab, closePendingTab } from "@/lib/staffHostJoin";
 
 // Phase 2: student-facing live classes -- upcoming/today/completed/
 // cancelled, a join button, and per-session attendance/recording access.
@@ -31,6 +32,7 @@ export default function StudentLiveClassesPage() {
   const [attendanceById, setAttendanceById] = useState<Record<number, { status: string; duration_minutes: number }>>({});
   const [watchTarget, setWatchTarget] = useState<any>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isTeacher, setIsTeacher] = useState(false);
   const activeHeartbeats = useRef<Record<number, NodeJS.Timeout>>({});
 
   const [reportTarget, setReportTarget] = useState<any>(null);
@@ -114,7 +116,11 @@ export default function StudentLiveClassesPage() {
     authedFetch("/api/auth/user/")
       .then((res) => (res.ok ? res.json() : null))
       .then((u) => {
-        if (u) setIsAdmin(Boolean(u.is_superuser || u.is_staff));
+        if (u) {
+          const admin = Boolean(u.is_superuser || u.is_staff);
+          setIsAdmin(admin);
+          setIsTeacher(!admin && Boolean(u.is_teacher));
+        }
       })
       .catch(() => {});
   }, []);
@@ -150,6 +156,19 @@ export default function StudentLiveClassesPage() {
   };
 
   const handleJoinClass = async (lc: any) => {
+    // Teachers: host link only, via join/. Never fall back to the participant
+    // link (Zoom would leave them on "Waiting for the host").
+    if (isTeacher) {
+      const pendingTab = openPendingTab();
+      const result = await requestStaffJoinUrl(lc.id, authedFetch);
+      if (result.ok) {
+        navigatePendingTab(pendingTab, result.url);
+      } else {
+        closePendingTab(pendingTab);
+        alert(result.error);
+      }
+      return;
+    }
     try {
       const res = await authedFetch(`/api/courses/live-classes/${lc.id}/join/`, {
         method: "POST",
