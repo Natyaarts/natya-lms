@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
+import { requestStaffJoinUrl, openPendingTab, navigatePendingTab, closePendingTab } from "@/lib/staffHostJoin";
 
 // Phase 2: full scheduling/management UI for Admin, Teacher and Mentor --
 // the backend (LiveClassViewSet/LiveBatchViewSet) already scopes data and
@@ -865,13 +866,51 @@ export default function LiveClassesPage() {
   // ---- Row actions ----
   const [busyId, setBusyId] = useState<number | null>(null);
 
+  // Teachers/mentors don't receive host_url in list/detail responses; they get
+  // the host link on demand from POST join/. Never fall back to the
+  // participant link for a teacher (Zoom would show "Waiting for host").
+  const openStaffJoin = async (lc: { id: number; meeting_url?: string | null }, pendingTab: Window | null) => {
+    const isMentorOnly = !!currentUser?.is_mentor && !currentUser?.is_teacher;
+    const result = await requestStaffJoinUrl(
+      lc.id,
+      authedFetch,
+      isMentorOnly ? { url: lc.meeting_url, confirm: (msg) => window.confirm(msg) } : undefined
+    );
+    if (result.ok) {
+      navigatePendingTab(pendingTab, result.url);
+    } else {
+      closePendingTab(pendingTab);
+      alert(result.error);
+    }
+  };
+
+  const enterClassAsStaff = async (lc: { id: number; meeting_url?: string | null }) => {
+    const pendingTab = openPendingTab();
+    setBusyId(lc.id);
+    try {
+      await openStaffJoin(lc, pendingTab);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const startClass = async (lc: any) => {
+    const pendingTab = isFullAdmin ? null : openPendingTab();
     setBusyId(lc.id);
     const res = await authedFetch(`/api/courses/live-classes/${lc.id}/start/`, { method: "POST" });
     const updated = res.ok ? await res.json().catch(() => null) : null;
+    if (!isFullAdmin) {
+      try {
+        await openStaffJoin(lc, pendingTab);
+      } finally {
+        setBusyId(null);
+        fetchClasses();
+      }
+      return;
+    }
     setBusyId(null);
     fetchClasses();
-    const hostLink = (isFullAdmin ? (updated?.host_url || lc.host_url) : null) || updated?.meeting_url || lc.meeting_url;
+    const hostLink = updated?.host_url || lc.host_url || updated?.meeting_url || lc.meeting_url;
     if (hostLink) {
       window.open(hostLink, "_blank");
     }
@@ -2247,16 +2286,25 @@ export default function LiveClassesPage() {
                             </>
                           ) : lc.status === "LIVE" ? (
                             <>
-                              {(lc.host_url || lc.meeting_url) && (
+                              {(lc.host_url || lc.meeting_url) && (isFullAdmin ? (
                                 <a
-                                  href={(isFullAdmin ? lc.host_url : null) || lc.meeting_url || lc.host_url}
+                                  href={lc.host_url || lc.meeting_url}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 shadow-sm"
                                 >
-                                  <ExternalLink className="w-3.5 h-3.5" /> {isFullAdmin && lc.host_url ? "Enter as Host" : "Enter Class"}
+                                  <ExternalLink className="w-3.5 h-3.5" /> {lc.host_url ? "Enter as Host" : "Enter Class"}
                                 </a>
-                              )}
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={busyId === lc.id}
+                                  onClick={() => enterClassAsStaff(lc)}
+                                  className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" /> Enter Class
+                                </button>
+                              ))}
                               <button
                                 disabled={busyId === lc.id}
                                 onClick={() => endClass(lc)}
