@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
+import HistoricalRecordingsPanel from "@/components/admin/HistoricalRecordingsPanel";
 import { requestStaffJoinUrl, openPendingTab, navigatePendingTab, closePendingTab } from "@/lib/staffHostJoin";
 
 // Phase 2: full scheduling/management UI for Admin, Teacher and Mentor --
@@ -152,6 +153,8 @@ export default function LiveClassesPage() {
   const [classThresholdError, setClassThresholdError] = useState("");
   const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
   const [view, setView] = useState<"list" | "calendar">("list");
+  // History tab source: this LMS's live classes, or recordings imported from the previous LMS
+  const [historySource, setHistorySource] = useState<"live" | "historical">("live");
   const [classes, setClasses] = useState<any[]>([]);
   const [calendarClasses, setCalendarClasses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1513,7 +1516,27 @@ export default function LiveClassesPage() {
         </div>
       </div>
 
-      {view === "calendar" ? (
+      {tab === "history" && (
+        <div className="flex gap-1.5 p-1 bg-[#0e0e12] border border-white/10 rounded-xl w-max mb-4" role="tablist" aria-label="History source">
+          {([["live", "Live class history"], ["historical", "Historical recordings"]] as const).map(([key, label]) => (
+            <button
+              key={key}
+              role="tab"
+              aria-selected={historySource === key}
+              onClick={() => setHistorySource(key)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${historySource === key ? "bg-white/10 text-white shadow-sm" : "text-zinc-500 hover:text-zinc-300"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === "history" && historySource === "historical" ? (
+        <div className="bg-[#0e0e12] border border-white/10 rounded-2xl overflow-hidden shadow-xl">
+          <HistoricalRecordingsPanel />
+        </div>
+      ) : view === "calendar" ? (
         <MonthCalendar classes={Array.isArray(calendarClasses) ? calendarClasses : []} />
       ) : (
         <div className="bg-[#0e0e12] border border-white/10 rounded-2xl overflow-hidden shadow-xl">
