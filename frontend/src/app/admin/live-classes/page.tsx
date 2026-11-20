@@ -42,6 +42,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
 import HistoricalRecordingsPanel from "@/components/admin/HistoricalRecordingsPanel";
+import BatchDetailsModal from "@/components/admin/BatchDetailsModal";
 import { requestStaffJoinUrl, openPendingTab, navigatePendingTab, closePendingTab } from "@/lib/staffHostJoin";
 
 // Phase 2: full scheduling/management UI for Admin, Teacher and Mentor --
@@ -361,6 +362,7 @@ export default function LiveClassesPage() {
   const [batchInstructorFilter, setBatchInstructorFilter] = useState<string>("ALL");
   const [batchTypeFilter, setBatchTypeFilter] = useState<string>("ALL");
   const [batchStudentSearch, setBatchStudentSearch] = useState("");
+  const [detailsBatch, setDetailsBatch] = useState<any | null>(null);
 
   useEffect(() => {
     setClassesPage(1);
@@ -1682,7 +1684,16 @@ export default function LiveClassesPage() {
                 <tbody className="divide-y divide-white/[0.06] text-zinc-300">
                   {paginatedBatches.map((b: any) => (
                     <tr key={b.id} className="hover:bg-white/[0.02] transition-colors">
-                      <td className="p-4 text-white font-bold">{b.course_title || `Course #${b.course}`}</td>
+                      <td className="p-4 text-white font-bold">
+                        <button
+                          type="button"
+                          onClick={() => setDetailsBatch(b)}
+                          className="text-left font-bold text-white hover:text-[#facc15] hover:underline underline-offset-2 transition-colors"
+                          title="View batch details and enrolled students"
+                        >
+                          {b.course_title || `Course #${b.course}`}
+                        </button>
+                      </td>
                       <td className="p-4">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${b.batch_type === 'ONE_TO_ONE' ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-blue-500/20 text-blue-300 border border-blue-500/30'}`}>
                           {b.batch_type === 'ONE_TO_ONE' ? '1-on-1' : 'Group'}
@@ -3350,6 +3361,27 @@ export default function LiveClassesPage() {
               </div>
             </div>
           </Modal>
+        )}
+      </AnimatePresence>
+
+      {/* ---------------- Batch Details Modal ---------------- */}
+      <AnimatePresence>
+        {detailsBatch && (
+          <BatchDetailsModal
+            key={detailsBatch.id}
+            batch={detailsBatch}
+            currentUser={currentUser}
+            onClose={() => setDetailsBatch(null)}
+            onChanged={fetchBatches}
+            onEditBatch={(b) => {
+              setDetailsBatch(null);
+              openEditBatch(b);
+            }}
+            onScheduleClass={(b) => {
+              setDetailsBatch(null);
+              openScheduleForBatch(b);
+            }}
+          />
         )}
       </AnimatePresence>
 

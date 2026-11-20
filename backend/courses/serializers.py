@@ -975,11 +975,42 @@ class LiveBatchSerializer(serializers.ModelSerializer):
 class LiveBatchStudentSerializer(serializers.ModelSerializer):
     student_username = serializers.CharField(source='student.username', read_only=True)
     purchase_status = serializers.CharField(source='purchase.status', read_only=True, allow_null=True)
+    # Name and contact details are only returned to admins and the batch's
+    # own instructor/mentor -- the GET /students/ action is also readable by
+    # students of the batch, who must not see classmates' personal details
+    # (they get None, exactly as before these fields existed).
+    student_name = serializers.SerializerMethodField()
+    student_email = serializers.SerializerMethodField()
+    student_phone = serializers.SerializerMethodField()
 
     class Meta:
         model = LiveBatchStudent
-        fields = ['id', 'batch', 'student', 'student_username', 'purchase', 'purchase_status', 'created_at', 'updated_at']
+        fields = [
+            'id', 'batch', 'student', 'student_username', 'student_name',
+            'student_email', 'student_phone',
+            'purchase', 'purchase_status', 'created_at', 'updated_at',
+        ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def _is_batch_staff(self, obj):
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated:
+            return False
+        if user.is_superuser or user.is_staff:
+            return True
+        return user.id in (obj.batch.instructor_id, obj.batch.mentor_id)
+
+    def get_student_name(self, obj):
+        if not self._is_batch_staff(obj):
+            return None
+        return obj.student.get_full_name() or obj.student.username
+
+    def get_student_email(self, obj):
+        return obj.student.email if self._is_batch_staff(obj) else None
+
+    def get_student_phone(self, obj):
+        return getattr(obj.student, 'phone_number', None) if self._is_batch_staff(obj) else None
 
 
 from .models import RecurrenceRule, TeacherAvailability, Attendance, AttendanceConfiguration
