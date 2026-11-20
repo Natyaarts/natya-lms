@@ -7,6 +7,7 @@ import { Video, Calendar as CalendarIcon, List as ListIcon, ExternalLink, PlayCi
 import { motion, AnimatePresence } from "framer-motion";
 import MonthCalendar from "@/components/live-classes/MonthCalendar";
 import { requestStaffJoinUrl, openPendingTab, navigatePendingTab, closePendingTab } from "@/lib/staffHostJoin";
+import HistoricalRecordingsPanel from "@/components/admin/HistoricalRecordingsPanel";
 
 // Phase 2: student-facing live classes -- upcoming/today/completed/
 // cancelled, a join button, and per-session attendance/recording access.
@@ -25,6 +26,8 @@ const STATUS_STYLE: Record<string, string> = {
 export default function StudentLiveClassesPage() {
   const [tab, setTab] = useState<"today" | "upcoming" | "completed" | "cancelled">("upcoming");
   const [view, setView] = useState<"list" | "calendar">("list");
+  // History tab: this LMS's past classes, or recordings imported from the previous LMS.
+  const [historySource, setHistorySource] = useState<"live" | "earlier">("live");
   const [classes, setClasses] = useState<any[]>([]);
   const [calendarClasses, setCalendarClasses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -246,8 +249,30 @@ export default function StudentLiveClassesPage() {
           </div>
         </div>
 
+        {tab === "completed" && view === "list" && (
+          <div className="flex gap-1.5 p-1 mb-4 bg-zinc-950 border border-white/5 rounded-xl w-max" role="tablist" aria-label="Recording source">
+            {([["live", "Past classes"], ["earlier", "Earlier recordings"]] as const).map(([key, label]) => (
+              <button
+                key={key}
+                role="tab"
+                aria-selected={historySource === key}
+                onClick={() => setHistorySource(key)}
+                className={`px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                  historySource === key ? "bg-white/10 text-white" : "text-zinc-500 hover:text-white"
+                }`}
+              >
+                {key === "earlier" && <Film className="w-3.5 h-3.5" />} {label}
+              </button>
+            ))}
+          </div>
+        )}
+
         {view === "calendar" ? (
           <MonthCalendar classes={calendarClasses} />
+        ) : tab === "completed" && historySource === "earlier" ? (
+          <div className="bg-[#0a0a0a] border border-white/10 rounded-2xl overflow-hidden">
+            <HistoricalRecordingsPanel />
+          </div>
         ) : loading ? (
           <div className="text-center py-20 text-zinc-500 text-sm">Loading...</div>
         ) : error ? (

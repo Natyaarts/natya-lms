@@ -2570,3 +2570,85 @@ class HistoricalRecordingFile(models.Model):
 
     def __str__(self):
         return f"{self.file_type}: {self.s3_key}"
+
+
+class HistoricalRecordingClassMapping(models.Model):
+    """
+    Reviewed link from an old-platform class id to exactly one LMS LiveBatch.
+
+    Only CONFIRMED rows grant anything: students of the mapped batch (via
+    LiveBatchStudent) may then see that class's historical sessions. AMBIGUOUS
+    and UNRESOLVED rows are kept purely as an audit trail and never carry a
+    batch. Rows are written only by the `map_historical_recordings` command
+    from exact identifiers (class id, learner phone/email); never from names.
+    """
+    class Status(models.TextChoices):
+        CONFIRMED = 'CONFIRMED', 'Confirmed'
+        AMBIGUOUS = 'AMBIGUOUS', 'Ambiguous'
+        UNRESOLVED = 'UNRESOLVED', 'Unresolved'
+
+    source_class_id = models.CharField(max_length=64, unique=True)
+    batch = models.ForeignKey(
+        LiveBatch,
+        null=True,
+        blank=True,
+        # Deleting a batch removes its mapping, so access fails closed.
+        on_delete=models.CASCADE,
+        related_name='historical_class_mappings',
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.UNRESOLVED, db_index=True)
+    reason = models.CharField(max_length=255, blank=True, default='')
+    source_learners = models.PositiveIntegerField(default=0)
+    resolved_learners = models.PositiveIntegerField(default=0)
+    matched_learners = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['source_class_id']
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(status='CONFIRMED', batch__isnull=False)
+                    | (~models.Q(status='CONFIRMED') & models.Q(batch__isnull=True))
+                ),
+                name='historical_class_mapping_batch_iff_confirmed',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.source_class_id} -> {self.batch_id or '-'} ({self.status})"
+
+
+class HistoricalRecordingTeacher(models.Model):
+    """
+    Explicit teacher ownership of one historical session. A session may have
+    several confirmed teachers. Teachers see only sessions listed here (and only
+    while the session's class mapping is CONFIRMED).
+    """
+    class Source(models.TextChoices):
+        SESSION_TEACHER = 'SESSION_TEACHER', 'Teacher who conducted the session'
+        CORRECTION = 'CORRECTION', 'Confirmed teacher correction for the class'
+
+    session = models.ForeignKey(
+        HistoricalRecordingSession,
+        on_delete=models.CASCADE,
+        related_name='teacher_mappings',
+    )
+    teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='historical_recording_teacher_mappings',
+    )
+    source = models.CharField(max_length=20, choices=Source.choices)
+    source_teacher_user_id = models.CharField(max_length=64, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['session_id', 'teacher_id']
+        constraints = [
+            models.UniqueConstraint(fields=['session', 'teacher'], name='uq_historical_recording_session_teacher'),
+        ]
+
+    def __str__(self):
+        return f"session {self.session_id} -> teacher {self.teacher_id} ({self.source})"

@@ -2,7 +2,8 @@
 
 /**
  * Historical recordings (sessions imported from the previous LMS), shown inside
- * Admin -> Live Classes -> History. All permission decisions are made by the
+ * Admin -> Live Classes -> History and on the student/teacher Live Classes page
+ * (History / Past -> Earlier recordings). All permission decisions are made by the
  * backend (courses/historical_recording_access.py); this component only renders
  * what the API returns and asks for a fresh signed URL when a video is played.
  */
@@ -154,7 +155,7 @@ export default function HistoricalRecordingsPanel() {
           <div>
             <p className="font-semibold text-white">Not available for your account yet</p>
             <p className="text-xs text-zinc-400 mt-1">
-              Historical recordings become visible once they are confirmed against your batch or teaching sessions.
+              Earlier recordings appear here once they are confirmed for your batch or for sessions you taught.
             </p>
           </div>
         </div>
