@@ -2500,3 +2500,73 @@ class ZoomReconciliationApproval(models.Model):
     def __str__(self):
         return f"Approval for {self.manifest_hash[:8]} by {self.approver_id}"
 
+
+
+class HistoricalRecordingSession(models.Model):
+    """
+    Historical recordings migrated from the previous LMS.
+    These are independent of LiveClass and the Zoom recording lifecycle.
+    """
+    course = models.ForeignKey(
+        Course,
+        related_name='historical_recording_sessions',
+        on_delete=models.PROTECT,
+    )
+    source_session_id = models.CharField(max_length=64, unique=True, db_index=True)
+    source_class_id = models.CharField(max_length=64, blank=True, default='')
+    source_class_name = models.CharField(max_length=255, blank=True, default='')
+    session_title = models.CharField(max_length=500, blank=True, default='')
+    teacher_name = models.CharField(max_length=255, blank=True, default='')
+    actual_start = models.DateTimeField(null=True, blank=True, db_index=True)
+    actual_end = models.DateTimeField(null=True, blank=True)
+    duration_text = models.CharField(max_length=64, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-actual_start', '-id']
+        indexes = [
+            models.Index(fields=['course', 'actual_start']),
+        ]
+
+    def __str__(self):
+        return f"{self.session_title or self.source_session_id} ({self.course_id})"
+
+
+class HistoricalRecordingFile(models.Model):
+    """
+    Reference to an existing private S3 object. This model never uploads,
+    copies, moves, or changes the underlying S3 object.
+    """
+    class FileType(models.TextChoices):
+        MP4 = 'MP4', 'Video'
+        VTT = 'VTT', 'Transcript'
+
+    session = models.ForeignKey(
+        HistoricalRecordingSession,
+        related_name='files',
+        on_delete=models.CASCADE,
+    )
+    file_type = models.CharField(max_length=8, choices=FileType.choices)
+    s3_bucket = models.CharField(max_length=255)
+    s3_key = models.CharField(max_length=1024)
+    filename = models.CharField(max_length=512, blank=True, default='')
+    file_size_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    content_type = models.CharField(max_length=100, blank=True, default='')
+    is_verified = models.BooleanField(default=False, db_index=True)
+    verified_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['file_type', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['s3_bucket', 's3_key'],
+                name='uq_historical_recording_s3_object',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['session', 'file_type']),
+        ]
+
+    def __str__(self):
+        return f"{self.file_type}: {self.s3_key}"

@@ -1,3 +1,4 @@
+from .historical_recording_views import HistoricalRecordingSessionListView
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
@@ -57,5 +58,6 @@ urlpatterns = [
     path('attendance-settings/', AttendanceConfigurationView.as_view(), name='attendance-settings'),
     path('admin/attendance-settings/', AttendanceConfigurationView.as_view(), name='admin-attendance-settings'),
     path('admin/migrate-rented-lms/', AdminMigrateRentedLmsView.as_view(), name='admin-migrate-rented-lms'),
+    path('<int:course_id>/historical-recordings/', HistoricalRecordingSessionListView.as_view(), name='historical-recordings'),
     path('', include(router.urls)),
 ]
