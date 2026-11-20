@@ -1756,6 +1756,11 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         if course_id:
             queryset = queryset.filter(course_id=course_id)
 
+        # Filter by batch (admin batch-details view)
+        batch_id = (self.request.query_params.get('batch') or '').strip()
+        if batch_id:
+            queryset = queryset.filter(batch_id=batch_id) if batch_id.isdigit() else queryset.none()
+
         # Filter by status
         status_param = self.request.query_params.get('status')
         if status_param:
@@ -3144,12 +3149,17 @@ class LiveBatchViewSet(viewsets.ModelViewSet):
     def students(self, request, pk=None):
         batch = self.get_object()
         if request.method == 'GET':
-            students_qs = LiveBatchStudent.objects.filter(batch=batch).select_related('student', 'purchase')
+            students_qs = (
+                LiveBatchStudent.objects.filter(batch=batch)
+                .select_related('student', 'purchase', 'batch')
+                .order_by('student__first_name', 'student__last_name', 'student__username', 'id')
+            )
+            ctx = self.get_serializer_context()
             page = self.paginate_queryset(students_qs)
             if page is not None:
-                serializer = LiveBatchStudentSerializer(page, many=True)
+                serializer = LiveBatchStudentSerializer(page, many=True, context=ctx)
                 return self.get_paginated_response(serializer.data)
-            serializer = LiveBatchStudentSerializer(students_qs, many=True)
+            serializer = LiveBatchStudentSerializer(students_qs, many=True, context=ctx)
             return Response(serializer.data)
 
         elif request.method == 'POST':
@@ -3176,7 +3186,7 @@ class LiveBatchViewSet(viewsets.ModelViewSet):
                     purchase_id=purchase_id,
                     request_user=request.user
                 )
-                serializer = LiveBatchStudentSerializer(assignment)
+                serializer = LiveBatchStudentSerializer(assignment, context=self.get_serializer_context())
                 return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
             except ValidationError as e:
                 error_msg = e.messages[0] if hasattr(e, 'messages') else str(e)
