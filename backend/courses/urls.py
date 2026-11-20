@@ -1,4 +1,9 @@
-from .historical_recording_views import HistoricalRecordingSessionListView
+from .historical_recording_views import (
+    HistoricalRecordingSessionListView,
+    HistoricalRecordingListView,
+    HistoricalRecordingFiltersView,
+    HistoricalRecordingPlaybackView,
+)
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
@@ -58,6 +63,10 @@ urlpatterns = [
     path('attendance-settings/', AttendanceConfigurationView.as_view(), name='attendance-settings'),
     path('admin/attendance-settings/', AttendanceConfigurationView.as_view(), name='admin-attendance-settings'),
     path('admin/migrate-rented-lms/', AdminMigrateRentedLmsView.as_view(), name='admin-migrate-rented-lms'),
+    # Global historical recordings (must precede the router: CourseViewSet sits at r'')
+    path('historical-recordings/', HistoricalRecordingListView.as_view(), name='historical-recordings-all'),
+    path('historical-recordings/filters/', HistoricalRecordingFiltersView.as_view(), name='historical-recordings-filters'),
+    path('historical-recordings/files/<int:file_id>/playback/', HistoricalRecordingPlaybackView.as_view(), name='historical-recordings-playback'),
     path('<int:course_id>/historical-recordings/', HistoricalRecordingSessionListView.as_view(), name='historical-recordings'),
     path('', include(router.urls)),
 ]
