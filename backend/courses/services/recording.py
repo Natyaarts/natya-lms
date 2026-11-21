@@ -834,9 +834,16 @@ class ZoomRecordingService:
         """
         import threading
         import time
+        from django.db import close_old_connections, connections
 
         def _worker():
+            # This thread runs outside Django's request cycle, so nothing else
+            # closes the DB connection it opens. Left open, it stays idle on
+            # PostgreSQL through every retry sleep and, after the thread exits,
+            # until garbage collection -- which exhausted RDS connections.
+            # connections are per-thread, so this only affects this thread.
             for attempt in range(1, max_retries + 1):
+                close_old_connections()
                 try:
                     from courses.models import LiveClass
                     live_class = LiveClass.objects.filter(pk=live_class_id).first()
@@ -858,6 +865,13 @@ class ZoomRecordingService:
                         logger.info(f"[AutoSyncRecording] Attempt {attempt} for LiveClass #{live_class_id}: {result}. Retrying in {delay_seconds}s...")
                 except Exception as e:
                     logger.warning(f"[AutoSyncRecording] Exception on attempt {attempt} for LiveClass #{live_class_id}: {e}")
+                finally:
+                    # Runs on success/early return, failure and exception,
+                    # and always before the retry sleep below.
+                    try:
+                        connections.close_all()
+                    except Exception as close_err:
+                        logger.warning(f"[AutoSyncRecording] Could not close DB connections for LiveClass #{live_class_id}: {close_err}")
 
                 if attempt < max_retries:
                     time.sleep(delay_seconds)
