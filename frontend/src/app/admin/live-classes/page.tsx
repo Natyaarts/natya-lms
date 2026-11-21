@@ -1370,6 +1370,279 @@ export default function LiveClassesPage() {
     }
   };
 
+  // Shared by the wide-screen tables and the card layout used below xl.
+  const renderClassStatus = (lc: (typeof paginatedClasses)[number]) => (
+    <>
+                        <div className="inline-flex flex-col items-center gap-1.5">
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 text-[10px] font-bold rounded-md uppercase tracking-wider ${STATUS_STYLE[lc.status] || "bg-zinc-800 text-zinc-400"}`}>
+                            {lc.status === "COMPLETED" && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
+                            {lc.status === "LIVE" && <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-ping" />}
+                            {lc.status}
+                          </span>
+                          {(lc.status === "COMPLETED" || (lc.attendance_total_count && lc.attendance_total_count > 0)) && (
+                            <div className="flex flex-col items-center">
+                              <button
+                                type="button"
+                                onClick={() => openAttendance(lc)}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-white/5 hover:bg-white/10 text-zinc-300 border border-white/10 hover:border-white/20 transition-colors shadow-sm"
+                                title="Click to view/edit attendance"
+                              >
+                                <UsersIcon className="w-2.5 h-2.5 text-[#facc15]" />
+                                {lc.attendance_present_count ?? 0}/{lc.attendance_total_count || 1} Present
+                              </button>
+                              {lc.attendance_avg_duration > 0 && (
+                                <span className="text-[10px] text-zinc-500 mt-0.5">
+                                  Avg {lc.attendance_avg_duration} min
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+    </>
+  );
+
+  const renderClassActions = (lc: (typeof paginatedClasses)[number]) => (
+    <>
+                        <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                          {lc.status === "COMPLETED" ? (
+                            <>
+                              {lc.recording_url ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => setWatchTarget(lc)}
+                                    className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 transition-all shadow-sm hover:shadow-yellow-500/20"
+                                    title="Watch session recording saved on AWS S3"
+                                  >
+                                    <Play className="w-3 h-3 fill-current" /> Watch Recording
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(lc.recording_url);
+                                      setBanner("✓ Recording URL copied to clipboard!");
+                                    }}
+                                    className="p-2 rounded-lg bg-zinc-900 border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white text-xs transition-colors"
+                                    title="Copy S3 recording link"
+                                  >
+                                    <Copy className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setRecordingTarget(lc); setRecordingUrl(lc.recording_url || ""); }}
+                                    className="p-2 rounded-lg bg-zinc-900 border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white text-xs transition-colors"
+                                    title="Edit recording link"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  {lc.meeting_provider === "ZOOM" && (
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#facc15]/10 border border-[#facc15]/20 text-[#facc15] text-[11px] font-medium animate-pulse" title="Zoom cloud recording is automatically syncing to AWS S3 in background">
+                                        <RefreshCw className="w-3 h-3 animate-spin" /> Auto-syncing to S3
+                                      </span>
+                                      <button
+                                        type="button"
+                                        disabled={busyId === lc.id}
+                                        onClick={() => handleSyncZoomRecording(lc)}
+                                        className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-[#facc15]/30 text-zinc-300 hover:text-white text-[11px] font-medium disabled:opacity-50 flex items-center gap-1 transition-all"
+                                        title="Force sync immediately from Zoom to S3"
+                                      >
+                                        <RefreshCw className={`w-3 h-3 ${busyId === lc.id ? "animate-spin" : ""}`} /> Sync Now
+                                      </button>
+                                    </div>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => { setRecordingTarget(lc); setRecordingUrl(""); }}
+                                    className="p-2 rounded-lg bg-zinc-900 border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white text-xs transition-colors"
+                                    title="Upload MP4 recording directly to AWS S3"
+                                  >
+                                    <Upload className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => openAttendance(lc)}
+                                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-white/20 text-zinc-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm"
+                              >
+                                <UsersIcon className="w-3.5 h-3.5 text-zinc-400" /> Attendance
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openReportModal(lc)}
+                                className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm ${
+                                  lc.has_report
+                                    ? lc.report_visible_to_students
+                                      ? "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                                      : "bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border-purple-500/30"
+                                    : "bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] border-[#facc15]/30 animate-pulse"
+                                }`}
+                                title={
+                                  lc.has_report
+                                    ? lc.report_visible_to_students
+                                      ? "Class report is shared with batch students (Click to view/edit)"
+                                      : "Class report submitted — pending mentor review & share"
+                                    : "Teacher post-class report pending (Click to enter details)"
+                                }
+                              >
+                                {lc.has_report ? (
+                                  lc.report_visible_to_students ? (
+                                    <>
+                                      <FileText className="w-3.5 h-3.5 text-emerald-400" />
+                                      <span>Report (Shared)</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <EyeOff className="w-3.5 h-3.5 text-purple-400" />
+                                      <span>Report (Mentor Review)</span>
+                                    </>
+                                  )
+                                ) : (
+                                  <>
+                                    <FileText className="w-3.5 h-3.5 text-[#facc15]" />
+                                    <span>Enter Class Report</span>
+                                  </>
+                                )}
+                              </button>
+                            </>
+                          ) : lc.status === "LIVE" ? (
+                            <>
+                              {(lc.host_url || lc.meeting_url) && (isFullAdmin ? (
+                                <a
+                                  href={lc.host_url || lc.meeting_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 shadow-sm"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" /> {lc.host_url ? "Enter as Host" : "Enter Class"}
+                                </a>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={busyId === lc.id}
+                                  onClick={() => enterClassAsStaff(lc)}
+                                  className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" /> Enter Class
+                                </button>
+                              ))}
+                              <button
+                                disabled={busyId === lc.id}
+                                onClick={() => endClass(lc)}
+                                className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-400 border border-red-500/30 text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-all"
+                                title="End session and automatically sync cloud recording to AWS S3"
+                              >
+                                <Square className="w-3 h-3 fill-current" /> End & Auto-Sync S3
+                              </button>
+                              <button
+                                onClick={() => openAttendance(lc)}
+                                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 text-xs font-medium flex items-center gap-1.5 shadow-sm"
+                              >
+                                <UsersIcon className="w-3.5 h-3.5 text-zinc-400" /> Attendance
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              {isFullAdmin && lc.host_url ? (
+                                <a
+                                  href={lc.host_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 transition-all shadow-sm"
+                                  title="Launch meeting directly with host privileges"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" /> Start Host (Zoom)
+                                </a>
+                              ) : isFullAdmin && lc.meeting_provider === "ZOOM" ? (
+                                <button
+                                  disabled={busyId === lc.id}
+                                  onClick={() => regenerateZoom(lc)}
+                                  className="px-3 py-1.5 rounded-lg bg-[#facc15]/20 hover:bg-[#facc15]/30 text-[#facc15] border border-[#facc15]/40 text-xs font-semibold disabled:opacity-50 flex items-center gap-1.5"
+                                  title="Generate host link with ZAK token"
+                                >
+                                  Get Host Link
+                                </button>
+                              ) : null}
+                              {lc.meeting_url && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(lc.meeting_url);
+                                    setBanner("✓ Student join link copied to clipboard!");
+                                  }}
+                                  className="p-2 rounded-lg bg-zinc-900 border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white text-xs transition-colors"
+                                  title="Copy student join link"
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              {lc.status === "SCHEDULED" && (
+                                <>
+                                  <button 
+                                    disabled={busyId === lc.id} 
+                                    onClick={() => startClass(lc)} 
+                                    className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/25 text-xs font-medium transition-colors"
+                                  >
+                                    Start Class
+                                  </button>
+                                  <button 
+                                    onClick={() => { setRescheduleTarget(lc); setRescheduleDate(""); setRescheduleTime(""); }} 
+                                    className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 text-xs font-medium transition-colors"
+                                  >
+                                    Reschedule
+                                  </button>
+                                  <button 
+                                    onClick={() => { setCancelTarget(lc); setCancelReason(""); setCancelSeries(false); }} 
+                                    className="p-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-colors"
+                                    title="Cancel session"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
+                              <button 
+                                onClick={() => openAttendance(lc)} 
+                                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 text-xs font-medium flex items-center gap-1.5 shadow-sm"
+                              >
+                                <UsersIcon className="w-3.5 h-3.5 text-zinc-400" /> Attendance
+                              </button>
+                            </>
+                          )}
+                        </div>
+    </>
+  );
+
+  const renderBatchActions = (b: (typeof paginatedBatches)[number]) => (
+    <>
+                        <div className="flex items-center justify-end gap-2 flex-wrap">
+                          <button
+                            onClick={() => openEditBatch(b)}
+                            className="px-2.5 py-1.5 rounded-lg bg-white/10 text-white text-[10px] font-bold hover:bg-white/15 border border-white/10 transition-colors flex items-center gap-1"
+                            title="Manage Batch Mentor & Students"
+                          >
+                            <UsersIcon className="w-3 h-3" /> Manage Students
+                          </button>
+                          <button
+                            onClick={() => openScheduleForBatch(b)}
+                            className="px-2.5 py-1.5 rounded-lg bg-[#facc15] text-black text-[10px] font-bold hover:bg-yellow-400 transition-colors flex items-center gap-1 shadow-sm"
+                          >
+                            <Plus className="w-3 h-3 stroke-[2.5]" /> Schedule Class
+                          </button>
+                          <button
+                            onClick={() => handleDeleteBatch(b.id)}
+                            className="p-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold transition-colors"
+                            title="Delete Batch"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+    </>
+  );
+
   return (
     <div className="max-w-6xl mx-auto pb-20">
       {/* Header Bar */}
@@ -1605,8 +1878,56 @@ export default function LiveClassesPage() {
                 </div>
               ) : (
               <>
-              <div className="overflow-x-auto">
-              <table className="w-full min-w-215 text-left border-collapse text-xs">
+              {/* Card layout below xl: every field and action stays visible without sideways scrolling. */}
+              <div className="xl:hidden divide-y divide-white/[0.06]">
+                {paginatedBatches.map((b) => (
+                  <div key={b.id} className="p-4 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setDetailsBatch(b)}
+                        className="text-left font-bold text-sm text-white hover:text-[#facc15] hover:underline underline-offset-2 transition-colors min-w-0 break-words"
+                        title="View batch details and enrolled students"
+                      >
+                        {b.course_title || `Course #${b.course}`}
+                      </button>
+                      <span className={`shrink-0 px-2 py-0.5 rounded text-[10px] font-bold ${b.batch_type === 'ONE_TO_ONE' ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-blue-500/20 text-blue-300 border border-blue-500/30'}`}>
+                        {b.batch_type === 'ONE_TO_ONE' ? '1-on-1' : 'Group'}
+                      </span>
+                    </div>
+                    <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                      <div className="min-w-0">
+                        <dt className="text-[10px] uppercase tracking-wider text-zinc-500">Instructor</dt>
+                        <dd className="text-zinc-300 break-words">{b.instructor_name || b.instructor_username || "Unassigned"}</dd>
+                      </div>
+                      <div className="min-w-0">
+                        <dt className="text-[10px] uppercase tracking-wider text-zinc-500">Assigned Mentor</dt>
+                        <dd className="break-words">
+                          {b.mentor_name || b.mentor_username ? (
+                            <span className="text-[#facc15] font-medium">{b.mentor_name || b.mentor_username}</span>
+                          ) : (
+                            <span className="text-zinc-500 italic">None assigned</span>
+                          )}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[10px] uppercase tracking-wider text-zinc-500">Students Enrolled</dt>
+                        <dd>
+                          <span className="font-semibold text-white">{b.student_count || 0}</span>
+                          {b.max_participants ? <span className="text-zinc-500"> / {b.max_participants} max</span> : <span className="text-zinc-500"> enrolled</span>}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[10px] uppercase tracking-wider text-zinc-500">Created</dt>
+                        <dd className="text-zinc-400">{new Date(b.created_at).toLocaleDateString()}</dd>
+                      </div>
+                    </dl>
+                    <div className="[&>div]:justify-start">{renderBatchActions(b)}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="hidden xl:block overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-[#141419] border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[11px]">
                     <th className="p-4 font-semibold">Course</th>
@@ -1650,28 +1971,7 @@ export default function LiveClassesPage() {
                       </td>
                       <td className="p-4 text-zinc-400">{new Date(b.created_at).toLocaleDateString()}</td>
                       <td className="p-4">
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => openEditBatch(b)}
-                            className="px-2.5 py-1.5 rounded-lg bg-white/10 text-white text-[10px] font-bold hover:bg-white/15 border border-white/10 transition-colors flex items-center gap-1"
-                            title="Manage Batch Mentor & Students"
-                          >
-                            <UsersIcon className="w-3 h-3" /> Manage Students
-                          </button>
-                          <button
-                            onClick={() => openScheduleForBatch(b)}
-                            className="px-2.5 py-1.5 rounded-lg bg-[#facc15] text-black text-[10px] font-bold hover:bg-yellow-400 transition-colors flex items-center gap-1 shadow-sm"
-                          >
-                            <Plus className="w-3 h-3 stroke-[2.5]" /> Schedule Class
-                          </button>
-                          <button
-                            onClick={() => handleDeleteBatch(b.id)}
-                            className="p-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 text-[10px] font-bold transition-colors"
-                            title="Delete Batch"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                        {renderBatchActions(b)}
                       </td>
                     </tr>
                   ))}
@@ -1952,8 +2252,44 @@ export default function LiveClassesPage() {
             <>
             {/* Below lg (tablets) Duration/Provider fold into the Scheduled cell so the
                 Actions column keeps its room; the wrapper scrolls instead of clipping. */}
-            <div className="overflow-x-auto">
-            <table className="w-full min-w-170 text-left border-collapse text-xs">
+            <div className="xl:hidden divide-y divide-white/[0.06]">
+              {paginatedClasses.map((lc) => {
+                const sched = formatScheduledDate(lc.scheduled_start);
+                return (
+                  <div key={lc.id} className="p-4 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-semibold text-white text-sm tracking-tight break-words">{lc.title}</span>
+                          {lc.recurrence_rule && (
+                            <span title="Part of a recurring series" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#facc15]/10 border border-[#facc15]/20 text-[#facc15] text-[10px] font-medium">
+                              <Repeat className="w-2.5 h-2.5" /> Series
+                            </span>
+                          )}
+                        </div>
+                        {(lc.course_title || lc.batch_name) && (
+                          <p className="text-xs text-zinc-400 mt-0.5 break-words">
+                            {lc.course_title}{lc.course_title && lc.batch_name ? " · " : ""}{lc.batch_name}
+                          </p>
+                        )}
+                        <p className="text-[11px] text-zinc-500 mt-1 flex items-center gap-1 flex-wrap">
+                          <span className="text-zinc-300">{sched.datePart}</span>
+                          <span className="font-mono">{sched.timePart}</span>
+                          <span className="text-zinc-600">·</span>
+                          <Clock className="w-3 h-3" /> {lc.duration_minutes} min
+                          <span className="text-zinc-600">·</span>
+                          {lc.meeting_provider === "ZOOM" ? "Zoom" : (PROVIDER_LABEL[lc.meeting_provider] || lc.meeting_provider)}
+                        </p>
+                      </div>
+                      <div className="shrink-0">{renderClassStatus(lc)}</div>
+                    </div>
+                    <div className="[&>div]:justify-start">{renderClassActions(lc)}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="hidden xl:block overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="bg-[#141419] border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[11px]">
                   <th className="p-3 lg:p-4 font-semibold">Title & Course</th>
@@ -2026,245 +2362,12 @@ export default function LiveClassesPage() {
 
                       {/* Status & Attendance */}
                       <td className="p-3 lg:p-4 text-center">
-                        <div className="inline-flex flex-col items-center gap-1.5">
-                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 text-[10px] font-bold rounded-md uppercase tracking-wider ${STATUS_STYLE[lc.status] || "bg-zinc-800 text-zinc-400"}`}>
-                            {lc.status === "COMPLETED" && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
-                            {lc.status === "LIVE" && <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-ping" />}
-                            {lc.status}
-                          </span>
-                          {(lc.status === "COMPLETED" || (lc.attendance_total_count && lc.attendance_total_count > 0)) && (
-                            <div className="flex flex-col items-center">
-                              <button
-                                type="button"
-                                onClick={() => openAttendance(lc)}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-white/5 hover:bg-white/10 text-zinc-300 border border-white/10 hover:border-white/20 transition-colors shadow-sm"
-                                title="Click to view/edit attendance"
-                              >
-                                <UsersIcon className="w-2.5 h-2.5 text-[#facc15]" />
-                                {lc.attendance_present_count ?? 0}/{lc.attendance_total_count || 1} Present
-                              </button>
-                              {lc.attendance_avg_duration > 0 && (
-                                <span className="text-[10px] text-zinc-500 mt-0.5">
-                                  Avg {lc.attendance_avg_duration} min
-                                </span>
-                              )}
-                            </div>
-                          )}
-                        </div>
+                        {renderClassStatus(lc)}
                       </td>
 
                       {/* Actions */}
                       <td className="p-3 lg:p-4 min-w-55">
-                        <div className="flex items-center justify-end gap-1.5 flex-wrap">
-                          {lc.status === "COMPLETED" ? (
-                            <>
-                              {lc.recording_url ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => setWatchTarget(lc)}
-                                    className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 transition-all shadow-sm hover:shadow-yellow-500/20"
-                                    title="Watch session recording saved on AWS S3"
-                                  >
-                                    <Play className="w-3 h-3 fill-current" /> Watch Recording
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      navigator.clipboard.writeText(lc.recording_url);
-                                      setBanner("✓ Recording URL copied to clipboard!");
-                                    }}
-                                    className="p-2 rounded-lg bg-zinc-900 border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white text-xs transition-colors"
-                                    title="Copy S3 recording link"
-                                  >
-                                    <Copy className="w-3.5 h-3.5" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => { setRecordingTarget(lc); setRecordingUrl(lc.recording_url || ""); }}
-                                    className="p-2 rounded-lg bg-zinc-900 border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white text-xs transition-colors"
-                                    title="Edit recording link"
-                                  >
-                                    <Pencil className="w-3.5 h-3.5" />
-                                  </button>
-                                </>
-                              ) : (
-                                <>
-                                  {lc.meeting_provider === "ZOOM" && (
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#facc15]/10 border border-[#facc15]/20 text-[#facc15] text-[11px] font-medium animate-pulse" title="Zoom cloud recording is automatically syncing to AWS S3 in background">
-                                        <RefreshCw className="w-3 h-3 animate-spin" /> Auto-syncing to S3
-                                      </span>
-                                      <button
-                                        type="button"
-                                        disabled={busyId === lc.id}
-                                        onClick={() => handleSyncZoomRecording(lc)}
-                                        className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-[#facc15]/30 text-zinc-300 hover:text-white text-[11px] font-medium disabled:opacity-50 flex items-center gap-1 transition-all"
-                                        title="Force sync immediately from Zoom to S3"
-                                      >
-                                        <RefreshCw className={`w-3 h-3 ${busyId === lc.id ? "animate-spin" : ""}`} /> Sync Now
-                                      </button>
-                                    </div>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={() => { setRecordingTarget(lc); setRecordingUrl(""); }}
-                                    className="p-2 rounded-lg bg-zinc-900 border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white text-xs transition-colors"
-                                    title="Upload MP4 recording directly to AWS S3"
-                                  >
-                                    <Upload className="w-3.5 h-3.5" />
-                                  </button>
-                                </>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => openAttendance(lc)}
-                                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 hover:border-white/20 text-zinc-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm"
-                              >
-                                <UsersIcon className="w-3.5 h-3.5 text-zinc-400" /> Attendance
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => openReportModal(lc)}
-                                className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm ${
-                                  lc.has_report
-                                    ? lc.report_visible_to_students
-                                      ? "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
-                                      : "bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border-purple-500/30"
-                                    : "bg-[#facc15]/10 hover:bg-[#facc15]/20 text-[#facc15] border-[#facc15]/30 animate-pulse"
-                                }`}
-                                title={
-                                  lc.has_report
-                                    ? lc.report_visible_to_students
-                                      ? "Class report is shared with batch students (Click to view/edit)"
-                                      : "Class report submitted — pending mentor review & share"
-                                    : "Teacher post-class report pending (Click to enter details)"
-                                }
-                              >
-                                {lc.has_report ? (
-                                  lc.report_visible_to_students ? (
-                                    <>
-                                      <FileText className="w-3.5 h-3.5 text-emerald-400" />
-                                      <span>Report (Shared)</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <EyeOff className="w-3.5 h-3.5 text-purple-400" />
-                                      <span>Report (Mentor Review)</span>
-                                    </>
-                                  )
-                                ) : (
-                                  <>
-                                    <FileText className="w-3.5 h-3.5 text-[#facc15]" />
-                                    <span>Enter Class Report</span>
-                                  </>
-                                )}
-                              </button>
-                            </>
-                          ) : lc.status === "LIVE" ? (
-                            <>
-                              {(lc.host_url || lc.meeting_url) && (isFullAdmin ? (
-                                <a
-                                  href={lc.host_url || lc.meeting_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 shadow-sm"
-                                >
-                                  <ExternalLink className="w-3.5 h-3.5" /> {lc.host_url ? "Enter as Host" : "Enter Class"}
-                                </a>
-                              ) : (
-                                <button
-                                  type="button"
-                                  disabled={busyId === lc.id}
-                                  onClick={() => enterClassAsStaff(lc)}
-                                  className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 shadow-sm disabled:opacity-50"
-                                >
-                                  <ExternalLink className="w-3.5 h-3.5" /> Enter Class
-                                </button>
-                              ))}
-                              <button
-                                disabled={busyId === lc.id}
-                                onClick={() => endClass(lc)}
-                                className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-red-400 border border-red-500/30 text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-all"
-                                title="End session and automatically sync cloud recording to AWS S3"
-                              >
-                                <Square className="w-3 h-3 fill-current" /> End & Auto-Sync S3
-                              </button>
-                              <button
-                                onClick={() => openAttendance(lc)}
-                                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 text-xs font-medium flex items-center gap-1.5 shadow-sm"
-                              >
-                                <UsersIcon className="w-3.5 h-3.5 text-zinc-400" /> Attendance
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              {isFullAdmin && lc.host_url ? (
-                                <a
-                                  href={lc.host_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="px-3 py-1.5 rounded-lg bg-[#facc15] hover:bg-yellow-400 text-black font-semibold text-xs flex items-center gap-1.5 transition-all shadow-sm"
-                                  title="Launch meeting directly with host privileges"
-                                >
-                                  <ExternalLink className="w-3.5 h-3.5" /> Start Host (Zoom)
-                                </a>
-                              ) : isFullAdmin && lc.meeting_provider === "ZOOM" ? (
-                                <button
-                                  disabled={busyId === lc.id}
-                                  onClick={() => regenerateZoom(lc)}
-                                  className="px-3 py-1.5 rounded-lg bg-[#facc15]/20 hover:bg-[#facc15]/30 text-[#facc15] border border-[#facc15]/40 text-xs font-semibold disabled:opacity-50 flex items-center gap-1.5"
-                                  title="Generate host link with ZAK token"
-                                >
-                                  Get Host Link
-                                </button>
-                              ) : null}
-                              {lc.meeting_url && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    navigator.clipboard.writeText(lc.meeting_url);
-                                    setBanner("✓ Student join link copied to clipboard!");
-                                  }}
-                                  className="p-2 rounded-lg bg-zinc-900 border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white text-xs transition-colors"
-                                  title="Copy student join link"
-                                >
-                                  <Copy className="w-3.5 h-3.5" />
-                                </button>
-                              )}
-                              {lc.status === "SCHEDULED" && (
-                                <>
-                                  <button 
-                                    disabled={busyId === lc.id} 
-                                    onClick={() => startClass(lc)} 
-                                    className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/25 text-xs font-medium transition-colors"
-                                  >
-                                    Start Class
-                                  </button>
-                                  <button 
-                                    onClick={() => { setRescheduleTarget(lc); setRescheduleDate(""); setRescheduleTime(""); }} 
-                                    className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 text-xs font-medium transition-colors"
-                                  >
-                                    Reschedule
-                                  </button>
-                                  <button 
-                                    onClick={() => { setCancelTarget(lc); setCancelReason(""); setCancelSeries(false); }} 
-                                    className="p-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-colors"
-                                    title="Cancel session"
-                                  >
-                                    <X className="w-3.5 h-3.5" />
-                                  </button>
-                                </>
-                              )}
-                              <button 
-                                onClick={() => openAttendance(lc)} 
-                                className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 text-xs font-medium flex items-center gap-1.5 shadow-sm"
-                              >
-                                <UsersIcon className="w-3.5 h-3.5 text-zinc-400" /> Attendance
-                              </button>
-                            </>
-                          )}
-                        </div>
+                        {renderClassActions(lc)}
                       </td>
                     </tr>
                   );
