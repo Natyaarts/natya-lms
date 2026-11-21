@@ -2614,6 +2614,13 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         from courses.models import AttendanceConfiguration
         global_threshold = AttendanceConfiguration.get_default_percentage()
 
+        from courses.services.conducted_time import get_conducted_time
+        try:
+            conducted = get_conducted_time(live_class, now=now)
+        except Exception as ct_err:  # display-only; never break the attendance view
+            logger.warning(f"[LiveAttendance] Could not derive conducted time for LiveClass #{live_class.id}: {ct_err}")
+            conducted = None
+
         return Response({
             "live_class": {
                 "id": live_class.id,
@@ -2626,6 +2633,11 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             },
             "class_status": live_class.status,
             "scheduled_duration": live_class.duration_minutes or 60,
+            # Actual meeting time from Zoom start/end webhooks (None if unknown).
+            "conducted": conducted,
+            # Automatic Zoom attendance (join/leave webhooks + participant
+            # report) only runs when this server flag is on.
+            "zoom_attendance_enabled": bool(getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False)),
             "effective_threshold": effective_threshold,
             "global_default_threshold": global_threshold,
             "is_threshold_overridden": live_class.min_attendance_percentage is not None,
