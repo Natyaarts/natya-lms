@@ -1383,9 +1383,9 @@ export default function LiveClassesPage() {
             <p className="text-xs text-zinc-400 mt-0.5">Manage live sessions, track student attendance, and automatically sync recordings to S3</p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <button 
-            onClick={openCreateBatch} 
+        <div className="flex items-center gap-3 flex-wrap">
+          <button
+            onClick={openCreateBatch}
             disabled={!currentUser} 
             className="px-3.5 py-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 hover:text-white font-semibold rounded-xl transition-all flex items-center gap-2 text-xs border border-white/10 hover:border-white/20 disabled:opacity-50 shadow-sm"
           >
@@ -1417,7 +1417,7 @@ export default function LiveClassesPage() {
 
       {/* Tabs and View Switcher */}
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
-        <div className="flex gap-1.5 p-1 bg-[#0e0e12] border border-white/10 rounded-xl w-max shadow-inner flex-wrap">
+        <div className="flex gap-1.5 p-1 bg-[#0e0e12] border border-white/10 rounded-xl max-w-full overflow-x-auto shadow-inner">
           {(["today", "upcoming", "history", "cancelled", "batches", ...(isFullAdmin ? (["settings"] as const) : [])] as const).map((t) => (
             <button
               key={t}
@@ -1427,7 +1427,7 @@ export default function LiveClassesPage() {
                   fetchGlobalAttendanceSettings();
                 }
               }}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all capitalize flex items-center gap-1.5 ${
+              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all capitalize flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                 tab === t 
                   ? "bg-[#facc15] text-black shadow-sm" 
                   : "text-zinc-400 hover:text-white hover:bg-white/5"
@@ -1605,7 +1605,8 @@ export default function LiveClassesPage() {
                 </div>
               ) : (
               <>
-              <table className="w-full text-left border-collapse text-xs">
+              <div className="overflow-x-auto">
+              <table className="w-full min-w-215 text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-[#141419] border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[11px]">
                     <th className="p-4 font-semibold">Course</th>
@@ -1676,6 +1677,7 @@ export default function LiveClassesPage() {
                   ))}
                 </tbody>
               </table>
+              </div>
               <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-5 py-3.5 border-t border-white/10 bg-[#121216] text-xs text-zinc-400">
                 <div className="flex items-center gap-3 flex-wrap">
                   <span>
@@ -1948,15 +1950,18 @@ export default function LiveClassesPage() {
               </div>
             ) : (
             <>
-            <table className="w-full text-left border-collapse text-xs">
+            {/* Below lg (tablets) Duration/Provider fold into the Scheduled cell so the
+                Actions column keeps its room; the wrapper scrolls instead of clipping. */}
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-170 text-left border-collapse text-xs">
               <thead>
                 <tr className="bg-[#141419] border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[11px]">
-                  <th className="p-4 font-semibold">Title & Course</th>
-                  <th className="p-4 font-semibold">Scheduled</th>
-                  <th className="p-4 font-semibold">Duration</th>
-                  <th className="p-4 font-semibold">Provider</th>
-                  <th className="p-4 font-semibold text-center">Status / Attendance</th>
-                  <th className="p-4 font-semibold text-right">Actions</th>
+                  <th className="p-3 lg:p-4 font-semibold">Title & Course</th>
+                  <th className="p-3 lg:p-4 font-semibold">Scheduled</th>
+                  <th className="p-4 font-semibold hidden lg:table-cell">Duration</th>
+                  <th className="p-4 font-semibold hidden lg:table-cell">Provider</th>
+                  <th className="p-3 lg:p-4 font-semibold text-center">Status / Attendance</th>
+                  <th className="p-3 lg:p-4 font-semibold text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.06] text-zinc-300">
@@ -1965,14 +1970,14 @@ export default function LiveClassesPage() {
                   return (
                     <tr key={lc.id} className="hover:bg-white/[0.02] transition-colors">
                       {/* Title & Course */}
-                      <td className="p-4">
+                      <td className="p-3 lg:p-4">
                         <div className="flex items-start gap-3">
-                          <div className="w-8 h-8 rounded-lg bg-zinc-900 border border-white/10 flex items-center justify-center text-[#facc15] shrink-0 mt-0.5 shadow-inner">
+                          <div className="w-8 h-8 rounded-lg bg-zinc-900 border border-white/10 hidden sm:flex items-center justify-center text-[#facc15] shrink-0 mt-0.5 shadow-inner">
                             <Video className="w-4 h-4 text-[#facc15]" />
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="font-semibold text-white text-sm tracking-tight truncate max-w-xs">{lc.title}</span>
+                              <span className="font-semibold text-white text-sm tracking-tight truncate max-w-40 lg:max-w-xs">{lc.title}</span>
                               {lc.recurrence_rule && (
                                 <span title="Part of a recurring series" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#facc15]/10 border border-[#facc15]/20 text-[#facc15] text-[10px] font-medium">
                                   <Repeat className="w-2.5 h-2.5" /> Series
@@ -1980,7 +1985,7 @@ export default function LiveClassesPage() {
                               )}
                             </div>
                             {(lc.course_title || lc.batch_name) && (
-                              <p className="text-xs text-zinc-400 mt-0.5 truncate max-w-xs">
+                              <p className="text-xs text-zinc-400 mt-0.5 truncate max-w-40 lg:max-w-xs">
                                 {lc.course_title}{lc.course_title && lc.batch_name ? " · " : ""}{lc.batch_name}
                               </p>
                             )}
@@ -1988,21 +1993,26 @@ export default function LiveClassesPage() {
                         </div>
                       </td>
 
-                      {/* Scheduled */}
-                      <td className="p-4 whitespace-nowrap">
+                      {/* Scheduled (+ duration/provider on tablet and smaller) */}
+                      <td className="p-3 lg:p-4 whitespace-nowrap">
                         <div className="text-xs font-medium text-zinc-200">{sched.datePart}</div>
                         <div className="text-[11px] text-zinc-500 font-mono mt-0.5">{sched.timePart}</div>
+                        <div className="lg:hidden text-[11px] text-zinc-500 mt-1 flex items-center gap-1">
+                          <Clock className="w-3 h-3" /> {lc.duration_minutes} min
+                          <span className="text-zinc-600">·</span>
+                          {lc.meeting_provider === "ZOOM" ? "Zoom" : (PROVIDER_LABEL[lc.meeting_provider] || lc.meeting_provider)}
+                        </div>
                       </td>
 
                       {/* Duration */}
-                      <td className="p-4 whitespace-nowrap">
+                      <td className="p-4 whitespace-nowrap hidden lg:table-cell">
                         <span className="inline-flex items-center gap-1 text-xs text-zinc-300 font-mono bg-zinc-900/60 border border-white/5 rounded-md px-2 py-1">
                           <Clock className="w-3 h-3 text-zinc-500" /> {lc.duration_minutes} min
                         </span>
                       </td>
 
                       {/* Provider */}
-                      <td className="p-4 whitespace-nowrap">
+                      <td className="p-4 whitespace-nowrap hidden lg:table-cell">
                         {lc.meeting_provider === "ZOOM" ? (
                           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-medium">
                             <Video className="w-3 h-3" /> Zoom
@@ -2015,7 +2025,7 @@ export default function LiveClassesPage() {
                       </td>
 
                       {/* Status & Attendance */}
-                      <td className="p-4 text-center">
+                      <td className="p-3 lg:p-4 text-center">
                         <div className="inline-flex flex-col items-center gap-1.5">
                           <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 text-[10px] font-bold rounded-md uppercase tracking-wider ${STATUS_STYLE[lc.status] || "bg-zinc-800 text-zinc-400"}`}>
                             {lc.status === "COMPLETED" && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
@@ -2044,7 +2054,7 @@ export default function LiveClassesPage() {
                       </td>
 
                       {/* Actions */}
-                      <td className="p-4">
+                      <td className="p-3 lg:p-4 min-w-55">
                         <div className="flex items-center justify-end gap-1.5 flex-wrap">
                           {lc.status === "COMPLETED" ? (
                             <>
@@ -2261,6 +2271,7 @@ export default function LiveClassesPage() {
                 })}
               </tbody>
             </table>
+            </div>
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-5 py-3.5 border-t border-white/10 bg-[#121216] text-xs text-zinc-400">
               <div className="flex items-center gap-3 flex-wrap">
                 <span>
