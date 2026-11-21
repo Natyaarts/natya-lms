@@ -1145,13 +1145,22 @@ export default function LiveClassesPage() {
       const res = await authedFetch(`/api/courses/live-classes/${attendanceTarget.id}/attendance/reconcile/`, {
         method: "POST",
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        if (data.status === "not_ready") {
-          setBanner("ℹ Zoom report not ready yet. Please wait a few minutes after the meeting ends.");
-        } else {
+        // The endpoint answers 200 for every outcome; only "success" means
+        // the Zoom participant report was actually applied.
+        if (data.status === "success") {
           setBanner(`✓ Zoom report reconciled (${data.reconciled || 0} matched, ${data.unmatched || 0} unmatched).`);
           await fetchLiveAttendance(attendanceTarget.id);
+        } else if (data.status === "not_ready") {
+          setBanner("ℹ Zoom report not ready yet. Please wait a few minutes after the meeting ends.");
+        } else if (data.status === "disabled") {
+          setBanner("⚠ Automatic Zoom attendance is turned off on the server (ENABLE_ZOOM_ATTENDANCE_V2), so the Zoom report was not fetched. Mark attendance manually or ask an administrator to enable it.");
+        } else if (data.status === "no_meeting_id") {
+          setBanner("⚠ This class has no Zoom meeting linked, so there is no Zoom report to sync.");
+        } else {
+          const detail = typeof data.error === "string" ? data.error.slice(0, 200) : "";
+          setBanner(`⚠ Zoom report sync failed${detail ? `: ${detail}` : "."}`);
         }
       } else {
         setBanner(data.error || "Failed to reconcile Zoom report.");
@@ -2819,6 +2828,40 @@ export default function LiveClassesPage() {
                     <Clock className="w-3 h-3 text-yellow-400" />
                     Scheduled: {attendanceTarget.duration_minutes || 60} min
                   </span>
+                  <span className="text-zinc-600">·</span>
+                  {(() => {
+                    const c = attendanceLiveData?.conducted;
+                    const t = (iso?: string | null) =>
+                      iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+                    if (!attendanceLiveData) return null;
+                    if (!c) {
+                      return (
+                        <span
+                          className="text-xs text-zinc-500"
+                          title="No Zoom meeting start/end event has been received for this class."
+                        >
+                          Conducted: not available
+                        </span>
+                      );
+                    }
+                    return (
+                      <span
+                        className="text-xs text-zinc-300 flex items-center gap-1"
+                        title={c.segments > 1 ? `Meeting was restarted: ${c.segments} separate sessions, times added together.` : "Actual Zoom meeting time"}
+                      >
+                        <Video className="w-3 h-3 text-emerald-400" />
+                        {c.in_progress ? "Running" : "Conducted"}:{" "}
+                        <span className="font-semibold text-white">
+                          {c.minutes == null ? "end time not received" : `${c.minutes} min`}
+                        </span>
+                        <span className="text-zinc-500">
+                          ({t(c.started_at)}
+                          {c.ended_at ? ` – ${t(c.ended_at)}` : c.in_progress ? " – now" : ""})
+                        </span>
+                        {c.segments > 1 && <span className="text-zinc-500">· {c.segments} sessions</span>}
+                      </span>
+                    );
+                  })()}
                   {liveAttendanceLoading && (
                     <Loader2 className="w-3.5 h-3.5 text-zinc-500 animate-spin" />
                   )}
@@ -2885,6 +2928,18 @@ export default function LiveClassesPage() {
                   )}
                 </div>
               </div>
+
+              {/* Automatic Zoom attendance disabled on the server */}
+              {attendanceTarget?.meeting_provider === "ZOOM" && attendanceLiveData?.zoom_attendance_enabled === false && (
+                <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-200 text-xs">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-amber-400 mt-px" />
+                  <span>
+                    Automatic Zoom attendance is turned off on the server, so join/leave times, durations and the
+                    calculated percentages stay at 0. Mark attendance manually below, or ask an administrator to enable{" "}
+                    <code className="font-mono text-amber-100">ENABLE_ZOOM_ATTENDANCE_V2</code>.
+                  </span>
+                </div>
+              )}
 
               {/* Effective Attendance Threshold Info Banner */}
               <div className="flex items-center justify-between p-3 rounded-xl bg-yellow-500/10 border border-yellow-500/20 text-xs flex-wrap gap-2">
