@@ -484,10 +484,10 @@ class LiveClass(models.Model):
 
     def get_effective_min_attendance_percentage(self):
         """
-        Returns effective threshold: class override if set, else global default.
+        Returns the global attendance threshold. Per-class overrides were
+        retired: any value still stored in `min_attendance_percentage` is
+        ignored (kept only so the change is reversible without a migration).
         """
-        if self.min_attendance_percentage is not None:
-            return self.min_attendance_percentage
         return AttendanceConfiguration.get_default_percentage()
 
     def calculate_attendance_metrics(self, zoom_duration_seconds):
@@ -519,7 +519,7 @@ class LiveClass(models.Model):
             "attendance_percentage": percentage,
             "suggested_status": suggested_status,
             "effective_threshold": effective_threshold,
-            "is_override": self.min_attendance_percentage is not None,
+            "is_override": False,
             "scheduled_duration_minutes": self.duration_minutes or 60,
             "attended_duration_seconds": zoom_sec,
             "attended_duration_minutes": int(zoom_sec // 60),

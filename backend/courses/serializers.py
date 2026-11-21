@@ -576,7 +576,8 @@ class LiveClassSerializer(serializers.ModelSerializer):
     course = serializers.PrimaryKeyRelatedField(queryset=Course.objects.all(), required=False)
     instructor = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False, allow_null=True)
     substitute_instructor = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False, allow_null=True)
-    min_attendance_percentage = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=100)
+    # Per-class thresholds are retired (global setting only): read-only, ignored.
+    min_attendance_percentage = serializers.IntegerField(read_only=True, allow_null=True)
     effective_min_attendance_percentage = serializers.SerializerMethodField(read_only=True)
 
     def get_effective_min_attendance_percentage(self, obj):
@@ -867,9 +868,7 @@ class LiveClassSerializer(serializers.ModelSerializer):
         ret['report_visible_to_students'] = bool(report and report.is_visible_to_students)
         ret['min_attendance_percentage'] = instance.min_attendance_percentage
         default_pct = self.context.get('default_min_attendance_percentage')
-        if instance.min_attendance_percentage is not None:
-            ret['effective_min_attendance_percentage'] = instance.min_attendance_percentage
-        elif default_pct is not None:
+        if default_pct is not None:
             ret['effective_min_attendance_percentage'] = default_pct
         else:
             ret['effective_min_attendance_percentage'] = instance.get_effective_min_attendance_percentage()

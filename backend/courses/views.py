@@ -2640,7 +2640,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             "zoom_attendance_enabled": bool(getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False)),
             "effective_threshold": effective_threshold,
             "global_default_threshold": global_threshold,
-            "is_threshold_overridden": live_class.min_attendance_percentage is not None,
+            "is_threshold_overridden": False,
             "server_timestamp": now.isoformat(),
             "total_enrolled": total_enrolled,
             "currently_connected_count": currently_connected,
@@ -2737,8 +2737,8 @@ class LiveClassViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get', 'post', 'patch'], url_path='attendance-threshold')
     def attendance_threshold(self, request, pk=None):
         """
-        GET: Returns current threshold settings for this live class (override and effective).
-        POST/PATCH: Sets or clears (if null/None) the per-class minimum attendance percentage.
+        GET: Returns the threshold that applies to this live class (always the
+        global setting). POST/PATCH: rejected -- per-class overrides are retired.
         Authorized for Admin, SuperUser, or Class Instructor.
         """
         live_class = self.get_object()
@@ -2765,38 +2765,16 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 "global_default_percentage": AttendanceConfiguration.get_default_percentage(),
                 "min_attendance_percentage": live_class.min_attendance_percentage,
                 "effective_min_attendance_percentage": live_class.get_effective_min_attendance_percentage(),
-                "is_override": live_class.min_attendance_percentage is not None
+                "is_override": False
             }, status=drf_status.HTTP_200_OK)
 
-        # POST / PATCH
-        val = request.data.get('min_attendance_percentage')
-        if val is None or val == "" or val == "null":
-            live_class.min_attendance_percentage = None
-        else:
-            try:
-                num = int(val)
-                if num < 1 or num > 100:
-                    return Response(
-                        {"min_attendance_percentage": ["Percentage must be between 1 and 100."]},
-                        status=drf_status.HTTP_400_BAD_REQUEST
-                    )
-                live_class.min_attendance_percentage = num
-            except (ValueError, TypeError):
-                return Response(
-                    {"min_attendance_percentage": ["Percentage must be a valid integer between 1 and 100."]},
-                    status=drf_status.HTTP_400_BAD_REQUEST
-                )
-
-        live_class.save(update_fields=['min_attendance_percentage', 'updated_at'])
-        return Response({
-            "live_class_id": live_class.id,
-            "title": live_class.title,
-            "scheduled_duration_minutes": live_class.duration_minutes or 60,
-            "global_default_percentage": AttendanceConfiguration.get_default_percentage(),
-            "min_attendance_percentage": live_class.min_attendance_percentage,
-            "effective_min_attendance_percentage": live_class.get_effective_min_attendance_percentage(),
-            "is_override": live_class.min_attendance_percentage is not None
-        }, status=drf_status.HTTP_200_OK)
+        # POST / PATCH: per-class thresholds are retired -- the global
+        # Attendance Settings value applies to every class.
+        return Response(
+            {"detail": "Per-class attendance thresholds are no longer supported. "
+                       "Change the global threshold in Attendance Settings."},
+            status=drf_status.HTTP_400_BAD_REQUEST
+        )
 
     @action(detail=True, methods=['post'], url_path='recording')
     def recording(self, request, pk=None):

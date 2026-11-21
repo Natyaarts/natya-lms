@@ -101,18 +101,17 @@ class AttendanceSettingsUnitTests(APITestCase):
         self.live_class.clean()
 
     def test_effective_threshold_inheritance(self):
-        """Effective threshold defaults to global configuration and uses override when provided."""
+        """Effective threshold is always the global setting (per-class overrides retired)."""
         AttendanceConfiguration.objects.filter(pk=1).update(default_min_attendance_percentage=75)
 
-        # When None, inherits global default (75)
         self.live_class.min_attendance_percentage = None
         self.live_class.save()
         self.assertEqual(self.live_class.get_effective_min_attendance_percentage(), 75)
 
-        # When set, returns class override
+        # A legacy per-class value still stored on the class is ignored.
         self.live_class.min_attendance_percentage = 85
         self.live_class.save()
-        self.assertEqual(self.live_class.get_effective_min_attendance_percentage(), 85)
+        self.assertEqual(self.live_class.get_effective_min_attendance_percentage(), 75)
 
     def test_calculate_attendance_metrics_prompt_example(self):
         """
@@ -123,21 +122,25 @@ class AttendanceSettingsUnitTests(APITestCase):
         Calculated attendance: 80%.
         Suggested status: PRESENT.
         """
+        config = AttendanceConfiguration.get_solo()
+        config.default_min_attendance_percentage = 75
+        config.save()
         self.live_class.duration_minutes = 10
-        self.live_class.min_attendance_percentage = 75
         self.live_class.save()
 
         metrics = self.live_class.calculate_attendance_metrics(zoom_duration_seconds=8 * 60)
         self.assertEqual(metrics["attendance_percentage"], 80.0)
         self.assertEqual(metrics["suggested_status"], "PRESENT")
         self.assertEqual(metrics["effective_threshold"], 75)
-        self.assertTrue(metrics["is_override"])
+        self.assertFalse(metrics["is_override"])
         self.assertEqual(metrics["scheduled_duration_minutes"], 10)
 
     def test_calculate_attendance_metrics_statuses(self):
         """Calculates correct suggested status for ABSENT (0%), LATE (< threshold), and PRESENT (>= threshold)."""
+        config = AttendanceConfiguration.get_solo()
+        config.default_min_attendance_percentage = 70
+        config.save()
         self.live_class.duration_minutes = 60
-        self.live_class.min_attendance_percentage = 70
         self.live_class.save()
 
         # 0 seconds attended -> 0%, ABSENT
@@ -314,9 +317,8 @@ class AttendanceSettingsUnitTests(APITestCase):
 
     def test_global_threshold_inheritance_dynamic_update(self):
         """
-        Verify exact prompt requirement #5:
-        Changing the global threshold updates classes without an override.
-        Classes with explicit overrides retain their own threshold.
+        Changing the global threshold updates every class, including classes
+        that still carry a legacy per-class value (overrides are retired).
         """
         AttendanceConfiguration.objects.filter(pk=1).update(default_min_attendance_percentage=75)
 
@@ -338,7 +340,7 @@ class AttendanceSettingsUnitTests(APITestCase):
         )
 
         self.assertEqual(class_no_override.get_effective_min_attendance_percentage(), 75)
-        self.assertEqual(class_with_override.get_effective_min_attendance_percentage(), 90)
+        self.assertEqual(class_with_override.get_effective_min_attendance_percentage(), 75)
 
         # Update global default from 75 to 80
         config = AttendanceConfiguration.get_solo()
@@ -347,8 +349,8 @@ class AttendanceSettingsUnitTests(APITestCase):
 
         # Class without override dynamically reflects new global threshold (80)
         self.assertEqual(class_no_override.get_effective_min_attendance_percentage(), 80)
-        # Class with override retains its own override (90)
-        self.assertEqual(class_with_override.get_effective_min_attendance_percentage(), 90)
+        # Legacy per-class value is ignored: also follows the global threshold (80)
+        self.assertEqual(class_with_override.get_effective_min_attendance_percentage(), 80)
 
     def test_manual_admin_decisions_survive_recalculation(self):
         """
@@ -503,31 +505,22 @@ class AttendanceSettingsAPITests(APITestCase):
         self.assertEqual(res.data['updated_by'], self.staff_admin.id)
 
     def test_per_class_attendance_threshold_api(self):
-        """Instructors and admins can view, set, and clear per-class overrides."""
+        """GET reports the global threshold; setting a per-class override is rejected."""
         self.client.force_authenticate(user=self.instructor)
+        global_pct = AttendanceConfiguration.get_default_percentage()
 
-        # GET initially returns no override
         res = self.client.get(self.threshold_url)
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         self.assertFalse(res.data['is_override'])
-        self.assertIsNone(res.data['min_attendance_percentage'])
+        self.assertEqual(res.data['effective_min_attendance_percentage'], global_pct)
 
-        # Set custom override: 90%
         res = self.client.patch(self.threshold_url, {"min_attendance_percentage": 90})
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertTrue(res.data['is_override'])
-        self.assertEqual(res.data['min_attendance_percentage'], 90)
-        self.assertEqual(res.data['effective_min_attendance_percentage'], 90)
-
-        # Reject invalid override (> 100)
-        res = self.client.patch(self.threshold_url, {"min_attendance_percentage": 105})
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.live_class.refresh_from_db()
+        self.assertIsNone(self.live_class.min_attendance_percentage)
 
-        # Clear override (null) to inherit global default
-        res = self.client.patch(self.threshold_url, {"min_attendance_percentage": None}, format="json")
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertFalse(res.data['is_override'])
-        self.assertIsNone(res.data['min_attendance_percentage'])
+        res = self.client.get(self.threshold_url)
+        self.assertEqual(res.data['effective_min_attendance_percentage'], global_pct)
 
     def test_live_attendance_metrics_and_admin_authority_preservation(self):
         """
