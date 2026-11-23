@@ -9,6 +9,12 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  BookOpen,
+  PlayCircle,
+  Radio,
+  CheckCircle2,
+  FilePen,
+  Layers,
 } from "lucide-react";
 
 function buildPageItems(currentPage: number, totalPages: number): (number | "ellipsis")[] {
@@ -64,6 +70,37 @@ export default function AdminCourses() {
       );
     });
   }, [courses, search, typeFilter, statusFilter]);
+
+  // Catalogue summary (whole list, independent of the filters below).
+  const stats = useMemo(() => {
+    let recorded = 0, live = 0, published = 0, modules = 0;
+    for (const c of courses) {
+      if ((c.course_type || "RECORDED") === "LIVE") live++;
+      else recorded++;
+      if (c.is_published) published++;
+      modules += c.modules?.length || 0;
+    }
+    return { total: courses.length, recorded, live, published, drafts: courses.length - published, modules };
+  }, [courses]);
+
+  const statTiles = [
+    { label: "Courses", value: stats.total, icon: BookOpen, tone: "text-[#facc15] bg-[#facc15]/10 border-[#facc15]/20" },
+    { label: "Recorded", value: stats.recorded, icon: PlayCircle, tone: "text-blue-400 bg-blue-500/10 border-blue-500/20" },
+    { label: "Live", value: stats.live, icon: Radio, tone: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" },
+    ...(isFullAdmin
+      ? [
+          { label: "Published", value: stats.published, icon: CheckCircle2, tone: "text-green-400 bg-green-500/10 border-green-500/20" },
+          { label: "Drafts", value: stats.drafts, icon: FilePen, tone: "text-amber-400 bg-amber-500/10 border-amber-500/20" },
+        ]
+      : []),
+    { label: "Modules", value: stats.modules, icon: Layers, tone: "text-purple-400 bg-purple-500/10 border-purple-500/20" },
+  ];
+
+  // Two type buttons; clicking the active one again shows all courses.
+  const toggleType = (type: "RECORDED" | "LIVE") => {
+    setTypeFilter((prev) => (prev === type ? "ALL" : type));
+    setPage(1);
+  };
 
   const totalCount = filteredCourses.length;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
@@ -185,7 +222,23 @@ export default function AdminCourses() {
       </div>
 
       {courses.length > 0 && (
-        <div className="flex flex-col sm:flex-row gap-3 mb-6">
+        <div className={`grid grid-cols-2 sm:grid-cols-3 ${isFullAdmin ? "xl:grid-cols-6" : "xl:grid-cols-4"} gap-3 mb-6`}>
+          {statTiles.map(({ label, value, icon: Icon, tone }) => (
+            <div key={label} className="bg-[#18181b] border border-white/5 rounded-xl p-4 flex items-center gap-3 shadow-sm">
+              <div className={`w-9 h-9 rounded-lg border flex items-center justify-center shrink-0 ${tone}`}>
+                <Icon className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xl font-bold text-white leading-none">{value.toLocaleString()}</div>
+                <div className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider mt-1 truncate">{label}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {courses.length > 0 && (
+        <div className="flex flex-col lg:flex-row lg:items-center gap-3 mb-6">
           <div className="relative flex-1 max-w-md">
             <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input
@@ -199,18 +252,34 @@ export default function AdminCourses() {
               className="w-full bg-[#18181b] border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-[#facc15] transition-colors"
             />
           </div>
-          <select
-            value={typeFilter}
-            onChange={(e) => {
-              setTypeFilter(e.target.value as "ALL" | "RECORDED" | "LIVE");
-              setPage(1);
-            }}
-            className="bg-[#18181b] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15] transition-colors"
-          >
-            <option value="ALL">All Course Types</option>
-            <option value="RECORDED">Recorded Courses</option>
-            <option value="LIVE">Live Interactive</option>
-          </select>
+          <div className="flex gap-2" role="group" aria-label="Filter by course type">
+            {([
+              { type: "RECORDED", label: "Recorded", count: stats.recorded, icon: PlayCircle },
+              { type: "LIVE", label: "Live", count: stats.live, icon: Radio },
+            ] as const).map(({ type, label, count, icon: Icon }) => {
+              const active = typeFilter === type;
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => toggleType(type)}
+                  aria-pressed={active}
+                  title={active ? "Click again to show all courses" : `Show ${label.toLowerCase()} courses only`}
+                  className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border transition-colors whitespace-nowrap ${
+                    active
+                      ? "bg-[#facc15] text-black border-[#facc15]"
+                      : "bg-[#18181b] text-zinc-300 border-white/10 hover:text-white hover:border-white/20"
+                  }`}
+                >
+                  <Icon className="w-4 h-4" />
+                  {label}
+                  <span className={`px-1.5 py-0.5 rounded-md text-[11px] font-bold ${active ? "bg-black/15" : "bg-white/5 text-zinc-400"}`}>
+                    {count.toLocaleString()}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
           {isFullAdmin && (
             <select
               value={statusFilter}
