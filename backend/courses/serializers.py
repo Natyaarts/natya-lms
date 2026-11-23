@@ -1100,12 +1100,11 @@ class AttendanceSerializer(serializers.ModelSerializer):
 
     def _get_metrics(self, obj):
         if not hasattr(obj, '_cached_metrics'):
-            dur_sec = obj.calculate_total_duration_seconds()
-            if getattr(obj, 'is_duration_manual_override', False):
-                dur_sec = (obj.duration_minutes or 0) * 60
-            elif dur_sec == 0 and (obj.duration_minutes or 0) > 0:
-                dur_sec = obj.duration_minutes * 60
-            obj._cached_metrics = obj.live_class.calculate_attendance_metrics(dur_sec)
+            # Same attended-time rule the automatic classifier uses (Zoom session
+            # union, or the admin's manual duration), so suggested_status here
+            # always matches what the system would store.
+            from courses.services.attendance_classification import attended_seconds
+            obj._cached_metrics = obj.live_class.calculate_attendance_metrics(attended_seconds(obj))
         return obj._cached_metrics
 
     def get_attendance_percentage(self, obj):
