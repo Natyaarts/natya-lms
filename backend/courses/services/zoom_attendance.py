@@ -7,6 +7,7 @@ import requests
 from django.conf import settings
 from django.utils import timezone
 from django.db import transaction, IntegrityError
+from django.db.models import Sum
 from django.contrib.auth import get_user_model
 from courses.models import (
     LiveClass,
@@ -18,6 +19,11 @@ from courses.models import (
 )
 from courses.services.zoom import ZoomService
 from courses.services.recording import ZoomRecordingService
+from courses.services.attendance_classification import (
+    apply_automatic_attendance,
+    is_class_in_progress,
+    meeting_end_estimate,
+)
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -193,7 +199,7 @@ class ZoomAttendanceService:
                 is_member = False
                 if live_class.batch and live_class.batch.students.filter(student=matched_user).exists():
                     is_member = True
-                elif live_class.course and live_class.course.enrollments.filter(student=matched_user).exists():
+                elif live_class.course and live_class.course.enrollments.filter(user=matched_user).exists():
                     is_member = True
                 elif matched_user.is_staff or matched_user.is_superuser:
                     # Instructors/Staff handled separately
@@ -290,10 +296,9 @@ class ZoomAttendanceService:
                     session.is_active = True
                     session.save(update_fields=['is_active', 'updated_at'])
 
-                # Update duration minutes evidence (protects manual duration override, never auto-classifies status)
-                total_sec = att.calculate_total_duration_seconds()
-                if not getattr(att, 'is_duration_manual_override', False):
-                    att.duration_minutes = int(total_sec // 60)
+                # Update duration evidence and promote to PRESENT once the threshold
+                # is met. Never demotes mid-class; respects manual overrides.
+                apply_automatic_attendance(att, final=False)
                 att.save()
 
             logger.info(f"[ZoomAttendance] Student #{student.id} joined LiveClass #{live_class.id} (session={session_id})")
@@ -420,9 +425,9 @@ class ZoomAttendanceService:
 
                 # Check if student still has any active sessions
                 att.is_currently_in_class = att.sessions.filter(is_active=True).exists()
-                total_sec = att.calculate_total_duration_seconds()
-                if not getattr(att, 'is_duration_manual_override', False):
-                    att.duration_minutes = int(total_sec // 60)
+                # A disconnect never demotes (final=False): only promotes to PRESENT
+                # once the threshold is met. Respects manual overrides.
+                apply_automatic_attendance(att, final=False)
                 att.save()
 
             logger.info(f"[ZoomAttendance] Student #{student.id} left LiveClass #{live_class.id}. Total duration={att.duration_minutes}m")
@@ -459,12 +464,12 @@ class ZoomAttendanceService:
             return True
 
     @classmethod
-    def reconcile_meeting_participants(cls, live_class):
+    def fetch_meeting_report(cls, live_class):
         """
-        Reconciles attendance using Zoom Past Meeting Participants Report API:
-        GET /v2/report/meetings/{meetingId}/participants
-        Supports pagination, double-encoded UUIDs, and safe non-destructive evidence recording.
-        Preserves manual admin decisions.
+        Read-only: fetches the Zoom Past Meeting Participants Report
+        (GET /v2/report/meetings/{meetingId}/participants), following pagination.
+        Returns {"status": "success", "participants": [...]} or
+        {"status": "no_meeting_id" | "not_ready" | "error", ...}. Writes nothing.
         """
         meeting_identifier = live_class.zoom_uuid or live_class.zoom_meeting_id
         if not meeting_identifier:
@@ -502,14 +507,55 @@ class ZoomAttendanceService:
             if not next_page_token or len(participants) == 0:
                 break
 
+        return {"status": "success", "participants": all_participants}
+
+    @classmethod
+    def reconcile_meeting_participants(cls, live_class):
+        """
+        Reconciles attendance using Zoom Past Meeting Participants Report API:
+        GET /v2/report/meetings/{meetingId}/participants
+        Supports pagination, double-encoded UUIDs, and safe non-destructive evidence recording.
+        Then applies the final automatic classification. Preserves manual admin decisions.
+        """
+        report = cls.fetch_meeting_report(live_class)
+        if report.get("status") != "success":
+            return report
+        return cls.apply_meeting_report(live_class, report["participants"])
+
+    @classmethod
+    def apply_meeting_report(cls, live_class, all_participants, now=None):
+        """
+        Records Zoom report rows as REPORT sessions (idempotent: keyed per
+        participant + join time and updated in place), then runs the final
+        classification pass over every attendance row of the class.
+        Re-running with the same report changes nothing.
+        """
+        now = now or timezone.now()
         reconciled_count = 0
         unmatched_count = 0
+        skipped_count = 0
 
         for p in all_participants:
-            join_time = parse_zoom_timestamp(p.get('join_time'))
-            leave_time = parse_zoom_timestamp(p.get('leave_time'))
+            raw_join = p.get('join_time')
+            raw_leave = p.get('leave_time')
             dur_sec = int(p.get('duration', 0) or 0)
             p_uuid = str(p.get('id') or p.get('user_id') or '')
+
+            # Never substitute "now" for a missing timestamp: it would inflate the
+            # duration and create a new session key on every run.
+            if not raw_join:
+                skipped_count += 1
+                logger.warning(f"[ZoomAttendance] LiveClass #{live_class.id}: skipped report row without join_time (participant '{p_uuid}').")
+                continue
+            join_time = parse_zoom_timestamp(raw_join)
+            if raw_leave:
+                leave_time = parse_zoom_timestamp(raw_leave)
+            elif dur_sec > 0:
+                leave_time = join_time + datetime.timedelta(seconds=dur_sec)
+            else:
+                skipped_count += 1
+                logger.warning(f"[ZoomAttendance] LiveClass #{live_class.id}: skipped report row without leave_time or duration (participant '{p_uuid}').")
+                continue
 
             student = cls.resolve_student_identity(live_class, p, {})
 
@@ -543,18 +589,22 @@ class ZoomAttendanceService:
                         }
                     )
 
-                    att.zoom_reported_duration_seconds += dur_sec
+                    # Recalculated from the stored REPORT sessions (not incremented),
+                    # so reprocessing the same report never inflates it.
+                    att.zoom_reported_duration_seconds = (
+                        att.sessions.filter(source=AttendanceSession.Source.REPORT)
+                        .aggregate(total=Sum('duration_seconds'))['total'] or 0
+                    )
                     if not att.first_joined_at or join_time < att.first_joined_at:
                         att.first_joined_at = join_time
                     if not att.last_left_at or leave_time > att.last_left_at:
                         att.last_left_at = leave_time
 
-                    # Recalculate duration from all sessions (protects manual duration override)
-                    total_sec = att.calculate_total_duration_seconds()
-                    if not getattr(att, 'is_duration_manual_override', False):
-                        att.duration_minutes = int(total_sec // 60)
+                    # Duration from the union of all sessions (protects manual duration
+                    # override); promote-only here, the final pass below may demote.
+                    apply_automatic_attendance(att, final=False, now=now)
                     att.reconciliation_status = 'RECONCILED'
-                    att.reconciled_at = timezone.now()
+                    att.reconciled_at = now
                     att.save()
 
                 reconciled_count += 1
@@ -577,16 +627,62 @@ class ZoomAttendanceService:
                         }
                     )
 
+        classification = cls.finalize_attendance(live_class, now=now)
+
         logger.info(
             f"[ZoomAttendance] Reconciled LiveClass #{live_class.id}: "
-            f"{reconciled_count} matched, {unmatched_count} unmatched, {len(all_participants)} total."
+            f"{reconciled_count} matched, {unmatched_count} unmatched, {skipped_count} skipped, "
+            f"{len(all_participants)} total. Classification: {classification}"
         )
         return {
             "status": "success",
             "reconciled": reconciled_count,
             "unmatched": unmatched_count,
-            "total_records": len(all_participants)
+            "skipped": skipped_count,
+            "total_records": len(all_participants),
+            "classification": classification,
         }
+
+    @classmethod
+    def finalize_attendance(cls, live_class, now=None):
+        """
+        Final classification pass over every attendance row of a class, after
+        report reconciliation: PRESENT at/above threshold, ABSENT below it.
+        Manual status/duration overrides are preserved. While the class is still
+        in progress nothing is demoted (promote-only) and rows stay unreconciled.
+        """
+        now = now or timezone.now()
+        final = not is_class_in_progress(live_class, now)
+        meeting_end_estimate(live_class, refresh=True)
+        counts = {"final": final, "present": 0, "absent": 0, "other": 0, "changed": 0, "manual": 0}
+
+        att_ids = list(Attendance.objects.filter(live_class=live_class).values_list('id', flat=True))
+        for att_id in att_ids:
+            with transaction.atomic():
+                att = Attendance.objects.select_for_update().filter(pk=att_id).first()
+                if not att:
+                    continue
+                att.live_class = live_class  # share the cached meeting-end estimate
+                decision = apply_automatic_attendance(att, final=final, now=now)
+                fields = list(decision['update_fields'])
+                if final:
+                    att.reconciliation_status = 'RECONCILED'
+                    att.reconciled_at = now
+                    fields += ['reconciliation_status', 'reconciled_at']
+                if fields:
+                    att.save(update_fields=fields)
+
+            if decision['manual_status']:
+                counts["manual"] += 1
+            if decision['changed']:
+                counts["changed"] += 1
+            if att.status == Attendance.Status.PRESENT:
+                counts["present"] += 1
+            elif att.status == Attendance.Status.ABSENT:
+                counts["absent"] += 1
+            else:
+                counts["other"] += 1
+        return counts
 
     @classmethod
     def link_unmatched_participant(cls, unmatched_id, student_id, admin_user):
@@ -607,7 +703,7 @@ class ZoomAttendanceService:
             is_valid_student = False
             if live_class.batch and live_class.batch.students.filter(student=student).exists():
                 is_valid_student = True
-            elif live_class.course and live_class.course.enrollments.filter(student=student).exists():
+            elif live_class.course and live_class.course.enrollments.filter(user=student).exists():
                 is_valid_student = True
 
             if not is_valid_student:
@@ -651,10 +747,10 @@ class ZoomAttendanceService:
             if leave_time and (not att.last_left_at or leave_time > att.last_left_at):
                 att.last_left_at = leave_time
 
-            total_sec = att.calculate_total_duration_seconds()
-            if not getattr(att, 'is_duration_manual_override', False):
-                att.duration_minutes = int(total_sec // 60)
             att.is_currently_in_class = att.sessions.filter(is_active=True).exists()
+            # Linking adds evidence after the fact: classify with the final rules
+            # (ABSENT below threshold only once the class is no longer running).
+            apply_automatic_attendance(att, final=True)
             att.save()
 
             unmatched.status = UnmatchedZoomParticipant.Status.RESOLVED

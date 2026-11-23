@@ -508,12 +508,12 @@ class LiveClass(models.Model):
         percentage = min(100.0, round(raw_pct, 1))
         effective_threshold = self.get_effective_min_attendance_percentage()
 
-        if zoom_sec <= 0:
-            suggested_status = "ABSENT"
-        elif percentage >= effective_threshold:
+        # PRESENT at/above the global threshold, otherwise ABSENT. LATE is never
+        # suggested automatically (it remains available as a manual status).
+        if zoom_sec > 0 and percentage >= effective_threshold:
             suggested_status = "PRESENT"
         else:
-            suggested_status = "LATE"
+            suggested_status = "ABSENT"
 
         return {
             "attendance_percentage": percentage,

@@ -968,6 +968,7 @@ def process_zoom_participant_webhook_task(self, webhook_event_id):
     Processes a queued Zoom participant_joined / participant_left webhook event
     asynchronously so bursty student join events do not block Gunicorn threads.
     """
+    from django.utils import timezone
     from courses.models import ZoomWebhookEvent
     from courses.services.zoom_attendance import ZoomAttendanceService
 

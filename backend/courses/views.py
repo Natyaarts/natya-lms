@@ -1676,8 +1676,9 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 }
             )
             # If student joined earlier and was PRESENT, but closed browser tab so heartbeat paused:
-            if not created and att.status in (Attendance.Status.PRESENT, Attendance.Status.LATE):
+            if not created and att.status in (Attendance.Status.PRESENT, Attendance.Status.LATE) and not att.is_duration_manual_override:
                 if att.duration_minutes <= 1 and att.joined_at:
+                    now = timezone.now()
                     planned_duration = live_class.duration_minutes or 60
                     elapsed = int((now - att.joined_at).total_seconds() / 60)
                     att.duration_minutes = min(max(elapsed, 1), planned_duration)
@@ -2480,6 +2481,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         now = timezone.now()
 
         from courses.models import Attendance, AttendanceSession, UnmatchedZoomParticipant
+        from courses.services.attendance_classification import evidence_cutoff
 
         qs = (
             Attendance.objects.filter(live_class=live_class)
@@ -2501,7 +2503,6 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             has_active_session = False
             for s in sessions_qs:
                 dur = s.calculate_duration(now)
-                calculated_total_sec += dur
                 if s.is_active:
                     has_active_session = True
                 session_list.append({
@@ -2519,6 +2520,9 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             if att.first_joined_at or att.joined_at or len(session_list) > 0:
                 total_joined += 1
 
+            # Union of session intervals (webhook + report + linked sessions overlap
+            # for the same attendance), the same figure the classifier uses.
+            calculated_total_sec = att.calculate_total_duration_seconds(current_time=evidence_cutoff(att, now))
             raw_zoom_min = int(calculated_total_sec // 60)
             total_min = raw_zoom_min
             is_dur_manual = getattr(att, 'is_duration_manual_override', False)
@@ -2940,7 +2944,7 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         is_assigned = False
         if live_class.batch and live_class.batch.students.filter(student=user).exists():
             is_assigned = True
-        elif live_class.course and live_class.course.enrollments.filter(student=user).exists():
+        elif live_class.course and live_class.course.enrollments.filter(user=user).exists():
             is_assigned = True
             if live_class.batch:
                 try:

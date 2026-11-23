@@ -136,7 +136,7 @@ class AttendanceSettingsUnitTests(APITestCase):
         self.assertEqual(metrics["scheduled_duration_minutes"], 10)
 
     def test_calculate_attendance_metrics_statuses(self):
-        """Calculates correct suggested status for ABSENT (0%), LATE (< threshold), and PRESENT (>= threshold)."""
+        """Suggested status is PRESENT at/above the threshold and ABSENT below it (never LATE)."""
         config = AttendanceConfiguration.get_solo()
         config.default_min_attendance_percentage = 70
         config.save()
@@ -148,10 +148,10 @@ class AttendanceSettingsUnitTests(APITestCase):
         self.assertEqual(m_zero["attendance_percentage"], 0.0)
         self.assertEqual(m_zero["suggested_status"], "ABSENT")
 
-        # 30 minutes (1800s out of 3600s) -> 50.0% (< 70%), LATE
-        m_late = self.live_class.calculate_attendance_metrics(1800)
-        self.assertEqual(m_late["attendance_percentage"], 50.0)
-        self.assertEqual(m_late["suggested_status"], "LATE")
+        # 30 minutes (1800s out of 3600s) -> 50.0% (< 70%), ABSENT
+        m_below = self.live_class.calculate_attendance_metrics(1800)
+        self.assertEqual(m_below["attendance_percentage"], 50.0)
+        self.assertEqual(m_below["suggested_status"], "ABSENT")
 
         # 42 minutes (2520s out of 3600s) -> 70.0% (== 70%), PRESENT
         m_exact = self.live_class.calculate_attendance_metrics(2520)
@@ -203,7 +203,7 @@ class AttendanceSettingsUnitTests(APITestCase):
         """
         Verify exact prompt requirement #1:
         10-minute class (600s), 75% threshold:
-        - 7m 29s (449s): below threshold -> LATE
+        - 7m 29s (449s): below threshold -> ABSENT
         - 7m 30s (450s): exactly qualifies -> PRESENT
         - 8m 00s (480s): qualifies -> PRESENT
         """
@@ -211,10 +211,10 @@ class AttendanceSettingsUnitTests(APITestCase):
         self.live_class.min_attendance_percentage = 75
         self.live_class.save()
 
-        # 7m 29s = 449 seconds -> 74.8% -> LATE
+        # 7m 29s = 449 seconds -> 74.8% -> ABSENT
         m_7m29 = self.live_class.calculate_attendance_metrics(7 * 60 + 29)
         self.assertEqual(m_7m29["attendance_percentage"], 74.8)
-        self.assertEqual(m_7m29["suggested_status"], "LATE")
+        self.assertEqual(m_7m29["suggested_status"], "ABSENT")
 
         # 7m 30s = 450 seconds -> 75.0% -> PRESENT
         m_7m30 = self.live_class.calculate_attendance_metrics(7 * 60 + 30)
@@ -418,7 +418,7 @@ class AttendanceSettingsUnitTests(APITestCase):
         data = AttendanceSerializer(att).data
         # Serializer should use the manual override (5m = 300s / 600s = 50.0%)
         self.assertEqual(data["attendance_percentage"], 50.0)
-        self.assertEqual(data["suggested_status"], "LATE")
+        self.assertEqual(data["suggested_status"], "ABSENT")
 
 
 class AttendanceSettingsAPITests(APITestCase):
