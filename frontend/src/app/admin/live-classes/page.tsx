@@ -1068,6 +1068,30 @@ export default function LiveClassesPage() {
     }
   };
 
+  const handleIgnoreUnmatched = async (unmatchedId: number) => {
+    if (!attendanceTarget) return;
+    if (!window.confirm("Ignore this Zoom participant? They will not be counted and will leave the review queue.")) return;
+    setLinkingParticipantId(unmatchedId);
+    try {
+      const res = await authedFetch(`/api/courses/live-classes/${attendanceTarget.id}/attendance/ignore-unmatched/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ unmatched_id: unmatchedId }),
+      });
+      if (res.ok) {
+        setBanner("✓ Participant ignored.");
+        await fetchLiveAttendance(attendanceTarget.id);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setBanner(errData.error || "Failed to ignore participant.");
+      }
+    } catch {
+      setBanner("Network error while ignoring participant.");
+    } finally {
+      setLinkingParticipantId(null);
+    }
+  };
+
   const handleReconcileZoomReport = async () => {
     if (!attendanceTarget) return;
     setIsReconciling(true);
@@ -1079,9 +1103,17 @@ export default function LiveClassesPage() {
       if (res.ok) {
         // The endpoint answers 200 for every outcome; only "success" means
         // the Zoom participant report was actually applied.
-        if (data.status === "success") {
-          setBanner(`✓ Zoom report reconciled (${data.reconciled || 0} matched, ${data.unmatched || 0} unmatched).`);
+        if (data.status === "success" || data.status === "partial") {
+          const counts = `${data.reconciled || 0} matched, ${data.unmatched || 0} for review`;
+          const finalNote = data.classification?.final
+            ? " Attendance finalized."
+            : data.status === "partial"
+              ? " Some meeting runs' reports aren't ready yet, so nobody was marked absent; it will finish automatically."
+              : " The meeting may still be running, so nobody was marked absent yet; it will finish automatically.";
+          setBanner(`✓ Zoom report synced (${counts}).${finalNote}`);
           await fetchLiveAttendance(attendanceTarget.id);
+        } else if (data.status === "retry_later") {
+          setBanner(`ℹ ${data.message || "Zoom is temporarily unavailable. Please try again in a few minutes."}`);
         } else if (data.status === "not_ready") {
           setBanner("ℹ Zoom report not ready yet. Please wait a few minutes after the meeting ends.");
         } else if (data.status === "disabled") {
@@ -2982,6 +3014,15 @@ export default function LiveClassesPage() {
                             ) : (
                               "Link"
                             )}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={linkingParticipantId === u.id}
+                            onClick={() => handleIgnoreUnmatched(u.id)}
+                            title="Not a student of this class (guest, observer, teacher's device). It won't be counted."
+                            className="px-3 py-1.5 rounded-lg bg-zinc-800 text-zinc-300 font-semibold text-xs hover:bg-zinc-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            Ignore
                           </button>
                         </div>
                       </div>

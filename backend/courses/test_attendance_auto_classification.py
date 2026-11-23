@@ -205,8 +205,8 @@ class ReportReconciliationClassificationTests(_Base):
         self.assertEqual(AttendanceSerializer(att).data["suggested_status"], "ABSENT")
 
     def test_reconcile_endpoint_path_applies_classification(self):
-        with mock.patch.object(ZoomAttendanceService, "fetch_meeting_report",
-                               return_value={"status": "success", "participants": [self.row(self.s1, 0, 50)]}):
+        with mock.patch.object(ZoomAttendanceService, "fetch_meeting_reports",
+                               return_value={"status": "success", "participants": [self.row(self.s1, 0, 50)], "runs": 1}):
             result = ZoomAttendanceService.reconcile_meeting_participants(self.lc)
         self.assertEqual(result["status"], "success")
         self.assertEqual(self.att(self.s1).status, Attendance.Status.PRESENT)
@@ -317,6 +317,9 @@ class UnmatchedLinkingClassificationTests(_Base):
         self.assertEqual(att.duration_minutes, 50)
 
     def test_linking_below_threshold_marks_absent(self):
+        # ABSENT is only applied once the class's attendance has been finalized.
+        self.lc.attendance_finalized_at = timezone.now()
+        self.lc.save(update_fields=["attendance_finalized_at"])
         Attendance.objects.create(live_class=self.lc, student=self.s2, status=Attendance.Status.PRESENT)
         u = self._unmatched(0, 10, "u-2")
         att, _ = ZoomAttendanceService.link_unmatched_participant(u.id, self.s2.id, self.admin)
@@ -358,8 +361,8 @@ class RecoveryCommandTests(_Base):
         return out.getvalue()
 
     def _fetch(self, rows):
-        return mock.patch.object(ZoomAttendanceService, "fetch_meeting_report",
-                                 return_value={"status": "success", "participants": rows})
+        return mock.patch.object(ZoomAttendanceService, "fetch_meeting_reports",
+                                 return_value={"status": "success", "participants": rows, "runs": 1})
 
     def test_dry_run_previews_and_writes_nothing(self):
         Attendance.objects.create(live_class=self.lc, student=self.s1)

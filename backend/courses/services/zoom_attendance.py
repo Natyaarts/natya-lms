@@ -16,6 +16,7 @@ from courses.models import (
     UnmatchedZoomParticipant,
     LiveClassJoinIntent,
     LiveClassRegistrant,
+    ZoomIdentityLink,
 )
 from courses.services.zoom import ZoomService
 from courses.services.recording import ZoomRecordingService
@@ -24,9 +25,36 @@ from courses.services.attendance_classification import (
     is_class_in_progress,
     meeting_end_estimate,
 )
+from courses.services.attendance_identity import (
+    excluded_user_reason,
+    is_class_member,
+    participant_email,
+    participant_exclusion_reason,
+    per_meeting_participant_id,
+    stable_zoom_account_id,
+)
+from courses.services.zoom_meeting_runs import class_window, run_state
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
+
+# Two queue records within this window with the same Zoom participant/account
+# ID are the same person's same join (webhook vs. report evidence).
+UNMATCHED_SAME_JOIN_WINDOW = datetime.timedelta(minutes=10)
+
+
+class ZoomTransientError(Exception):
+    """Temporary Zoom/API failure (429, 5xx, network); the caller should retry."""
+
+
+def _zoom_get(url, headers):
+    try:
+        res = requests.get(url, headers=headers, timeout=15)
+    except (requests.Timeout, requests.ConnectionError) as exc:
+        raise ZoomTransientError(f"network error: {exc.__class__.__name__}") from exc
+    if res.status_code == 429 or res.status_code >= 500:
+        raise ZoomTransientError(f"Zoom API HTTP {res.status_code}")
+    return res
 
 
 def encode_zoom_uuid(uuid_str: str) -> str:
@@ -161,11 +189,16 @@ class ZoomAttendanceService:
     @classmethod
     def resolve_student_identity(cls, live_class, participant, meeting_obj):
         """
-        Resolves Zoom participant to a Natya LMS student:
-        1. Exact registrant_id match against LiveClassRegistrant.
-        2. Exact verified email match against students enrolled/assigned to this class.
-        3. Explicit customer_key matching a LiveClassJoinIntent token.
-        Returns student (User) or None (routes to UnmatchedZoomParticipant).
+        Resolves a Zoom participant to an enrolled student using reliable
+        evidence only, in this order:
+          1. registrant_id from a Zoom registrant link;
+          2. customer_key matching this class's join token (reusable, so the
+             live webhook and the post-meeting report both resolve it);
+          3. email that belongs to exactly one enrolled student of this class
+             (several matching accounts -> ambiguous -> review queue);
+          4. a stable Zoom account ID an admin explicitly linked before.
+        Display names and device names are never used. Returns the student or
+        None (the participant then goes to the admin review queue).
         """
         registrant_id = str(participant.get('registrant_id') or '').strip()
         if registrant_id:
@@ -176,39 +209,137 @@ class ZoomAttendanceService:
             if reg:
                 return reg.student
 
-        # Check customer_key if passed by Zoom client
         customer_key = str(participant.get('customer_key') or '').strip()
         if customer_key:
             intent = LiveClassJoinIntent.objects.filter(
                 live_class=live_class,
                 token=customer_key,
-                is_used=False
             ).select_related('student').first()
             if intent:
-                intent.is_used = True
-                intent.used_at = timezone.now()
-                intent.save(update_fields=['is_used', 'used_at'])
+                if not intent.is_used:
+                    intent.is_used = True
+                    intent.used_at = timezone.now()
+                    intent.save(update_fields=['is_used', 'used_at'])
                 return intent.student
 
-        # Check email
-        email = (participant.get('email') or participant.get('user_email') or '').strip()
+        email = participant_email(participant)
         if email and '@' in email:
-            # Must match a user enrolled or assigned to this live class
-            matched_user = User.objects.filter(email__iexact=email).first()
-            if matched_user:
-                is_member = False
-                if live_class.batch and live_class.batch.students.filter(student=matched_user).exists():
-                    is_member = True
-                elif live_class.course and live_class.course.enrollments.filter(user=matched_user).exists():
-                    is_member = True
-                elif matched_user.is_staff or matched_user.is_superuser:
-                    # Instructors/Staff handled separately
-                    return matched_user
+            members = [u for u in User.objects.filter(email__iexact=email) if is_class_member(live_class, u)]
+            if len(members) == 1:
+                return members[0]
+            if len(members) > 1:
+                logger.warning(
+                    f"[ZoomAttendance] LiveClass #{live_class.id}: {len(members)} enrolled accounts share one "
+                    f"participant email; not choosing -- participant goes to review."
+                )
 
-                if is_member:
-                    return matched_user
+        account_id = stable_zoom_account_id(participant)
+        if account_id:
+            link = ZoomIdentityLink.objects.filter(
+                zoom_account_id=account_id, is_ambiguous=False
+            ).select_related('student').first()
+            if link and is_class_member(live_class, link.student):
+                return link.student
 
-        # If identity is ambiguous or phone-only without registrant_id, do NOT guess.
+        return None
+
+    @classmethod
+    def record_unmatched(cls, live_class, participant, *, source, join_time=None, leave_time=None,
+                         duration_seconds=None, is_active=None):
+        """
+        Adds or updates the review-queue record for an unidentified participant.
+        The same person's join seen by the live webhook and later by the report
+        is merged into one record (matched on Zoom participant/account ID and
+        join time), never duplicated.
+
+        Returns (record, linked_student): linked_student is set when an admin
+        already linked this participant in this class, so new evidence for the
+        same join is attributed to that student. IGNORED records stay ignored.
+        """
+        per_meeting_id = per_meeting_participant_id(participant)
+        account_id = stable_zoom_account_id(participant)
+        participant_uuid = str(participant.get('participant_uuid') or participant.get('id') or per_meeting_id or '')
+        name = str(participant.get('user_name') or participant.get('name') or '')
+        email = participant_email(participant)
+        evidence = dict(participant)
+        evidence['_source'] = source
+
+        # Zoom's own participant_uuid (not the fallbacks above) identifies one participant.
+        zoom_participant_uuid = str(participant.get('participant_uuid') or '').strip()
+
+        with transaction.atomic():
+            record = cls._find_unmatched(
+                live_class, participant_uuid, per_meeting_id, account_id, join_time, leave_time,
+                zoom_participant_uuid=zoom_participant_uuid,
+            )
+            if record is None:
+                record = UnmatchedZoomParticipant.objects.create(
+                    live_class=live_class,
+                    zoom_participant_uuid=participant_uuid,
+                    zoom_user_id=per_meeting_id,
+                    participant_name=name,
+                    participant_email=email,
+                    join_time=join_time,
+                    leave_time=leave_time,
+                    duration_seconds=max(0, int(duration_seconds or 0)),
+                    is_active=bool(is_active) if is_active is not None else False,
+                    status=UnmatchedZoomParticipant.Status.PENDING,
+                    raw_evidence=evidence,
+                )
+                logger.info(f"[ZoomAttendance] LiveClass #{live_class.id}: unidentified participant queued for admin review (#{record.id}).")
+                return record, None
+
+            if record.status == UnmatchedZoomParticipant.Status.PENDING:
+                if join_time and (not record.join_time or join_time < record.join_time):
+                    record.join_time = join_time
+                if leave_time and (not record.leave_time or leave_time > record.leave_time):
+                    record.leave_time = leave_time
+                if duration_seconds:
+                    record.duration_seconds = max(record.duration_seconds, int(duration_seconds))
+                elif record.join_time and record.leave_time:
+                    record.duration_seconds = max(record.duration_seconds, int((record.leave_time - record.join_time).total_seconds()))
+                if is_active is not None:
+                    record.is_active = bool(is_active)
+                record.participant_name = record.participant_name or name
+                record.participant_email = record.participant_email or email
+                if not stable_zoom_account_id(record.raw_evidence or {}) and account_id:
+                    merged = dict(record.raw_evidence or {})
+                    merged.setdefault('id', account_id)
+                    record.raw_evidence = merged
+                record.save()
+                return record, None
+
+            if record.status == UnmatchedZoomParticipant.Status.RESOLVED and record.linked_student_id:
+                return record, record.linked_student
+            return record, None  # IGNORED: stays out of attendance and out of the queue
+
+    @classmethod
+    def _find_unmatched(cls, live_class, participant_uuid, per_meeting_id, account_id, join_time, leave_time,
+                        zoom_participant_uuid=""):
+        reference = join_time or leave_time
+
+        def same_join(rec):
+            rec_time = rec.join_time or rec.leave_time
+            if reference is None or rec_time is None or abs(rec_time - reference) <= UNMATCHED_SAME_JOIN_WINDOW:
+                return True
+            # A leave event without a duration closes this participant's open join record.
+            return (
+                join_time is None and leave_time is not None
+                and rec.join_time is not None and rec.leave_time is None and rec.join_time <= leave_time
+            )
+
+        records = list(UnmatchedZoomParticipant.objects.select_for_update().filter(live_class=live_class).order_by('id'))
+        if zoom_participant_uuid:
+            for rec in records:
+                if rec.zoom_participant_uuid == zoom_participant_uuid:
+                    return rec
+        for rec in records:
+            if participant_uuid and rec.zoom_participant_uuid == participant_uuid and same_join(rec):
+                return rec
+            if per_meeting_id and rec.zoom_user_id == per_meeting_id and same_join(rec):
+                return rec
+            if account_id and stable_zoom_account_id(rec.raw_evidence or {}) == account_id and same_join(rec):
+                return rec
         return None
 
     @classmethod
@@ -236,19 +367,21 @@ class ZoomAttendanceService:
         email = str(participant.get('email') or participant.get('user_email') or '')
         join_time = parse_zoom_timestamp(participant.get('join_time') or payload.get('event_ts'))
 
-        # Check if participant is staff/instructor/host
-        instructor = live_class.instructor or (live_class.batch.instructor if live_class.batch else None)
-        if email and instructor and instructor.email and email.lower() == instructor.email.lower():
-            logger.info(f"[ZoomAttendance] Participant is instructor ({user_name}). Skipping student attendance.")
+        # Instructors, staff, host accounts and test accounts: never counted, never queued.
+        reason = participant_exclusion_reason(live_class, participant)
+        if reason:
+            logger.info(f"[ZoomAttendance] LiveClass #{live_class.id}: participant excluded ({reason}).")
             return True
 
         student = cls.resolve_student_identity(live_class, participant, meeting_obj)
-
-        if student:
-            # If student is instructor/staff, skip
-            if student.is_staff or student.is_superuser or (instructor and student == instructor):
+        if student and excluded_user_reason(student, live_class):
+            return True
+        if not student:
+            _, student = cls.record_unmatched(live_class, participant, source="webhook", join_time=join_time, is_active=True)
+            if not student:
                 return True
 
+        if student:
             with transaction.atomic():
                 att, created = Attendance.objects.get_or_create(
                     live_class=live_class,
@@ -302,33 +435,7 @@ class ZoomAttendanceService:
                 att.save()
 
             logger.info(f"[ZoomAttendance] Student #{student.id} joined LiveClass #{live_class.id} (session={session_id})")
-            return True
-        else:
-            # Route to UnmatchedZoomParticipant
-            with transaction.atomic():
-                unmatched, _ = UnmatchedZoomParticipant.objects.get_or_create(
-                    live_class=live_class,
-                    zoom_participant_uuid=participant_uuid,
-                    status=UnmatchedZoomParticipant.Status.PENDING,
-                    defaults={
-                        'zoom_user_id': zoom_user_id,
-                        'participant_name': user_name,
-                        'participant_email': email,
-                        'join_time': join_time,
-                        'is_active': True,
-                        'raw_evidence': participant
-                    }
-                )
-                if not _:
-                    unmatched.is_active = True
-                    if not unmatched.join_time:
-                        unmatched.join_time = join_time
-                    unmatched.participant_name = user_name or unmatched.participant_name
-                    unmatched.participant_email = email or unmatched.participant_email
-                    unmatched.save()
-
-            logger.info(f"[ZoomAttendance] Unmatched participant queued for LiveClass #{live_class.id}: name='{user_name}', uuid='{participant_uuid}'")
-            return True
+        return True
 
     @classmethod
     def handle_participant_left(cls, payload):
@@ -356,16 +463,24 @@ class ZoomAttendanceService:
         leave_time = parse_zoom_timestamp(participant.get('leave_time') or payload.get('event_ts'))
         duration_sec = int(participant.get('duration', 0) or 0)
 
-        instructor = live_class.instructor or (live_class.batch.instructor if live_class.batch else None)
-        if email and instructor and instructor.email and email.lower() == instructor.email.lower():
+        reason = participant_exclusion_reason(live_class, participant)
+        if reason:
+            logger.info(f"[ZoomAttendance] LiveClass #{live_class.id}: participant excluded ({reason}).")
             return True
 
         student = cls.resolve_student_identity(live_class, participant, meeting_obj)
-
-        if student:
-            if student.is_staff or student.is_superuser or (instructor and student == instructor):
+        if student and excluded_user_reason(student, live_class):
+            return True
+        if not student:
+            join_hint = leave_time - datetime.timedelta(seconds=duration_sec) if duration_sec > 0 else None
+            _, student = cls.record_unmatched(
+                live_class, participant, source="webhook", join_time=join_hint, leave_time=leave_time,
+                duration_seconds=duration_sec, is_active=False,
+            )
+            if not student:
                 return True
 
+        if student:
             with transaction.atomic():
                 att, _ = Attendance.objects.get_or_create(
                     live_class=live_class,
@@ -431,109 +546,144 @@ class ZoomAttendanceService:
                 att.save()
 
             logger.info(f"[ZoomAttendance] Student #{student.id} left LiveClass #{live_class.id}. Total duration={att.duration_minutes}m")
-            return True
-        else:
-            # Unmatched participant leave
-            with transaction.atomic():
-                unmatched = UnmatchedZoomParticipant.objects.filter(
-                    live_class=live_class,
-                    zoom_participant_uuid=participant_uuid,
-                    status=UnmatchedZoomParticipant.Status.PENDING
-                ).first()
-                if unmatched:
-                    unmatched.leave_time = leave_time
-                    unmatched.is_active = False
-                    if duration_sec > 0:
-                        unmatched.duration_seconds = max(unmatched.duration_seconds, duration_sec)
-                    elif unmatched.join_time:
-                        unmatched.duration_seconds = max(unmatched.duration_seconds, int((leave_time - unmatched.join_time).total_seconds()))
-                    unmatched.save()
-                else:
-                    UnmatchedZoomParticipant.objects.create(
-                        live_class=live_class,
-                        zoom_participant_uuid=participant_uuid,
-                        zoom_user_id=zoom_user_id,
-                        participant_name=user_name,
-                        participant_email=email,
-                        leave_time=leave_time,
-                        duration_seconds=duration_sec,
-                        is_active=False,
-                        status=UnmatchedZoomParticipant.Status.PENDING,
-                        raw_evidence=participant
-                    )
-            return True
+        return True
 
     @classmethod
-    def fetch_meeting_report(cls, live_class):
+    def _zoom_headers(cls):
+        return {
+            "Authorization": f"Bearer {ZoomService.get_access_token()}",
+            "Content-Type": "application/json",
+        }
+
+    @classmethod
+    def fetch_meeting_report(cls, live_class, meeting_identifier=None):
         """
-        Read-only: fetches the Zoom Past Meeting Participants Report
-        (GET /v2/report/meetings/{meetingId}/participants), following pagination.
-        Returns {"status": "success", "participants": [...]} or
-        {"status": "no_meeting_id" | "not_ready" | "error", ...}. Writes nothing.
+        Read-only: fetches the Zoom Past Meeting Participants Report for one
+        meeting run (GET /v2/report/meetings/{uuid-or-id}/participants),
+        following pagination. Returns {"status": "success", "participants": [...]}
+        or {"status": "no_meeting_id" | "not_ready" | "error", ...}.
+        Raises ZoomTransientError on 429/5xx/network errors. Writes nothing.
         """
-        meeting_identifier = live_class.zoom_uuid or live_class.zoom_meeting_id
+        meeting_identifier = meeting_identifier or live_class.zoom_uuid or live_class.zoom_meeting_id
         if not meeting_identifier:
             logger.warning(f"[ZoomAttendance] LiveClass #{live_class.id} has no zoom_uuid or zoom_meeting_id for reconciliation.")
             return {"status": "no_meeting_id"}
 
         encoded_id = encode_zoom_uuid(meeting_identifier)
-        token = ZoomService.get_access_token()
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-
+        headers = cls._zoom_headers()
         all_participants = []
         next_page_token = ""
-        page_size = 300
-
         while True:
-            url = f"https://api.zoom.us/v2/report/meetings/{encoded_id}/participants?page_size={page_size}"
+            url = f"https://api.zoom.us/v2/report/meetings/{encoded_id}/participants?page_size=300"
             if next_page_token:
                 url += f"&next_page_token={urllib.parse.quote(next_page_token)}"
-
-            res = requests.get(url, headers=headers, timeout=15)
+            res = _zoom_get(url, headers)
             if res.status_code == 404:
-                logger.info(f"[ZoomAttendance] Report not ready yet (404) for meeting {meeting_identifier}.")
+                logger.info(f"[ZoomAttendance] LiveClass #{live_class.id}: report not ready yet (404).")
                 return {"status": "not_ready", "error": "Report not ready yet"}
-            elif res.status_code != 200:
-                logger.warning(f"[ZoomAttendance] Zoom report API returned {res.status_code}: {res.text}")
-                return {"status": "error", "error": res.text}
-
+            if res.status_code != 200:
+                logger.warning(f"[ZoomAttendance] LiveClass #{live_class.id}: Zoom report API returned {res.status_code}.")
+                return {"status": "error", "error": f"Zoom report API HTTP {res.status_code}"}
             data = res.json()
             participants = data.get('participants', [])
             all_participants.extend(participants)
             next_page_token = data.get('next_page_token')
             if not next_page_token or len(participants) == 0:
                 break
-
         return {"status": "success", "participants": all_participants}
+
+    @classmethod
+    def fetch_meeting_instances(cls, live_class):
+        """
+        UUIDs of every run (instance) of the class's meeting that started inside
+        the class window: GET /v2/past_meetings/{meetingId}/instances, merged
+        with runs seen via meeting.started/ended webhooks. Returns
+        (uuids, source). Raises ZoomTransientError on 429/5xx/network errors.
+        """
+        uuids = set(run_state(live_class, refresh=True)["uuids"])
+        source = "webhook" if uuids else ""
+        if live_class.zoom_meeting_id:
+            res = _zoom_get(
+                f"https://api.zoom.us/v2/past_meetings/{encode_zoom_uuid(live_class.zoom_meeting_id)}/instances",
+                cls._zoom_headers(),
+            )
+            if res.status_code == 200:
+                window_start, window_end = class_window(live_class)
+                for inst in (res.json() or {}).get('meetings', []):
+                    start = parse_zoom_timestamp(inst.get('start_time')) if inst.get('start_time') else None
+                    if inst.get('uuid') and start and window_start <= start <= window_end:
+                        uuids.add(inst['uuid'])
+                        source = "instances_api" if source in ("", "instances_api") else "instances_api+webhook"
+            elif res.status_code != 404:
+                logger.warning(f"[ZoomAttendance] LiveClass #{live_class.id}: past-instances API returned {res.status_code}; using fallbacks.")
+        return sorted(uuids), source
+
+    @classmethod
+    def fetch_meeting_reports(cls, live_class):
+        """
+        Reports for every meeting run of the class. Status:
+          success    every run's report was fetched (complete);
+          partial    some runs fetched, some not ready / failed (incomplete);
+          not_ready  no run's report is available yet;
+          error      a permanent API error and nothing fetched;
+          no_meeting_id.
+        Raises ZoomTransientError on 429/5xx/network errors.
+        """
+        if not (live_class.zoom_uuid or live_class.zoom_meeting_id):
+            return {"status": "no_meeting_id"}
+        uuids, source = cls.fetch_meeting_instances(live_class)
+        if not uuids:
+            # No run discovered (instances API unavailable, no webhooks): fall
+            # back to the stored identifier; rows outside the class window are
+            # dropped when applied.
+            uuids, source = [live_class.zoom_uuid or live_class.zoom_meeting_id], "stored_identifier"
+
+        participants, statuses = [], []
+        for uuid in uuids:
+            result = cls.fetch_meeting_report(live_class, meeting_identifier=uuid)
+            statuses.append(result["status"])
+            if result["status"] == "success":
+                participants.extend(result["participants"])
+
+        if all(st == "success" for st in statuses):
+            status = "success"
+        elif "success" in statuses:
+            status = "partial"
+        elif "error" in statuses:
+            status = "error"
+        else:
+            status = "not_ready"
+        return {"status": status, "participants": participants, "runs": len(uuids), "run_source": source}
 
     @classmethod
     def reconcile_meeting_participants(cls, live_class):
         """
-        Reconciles attendance using Zoom Past Meeting Participants Report API:
-        GET /v2/report/meetings/{meetingId}/participants
-        Supports pagination, double-encoded UUIDs, and safe non-destructive evidence recording.
-        Then applies the final automatic classification. Preserves manual admin decisions.
+        Fetches the reports of every meeting run and applies them. Attendance is
+        finalized (ABSENT below threshold) only when every run's report was
+        fetched and no run is still active; otherwise evidence is recorded
+        promote-only and the caller retries. Raises ZoomTransientError on
+        temporary Zoom failures.
         """
-        report = cls.fetch_meeting_report(live_class)
-        if report.get("status") != "success":
+        report = cls.fetch_meeting_reports(live_class)
+        if report["status"] not in ("success", "partial"):
             return report
-        return cls.apply_meeting_report(live_class, report["participants"])
+        result = cls.apply_meeting_report(live_class, report["participants"], complete=report["status"] == "success")
+        result["status"] = report["status"]
+        result["runs"] = report.get("runs")
+        return result
 
     @classmethod
-    def apply_meeting_report(cls, live_class, all_participants, now=None):
+    def apply_meeting_report(cls, live_class, all_participants, now=None, complete=True):
         """
         Records Zoom report rows as REPORT sessions (idempotent: keyed per
-        participant + join time and updated in place), then runs the final
-        classification pass over every attendance row of the class.
+        participant + join time and updated in place), then runs the
+        classification pass over every attendance row of the class. The pass is
+        final (may set ABSENT) only if the report set is complete.
         Re-running with the same report changes nothing.
         """
         now = now or timezone.now()
-        reconciled_count = 0
-        unmatched_count = 0
-        skipped_count = 0
+        reconciled_count = unmatched_count = skipped_count = excluded_count = 0
+        window_start, window_end = class_window(live_class)
 
         for p in all_participants:
             raw_join = p.get('join_time')
@@ -545,7 +695,7 @@ class ZoomAttendanceService:
             # duration and create a new session key on every run.
             if not raw_join:
                 skipped_count += 1
-                logger.warning(f"[ZoomAttendance] LiveClass #{live_class.id}: skipped report row without join_time (participant '{p_uuid}').")
+                logger.warning(f"[ZoomAttendance] LiveClass #{live_class.id}: skipped report row without join_time.")
                 continue
             join_time = parse_zoom_timestamp(raw_join)
             if raw_leave:
@@ -554,105 +704,99 @@ class ZoomAttendanceService:
                 leave_time = join_time + datetime.timedelta(seconds=dur_sec)
             else:
                 skipped_count += 1
-                logger.warning(f"[ZoomAttendance] LiveClass #{live_class.id}: skipped report row without leave_time or duration (participant '{p_uuid}').")
+                logger.warning(f"[ZoomAttendance] LiveClass #{live_class.id}: skipped report row without leave_time or duration.")
+                continue
+            if not (window_start <= join_time <= window_end):
+                skipped_count += 1
+                logger.warning(f"[ZoomAttendance] LiveClass #{live_class.id}: skipped report row outside the class window.")
                 continue
 
+            if participant_exclusion_reason(live_class, p):
+                excluded_count += 1
+                continue
             student = cls.resolve_student_identity(live_class, p, {})
-
-            if student:
-                instructor = live_class.instructor or (live_class.batch.instructor if live_class.batch else None)
-                if student.is_staff or student.is_superuser or (instructor and student == instructor):
+            if student and excluded_user_reason(student, live_class):
+                excluded_count += 1
+                continue
+            if not student:
+                _, student = cls.record_unmatched(
+                    live_class, p, source="report", join_time=join_time, leave_time=leave_time,
+                    duration_seconds=dur_sec, is_active=False,
+                )
+                if not student:
+                    unmatched_count += 1
                     continue
 
-                with transaction.atomic():
-                    att, _ = Attendance.objects.get_or_create(
-                        live_class=live_class,
-                        student=student,
-                        defaults={'status': Attendance.Status.ABSENT}
-                    )
+            with transaction.atomic():
+                att, _ = Attendance.objects.get_or_create(
+                    live_class=live_class,
+                    student=student,
+                    defaults={'status': Attendance.Status.ABSENT}
+                )
+                session_id = f"report:{live_class.id}:{student.id}:{p_uuid}:{int(join_time.timestamp())}"
+                AttendanceSession.objects.update_or_create(
+                    session_id=session_id,
+                    defaults={
+                        'attendance': att,
+                        'zoom_participant_uuid': p_uuid,
+                        'zoom_user_id': str(p.get('user_id') or ''),
+                        'zoom_registrant_id': str(p.get('registrant_id') or ''),
+                        'join_time': join_time,
+                        'leave_time': leave_time,
+                        'duration_seconds': dur_sec,
+                        'is_active': False,
+                        'source': AttendanceSession.Source.REPORT,
+                        'raw_evidence': p
+                    }
+                )
+                # Recalculated from the stored REPORT sessions (not incremented),
+                # so reprocessing the same report never inflates it.
+                att.zoom_reported_duration_seconds = (
+                    att.sessions.filter(source=AttendanceSession.Source.REPORT)
+                    .aggregate(total=Sum('duration_seconds'))['total'] or 0
+                )
+                if not att.first_joined_at or join_time < att.first_joined_at:
+                    att.first_joined_at = join_time
+                if not att.last_left_at or leave_time > att.last_left_at:
+                    att.last_left_at = leave_time
+                # Duration from the union of all sessions (protects manual duration
+                # override); promote-only here, the final pass below may demote.
+                apply_automatic_attendance(att, final=False, now=now)
+                att.reconciliation_status = 'RECONCILED'
+                att.reconciled_at = now
+                att.save()
+            reconciled_count += 1
 
-                    # Create report session record
-                    session_id = f"report:{live_class.id}:{student.id}:{p_uuid}:{int(join_time.timestamp())}"
-                    AttendanceSession.objects.update_or_create(
-                        session_id=session_id,
-                        defaults={
-                            'attendance': att,
-                            'zoom_participant_uuid': p_uuid,
-                            'zoom_user_id': str(p.get('user_id') or ''),
-                            'zoom_registrant_id': str(p.get('registrant_id') or ''),
-                            'join_time': join_time,
-                            'leave_time': leave_time,
-                            'duration_seconds': dur_sec,
-                            'is_active': False,
-                            'source': AttendanceSession.Source.REPORT,
-                            'raw_evidence': p
-                        }
-                    )
-
-                    # Recalculated from the stored REPORT sessions (not incremented),
-                    # so reprocessing the same report never inflates it.
-                    att.zoom_reported_duration_seconds = (
-                        att.sessions.filter(source=AttendanceSession.Source.REPORT)
-                        .aggregate(total=Sum('duration_seconds'))['total'] or 0
-                    )
-                    if not att.first_joined_at or join_time < att.first_joined_at:
-                        att.first_joined_at = join_time
-                    if not att.last_left_at or leave_time > att.last_left_at:
-                        att.last_left_at = leave_time
-
-                    # Duration from the union of all sessions (protects manual duration
-                    # override); promote-only here, the final pass below may demote.
-                    apply_automatic_attendance(att, final=False, now=now)
-                    att.reconciliation_status = 'RECONCILED'
-                    att.reconciled_at = now
-                    att.save()
-
-                reconciled_count += 1
-            else:
-                unmatched_count += 1
-                with transaction.atomic():
-                    UnmatchedZoomParticipant.objects.get_or_create(
-                        live_class=live_class,
-                        zoom_participant_uuid=p_uuid,
-                        join_time=join_time,
-                        defaults={
-                            'zoom_user_id': str(p.get('user_id') or ''),
-                            'participant_name': str(p.get('name') or ''),
-                            'participant_email': str(p.get('user_email') or ''),
-                            'leave_time': leave_time,
-                            'duration_seconds': dur_sec,
-                            'is_active': False,
-                            'status': UnmatchedZoomParticipant.Status.PENDING,
-                            'raw_evidence': p
-                        }
-                    )
-
-        classification = cls.finalize_attendance(live_class, now=now)
+        classification = cls.finalize_attendance(live_class, now=now, complete=complete)
 
         logger.info(
-            f"[ZoomAttendance] Reconciled LiveClass #{live_class.id}: "
-            f"{reconciled_count} matched, {unmatched_count} unmatched, {skipped_count} skipped, "
-            f"{len(all_participants)} total. Classification: {classification}"
+            f"[ZoomAttendance] Reconciled LiveClass #{live_class.id}: {reconciled_count} matched, "
+            f"{unmatched_count} unmatched, {excluded_count} excluded, {skipped_count} skipped, "
+            f"{len(all_participants)} rows, complete={complete}. Classification: {classification}"
         )
         return {
             "status": "success",
             "reconciled": reconciled_count,
             "unmatched": unmatched_count,
+            "excluded": excluded_count,
             "skipped": skipped_count,
             "total_records": len(all_participants),
+            "complete": complete,
             "classification": classification,
         }
 
     @classmethod
-    def finalize_attendance(cls, live_class, now=None):
+    def finalize_attendance(cls, live_class, now=None, complete=True):
         """
-        Final classification pass over every attendance row of a class, after
-        report reconciliation: PRESENT at/above threshold, ABSENT below it.
-        Manual status/duration overrides are preserved. While the class is still
-        in progress nothing is demoted (promote-only) and rows stay unreconciled.
+        Classification pass over every attendance row of a class: PRESENT at or
+        above the threshold; ABSENT below it only when the report set is
+        complete and no meeting run is still active (final). Manual
+        status/duration overrides are preserved. A final pass stamps
+        LiveClass.attendance_finalized_at.
         """
         now = now or timezone.now()
-        final = not is_class_in_progress(live_class, now)
+        run_state(live_class, now, refresh=True)
+        final = bool(complete) and not is_class_in_progress(live_class, now)
         meeting_end_estimate(live_class, refresh=True)
         counts = {"final": final, "present": 0, "absent": 0, "other": 0, "changed": 0, "manual": 0}
 
@@ -682,82 +826,128 @@ class ZoomAttendanceService:
                 counts["absent"] += 1
             else:
                 counts["other"] += 1
+
+        if final:
+            live_class.attendance_finalized_at = now
+            live_class.save(update_fields=['attendance_finalized_at'])
         return counts
 
     @classmethod
     def link_unmatched_participant(cls, unmatched_id, student_id, admin_user):
         """
-        Manually links an UnmatchedZoomParticipant to a student.
-        Uses database row locking (select_for_update) to prevent concurrent resolution races.
-        Preserves original evidence and updates duration without overwriting manual status.
+        Manually links an UnmatchedZoomParticipant to a student (row-locked
+        against concurrent resolution). Also:
+          * refuses instructors, staff and test accounts;
+          * links other pending queue records of the same Zoom participant in
+            this class (webhook vs. report evidence of the same join);
+          * learns the participant's stable Zoom account ID (signed-in users
+            only) for future classes; a conflicting earlier link makes that
+            Zoom account ambiguous so it is never auto-matched again.
+        Status is only demoted to ABSENT once the class's attendance has been
+        finalized from a complete report.
         """
         with transaction.atomic():
             unmatched = UnmatchedZoomParticipant.objects.select_for_update().get(id=unmatched_id)
             if unmatched.status == UnmatchedZoomParticipant.Status.RESOLVED:
                 raise ValueError("This participant has already been linked by another administrator.")
+            if unmatched.status == UnmatchedZoomParticipant.Status.IGNORED:
+                raise ValueError("This participant was ignored by an administrator.")
 
             student = User.objects.get(id=student_id)
             live_class = unmatched.live_class
-
-            # Verify student belongs to this batch/class
-            is_valid_student = False
-            if live_class.batch and live_class.batch.students.filter(student=student).exists():
-                is_valid_student = True
-            elif live_class.course and live_class.course.enrollments.filter(user=student).exists():
-                is_valid_student = True
-
-            if not is_valid_student:
+            if not is_class_member(live_class, student):
                 raise ValueError("Student is not enrolled or assigned to this live class.")
+            if excluded_user_reason(student, live_class):
+                raise ValueError("Instructors, staff and test accounts cannot be linked as students.")
 
-            # Concurrency-safe row locking on Attendance to prevent race conditions
             att = Attendance.objects.filter(live_class=live_class, student=student).select_for_update().first()
             if not att:
                 try:
                     with transaction.atomic():
-                        att = Attendance.objects.create(
-                            live_class=live_class,
-                            student=student,
-                            status=Attendance.Status.ABSENT
-                        )
+                        att = Attendance.objects.create(live_class=live_class, student=student, status=Attendance.Status.ABSENT)
                 except IntegrityError:
                     att = Attendance.objects.filter(live_class=live_class, student=student).select_for_update().first()
 
-            join_time = unmatched.join_time or timezone.now()
-            leave_time = unmatched.leave_time
-            dur_sec = unmatched.duration_seconds
-            session_id = f"manual:{unmatched.id}:{student.id}:{int(join_time.timestamp())}"
-
-            AttendanceSession.objects.update_or_create(
-                session_id=session_id,
-                defaults={
-                    'attendance': att,
-                    'zoom_participant_uuid': unmatched.zoom_participant_uuid,
-                    'zoom_user_id': unmatched.zoom_user_id,
-                    'join_time': join_time,
-                    'leave_time': leave_time,
-                    'duration_seconds': dur_sec,
-                    'is_active': unmatched.is_active,
-                    'source': AttendanceSession.Source.MANUAL,
-                    'raw_evidence': unmatched.raw_evidence
-                }
-            )
-
-            if not att.first_joined_at or join_time < att.first_joined_at:
-                att.first_joined_at = join_time
-            if leave_time and (not att.last_left_at or leave_time > att.last_left_at):
-                att.last_left_at = leave_time
+            evidence = unmatched.raw_evidence or {}
+            account_id = stable_zoom_account_id(evidence)
+            records = [unmatched] + cls._same_participant_pending(live_class, unmatched, account_id)
+            now = timezone.now()
+            for rec in records:
+                join_time = rec.join_time or rec.leave_time or now
+                AttendanceSession.objects.update_or_create(
+                    session_id=f"manual:{rec.id}:{student.id}:{int(join_time.timestamp())}",
+                    defaults={
+                        'attendance': att,
+                        'zoom_participant_uuid': rec.zoom_participant_uuid,
+                        'zoom_user_id': rec.zoom_user_id,
+                        'join_time': join_time,
+                        'leave_time': rec.leave_time,
+                        'duration_seconds': rec.duration_seconds,
+                        'is_active': rec.is_active,
+                        'source': AttendanceSession.Source.MANUAL,
+                        'raw_evidence': rec.raw_evidence,
+                    }
+                )
+                if not att.first_joined_at or join_time < att.first_joined_at:
+                    att.first_joined_at = join_time
+                if rec.leave_time and (not att.last_left_at or rec.leave_time > att.last_left_at):
+                    att.last_left_at = rec.leave_time
+                rec.status = UnmatchedZoomParticipant.Status.RESOLVED
+                rec.linked_student = student
+                rec.resolved_by = admin_user
+                rec.resolved_at = now
+                rec.save()
 
             att.is_currently_in_class = att.sessions.filter(is_active=True).exists()
-            # Linking adds evidence after the fact: classify with the final rules
-            # (ABSENT below threshold only once the class is no longer running).
-            apply_automatic_attendance(att, final=True)
+            apply_automatic_attendance(att, final=bool(live_class.attendance_finalized_at))
             att.save()
 
-            unmatched.status = UnmatchedZoomParticipant.Status.RESOLVED
-            unmatched.linked_student = student
-            unmatched.resolved_by = admin_user
-            unmatched.resolved_at = timezone.now()
-            unmatched.save()
+            learned = None
+            if account_id:
+                link, created = ZoomIdentityLink.objects.select_for_update().get_or_create(
+                    zoom_account_id=account_id,
+                    defaults={'student': student, 'created_by': admin_user, 'source_live_class': live_class},
+                )
+                if not created and link.student_id != student.id and not link.is_ambiguous:
+                    link.is_ambiguous = True
+                    link.save(update_fields=['is_ambiguous', 'updated_at'])
+                    logger.warning(f"[ZoomAttendance] Zoom account linked to two different students; marked ambiguous (link #{link.id}).")
+                learned = "ambiguous" if link.is_ambiguous else ("learned" if created else "existing")
 
-            logger.info(f"[ZoomAttendance] Unmatched #{unmatched_id} successfully linked to Student #{student_id} by {admin_user.username}")
+            unmatched.learned_identity = learned
+            logger.info(f"[ZoomAttendance] Unmatched #{unmatched_id} linked to Student #{student_id} by admin #{admin_user.id} (identity={learned}).")
             return att, unmatched
+
+    @classmethod
+    def _same_participant_pending(cls, live_class, unmatched, account_id):
+        def near(a, b):
+            return a is None or b is None or abs(a - b) <= UNMATCHED_SAME_JOIN_WINDOW
+
+        ref = unmatched.join_time or unmatched.leave_time
+        same = []
+        for rec in UnmatchedZoomParticipant.objects.select_for_update().filter(
+            live_class=live_class, status=UnmatchedZoomParticipant.Status.PENDING
+        ).exclude(pk=unmatched.pk):
+            rec_time = rec.join_time or rec.leave_time
+            if not near(rec_time, ref):
+                continue
+            if (account_id and stable_zoom_account_id(rec.raw_evidence or {}) == account_id) or (
+                unmatched.zoom_user_id and rec.zoom_user_id == unmatched.zoom_user_id
+            ) or (unmatched.zoom_participant_uuid and rec.zoom_participant_uuid == unmatched.zoom_participant_uuid):
+                same.append(rec)
+        return same
+
+    @classmethod
+    def ignore_unmatched_participant(cls, unmatched_id, admin_user):
+        """Admin dismisses a queue record (e.g. a guest or a teacher's second device)."""
+        with transaction.atomic():
+            unmatched = UnmatchedZoomParticipant.objects.select_for_update().get(id=unmatched_id)
+            if unmatched.status == UnmatchedZoomParticipant.Status.RESOLVED:
+                raise ValueError("This participant has already been linked to a student.")
+            if unmatched.status != UnmatchedZoomParticipant.Status.IGNORED:
+                unmatched.status = UnmatchedZoomParticipant.Status.IGNORED
+                unmatched.resolved_by = admin_user
+                unmatched.resolved_at = timezone.now()
+                unmatched.save(update_fields=['status', 'resolved_by', 'resolved_at', 'updated_at'])
+            logger.info(f"[ZoomAttendance] Unmatched #{unmatched_id} ignored by admin #{admin_user.id}.")
+            return unmatched

@@ -112,7 +112,8 @@ class ZoomAttendanceV2TestCase(TestCase):
             'content_type': 'application/json'
         }
 
-    # Test 1: Student with email joins successfully (Path A)
+    # Test 1: Student with email joins successfully (Path A, registration explicitly enabled)
+    @override_settings(ZOOM_ATTENDANCE_USE_REGISTRATION=True)
     @patch('courses.services.zoom.ZoomService.get_access_token', return_value='mock_zoom_token')
     @patch('requests.post')
     def test_01_student_with_email_joins_successfully(self, mock_post, mock_token):
@@ -588,7 +589,8 @@ class ZoomAttendanceV2TestCase(TestCase):
         }
         mock_get.side_effect = [mock_res1, mock_res2]
 
-        result = ZoomAttendanceService.reconcile_meeting_participants(self.live_class)
+        with patch.object(ZoomAttendanceService, "fetch_meeting_instances", return_value=([self.live_class.zoom_uuid], "test")):
+            result = ZoomAttendanceService.reconcile_meeting_participants(self.live_class)
         self.assertEqual(result.get("status"), "success")
         self.assertEqual(result.get("total_records"), 2)
         self.assertEqual(result.get("reconciled"), 1)
@@ -949,7 +951,8 @@ class ZoomAttendanceV2TestCase(TestCase):
         self.assertIn("%252B", encode_zoom_uuid(uuid_plus))
         self.assertIn("%252F", encode_zoom_uuid(uuid_plus))
 
-    # Test 27: Auto-completed class triggers reconciliation task
+    # Test 27: Auto-completed class triggers reconciliation task (class is after the automation start)
+    @override_settings(ZOOM_ATTENDANCE_AUTOMATION_START="2000-01-01T00:00:00+00:00")
     @patch('courses.tasks.reconcile_zoom_attendance_task.apply_async')
     def test_27_auto_completed_class_schedules_reconciliation(self, mock_apply_async):
         from courses.views import LiveClassViewSet

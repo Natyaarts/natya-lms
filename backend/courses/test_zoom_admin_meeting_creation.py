@@ -600,6 +600,8 @@ class ProvisionedClassWebhookTests(_AdminZoomFixture, TestCase):
         att = Attendance.objects.get(live_class=self.lc, student=self.student)
         self.assertTrue(att.is_currently_in_class)
 
+    # Automatic reconciliation requires ZOOM_ATTENDANCE_AUTOMATION_START (class must be on/after it).
+    @override_settings(ZOOM_ATTENDANCE_AUTOMATION_START="2000-01-01T00:00:00+00:00")
     def test_meeting_ended_schedules_attendance_reconciliation(self):
         with mock.patch("courses.tasks.reconcile_zoom_attendance_task.apply_async") as reconcile:
             res = self._post_webhook({

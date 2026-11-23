@@ -660,6 +660,7 @@ CELERY_TASK_ROUTES = {
     'courses.tasks.generate_dubbed_audio_task': {'queue': 'recordings'},
     'courses.tasks.send_class_reminder': {'queue': 'notifications'},
     'courses.tasks.reconcile_zoom_attendance_task': {'queue': 'notifications'},
+    'courses.tasks.zoom_attendance_catch_up_task': {'queue': 'notifications'},
     'courses.tasks.process_zoom_participant_webhook_task': {'queue': 'notifications'},
     'notifications.tasks.send_live_class_whatsapp_task': {'queue': 'notifications'},
     'billing.tasks.billing_daily_automation': {'queue': 'notifications'},
@@ -688,6 +689,12 @@ CELERY_BEAT_SCHEDULE = {
     'zoom-provisioning-watchdog': {
         'task': 'courses.tasks.zoom_provisioning_watchdog_task',
         'schedule': crontab(minute='*/5'),  # Run every 5 minutes
+    },
+    # Zoom attendance catch-up: reconciles recently ended classes whose
+    # attendance is not finalized yet. A no-op while ENABLE_ZOOM_ATTENDANCE_V2 is off.
+    'zoom-attendance-catch-up': {
+        'task': 'courses.tasks.zoom_attendance_catch_up_task',
+        'schedule': crontab(minute='*/30'),
     },
 }
 if not (IS_STAGING and not (os.environ.get('ENABLE_STAGING_BILLING_AUTOMATION', 'False').lower() in ('true', '1', 'yes'))):
@@ -1009,6 +1016,25 @@ ZOOM_CLIENT_ID = os.environ.get('ZOOM_CLIENT_ID', '').strip()
 ZOOM_CLIENT_SECRET = os.environ.get('ZOOM_CLIENT_SECRET', '').strip()
 ZOOM_WEBHOOK_SECRET_TOKEN = os.environ.get('ZOOM_WEBHOOK_SECRET_TOKEN', '').strip()
 ENABLE_ZOOM_ATTENDANCE_V2 = os.environ.get('ENABLE_ZOOM_ATTENDANCE_V2', 'False').strip().lower() in ('true', '1', 'yes')
+
+# Zoom attendance: accounts never counted as students and never sent to the
+# unmatched-participant review queue. Comma-separated; the user-ID default is
+# the protected personal/test accounts.
+ZOOM_ATTENDANCE_EXCLUDED_USER_IDS = frozenset(
+    int(v) for v in os.environ.get('ZOOM_ATTENDANCE_EXCLUDED_USER_IDS', '1,25,39,96').split(',') if v.strip().isdigit()
+)
+ZOOM_ATTENDANCE_EXCLUDED_EMAILS = frozenset(
+    v.strip().lower() for v in os.environ.get('ZOOM_ATTENDANCE_EXCLUDED_EMAILS', '').split(',') if '@' in v
+)
+# Option B (no Zoom registration): the per-join registrants API call is off,
+# because it can only fail on meetings without registration enabled.
+ZOOM_ATTENDANCE_USE_REGISTRATION = os.environ.get('ZOOM_ATTENDANCE_USE_REGISTRATION', 'False').strip().lower() in ('true', '1', 'yes')
+# Automatic attendance reconciliation (catch-up, auto-complete, meeting.ended)
+# only runs for classes scheduled at or after this moment. ISO 8601 with an
+# explicit UTC offset, e.g. 2026-11-25T00:00:00+05:30. Missing or invalid ->
+# automatic reconciliation does nothing. Manual Sync and the
+# recover_zoom_attendance command are not affected.
+ZOOM_ATTENDANCE_AUTOMATION_START = os.environ.get('ZOOM_ATTENDANCE_AUTOMATION_START', '').strip()
 
 # ---------------------------------------------------------------------------
 # Academy Billing & Receipt Tax Metadata (Configuration-Driven)

@@ -35,15 +35,38 @@ def scheduled_end(live_class):
     return live_class.scheduled_start + datetime.timedelta(minutes=live_class.duration_minutes or 60)
 
 
+# Without Zoom meeting events, a LIVE class whose status was never flipped
+# (auto-complete only runs on list views) stops counting as in progress this
+# long after its scheduled end, so attendance can still be finalized.
+LIVE_STATUS_MAX_OVERRUN = datetime.timedelta(hours=3)
+
+
 def is_class_in_progress(live_class, now=None):
-    """True while the class is running: status LIVE, or SCHEDULED inside its scheduled window."""
+    """
+    True while the class may still be running, so attendance must not be
+    finalized (nobody is marked ABSENT):
+      * any Zoom run of the class is active (started, not ended) -- even if
+        the class is marked completed, e.g. the teacher restarted the meeting;
+      * otherwise, if Zoom reported a run as ended, the class has ended;
+      * without meeting events: LIVE until a grace period after the scheduled
+        end, or SCHEDULED inside its scheduled window.
+    """
     from courses.models import LiveClass
+    from courses.services.zoom_meeting_runs import run_state
 
     now = now or timezone.now()
-    if live_class.status == LiveClass.ClassStatus.LIVE:
+    state = run_state(live_class, now)
+    if state["active"]:
         return True
+    if live_class.status in (LiveClass.ClassStatus.COMPLETED, LiveClass.ClassStatus.CANCELLED):
+        return False
+    if state["ended"]:
+        return False
+    end = scheduled_end(live_class)
+    if live_class.status == LiveClass.ClassStatus.LIVE:
+        return end is None or now < end + LIVE_STATUS_MAX_OVERRUN
     if live_class.status == LiveClass.ClassStatus.SCHEDULED and live_class.scheduled_start:
-        return live_class.scheduled_start <= now < scheduled_end(live_class)
+        return live_class.scheduled_start <= now < end
     return False
 
 

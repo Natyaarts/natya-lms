@@ -524,3 +524,15 @@ class ZoomWebhookEventAdmin(admin.ModelAdmin):
         'received_at',
     )
 
+
+from .models import ZoomIdentityLink
+
+
+@admin.register(ZoomIdentityLink)
+class ZoomIdentityLinkAdmin(admin.ModelAdmin):
+    """Learned Zoom identities (admin-confirmed). Delete a row to stop auto-matching that Zoom account."""
+    list_display = ('id', 'zoom_account_id', 'student', 'is_ambiguous', 'created_by', 'source_live_class', 'created_at')
+    list_filter = ('is_ambiguous',)
+    search_fields = ('zoom_account_id', 'student__username')
+    raw_id_fields = ('student', 'created_by', 'source_live_class')
+    readonly_fields = ('zoom_account_id', 'created_by', 'source_live_class', 'created_at', 'updated_at')

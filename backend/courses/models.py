@@ -362,6 +362,11 @@ class LiveClass(models.Model):
         db_index=True,
         help_text="Latest Zoom meeting instance UUID."
     )
+    attendance_finalized_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When Zoom attendance was last finalized from a complete post-meeting report.",
+    )
     recording_status = models.CharField(
         max_length=20,
         choices=RecordingStatus.choices,
@@ -944,6 +949,53 @@ class UnmatchedZoomParticipant(models.Model):
 
     def __str__(self):
         return f"{self.participant_name or self.zoom_participant_uuid} ({self.status}) for {self.live_class.title}"
+
+
+class ZoomIdentityLink(models.Model):
+    """
+    Learned identity: a stable Zoom account ID (present only for participants
+    signed in to Zoom) that an admin explicitly linked to a student. Used to
+    recognise the same signed-in Zoom account in later classes. Display names
+    and device names are never stored or matched here.
+
+    If the same Zoom account is ever linked to a different student (e.g. a
+    shared family account), the link is marked ambiguous and is no longer used
+    for automatic matching.
+    """
+    zoom_account_id = models.CharField(max_length=128, unique=True, db_index=True)
+    student = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="zoom_identity_links",
+    )
+    is_ambiguous = models.BooleanField(
+        default=False,
+        help_text="Linked to more than one student; never used for automatic matching.",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_zoom_identity_links",
+    )
+    source_live_class = models.ForeignKey(
+        LiveClass,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Zoom Identity Link"
+        verbose_name_plural = "Zoom Identity Links"
+
+    def __str__(self):
+        flag = " (ambiguous)" if self.is_ambiguous else ""
+        return f"Zoom account {self.zoom_account_id} -> user #{self.student_id}{flag}"
 
 
 class LiveClassJoinIntent(models.Model):

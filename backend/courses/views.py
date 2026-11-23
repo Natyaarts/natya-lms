@@ -1701,8 +1701,9 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 lc.save(update_fields=['status'])
                 self._auto_populate_attendance(lc)
                 if getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False) and lc.meeting_provider == LiveClass.MeetingProvider.ZOOM and (lc.zoom_uuid or lc.zoom_meeting_id):
-                    already_reconciled = lc.attendance_records.filter(reconciliation_status='RECONCILED').exists()
-                    if not already_reconciled:
+                    from courses.services.attendance_automation import automatic_reconciliation_allowed
+                    # Classes before ZOOM_ATTENDANCE_AUTOMATION_START are never reconciled automatically.
+                    if not lc.attendance_finalized_at and automatic_reconciliation_allowed(lc):
                         try:
                             from courses.tasks import reconcile_zoom_attendance_task
                             reconcile_zoom_attendance_task.apply_async(args=[lc.id], countdown=900)
@@ -2579,26 +2580,24 @@ class LiveClassViewSet(viewsets.ModelViewSet):
             # Identify suggested enrolled student for admin convenience (without auto-linking)
             suggested_id = None
             suggested_reason = None
+            # A suggestion only (the admin still confirms). Never based on display
+            # or device names; a join click counts only when exactly one student
+            # clicked Join around this participant's join time.
             if u.join_time:
                 from datetime import timedelta
                 from courses.models import LiveClassJoinIntent
-                intent = LiveClassJoinIntent.objects.filter(
-                    live_class=live_class,
-                    created_at__gte=u.join_time - timedelta(minutes=15),
-                    created_at__lte=u.join_time + timedelta(minutes=15)
-                ).select_related('student').first()
-                if intent:
+                intents = list(
+                    LiveClassJoinIntent.objects.filter(
+                        live_class=live_class,
+                        created_at__gte=u.join_time - timedelta(minutes=15),
+                        created_at__lte=u.join_time + timedelta(minutes=15),
+                    ).select_related('student')
+                )
+                distinct_students = {i.student_id for i in intents}
+                if len(distinct_students) == 1:
+                    intent = intents[0]
                     suggested_id = intent.student.id
-                    suggested_reason = f"Clicked 'Join Class' at {intent.created_at.strftime('%H:%M')}"
-
-            if not suggested_id and u.participant_name:
-                u_clean = u.participant_name.strip().lower()
-                for s_item in students_data:
-                    s_name = s_item["student_name"].lower()
-                    if s_name and (s_name in u_clean or u_clean in s_name):
-                        suggested_id = s_item["student_id"]
-                        suggested_reason = f"Name match with {s_item['student_name']}"
-                        break
+                    suggested_reason = f"Only student who clicked 'Join Class' around then ({intent.created_at.strftime('%H:%M')})"
 
             unmatched_data.append({
                 "id": u.id,
@@ -2686,6 +2685,9 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 {"error": "Both unmatched_id and student_id are required."},
                 status=drf_status.HTTP_400_BAD_REQUEST
             )
+        # The queue record must belong to this class (no cross-class linking by id).
+        if not UnmatchedZoomParticipant.objects.filter(id=unmatched_id, live_class=live_class).exists():
+            return Response({"error": "Unmatched participant not found."}, status=drf_status.HTTP_404_NOT_FOUND)
 
         try:
             att, unmatched = ZoomAttendanceService.link_unmatched_participant(
@@ -2697,7 +2699,9 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 "status": "success",
                 "message": f"Successfully linked {unmatched.participant_name or unmatched.zoom_participant_uuid} to {att.student.username}",
                 "attendance_id": att.id,
-                "duration_minutes": att.duration_minutes
+                "duration_minutes": att.duration_minutes,
+                "attendance_status": att.status,
+                "learned_identity": getattr(unmatched, "learned_identity", None),
             }, status=drf_status.HTTP_200_OK)
         except UnmatchedZoomParticipant.DoesNotExist:
             return Response({"error": "Unmatched participant not found."}, status=drf_status.HTTP_404_NOT_FOUND)
@@ -2708,6 +2712,37 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.error(f"[LinkUnmatched] Error linking participant #{unmatched_id}: {e}", exc_info=True)
             return Response({"error": "Failed to link participant."}, status=drf_status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path='attendance/ignore-unmatched')
+    def ignore_unmatched(self, request, pk=None):
+        """
+        Dismiss an unmatched Zoom participant from the review queue (e.g. a
+        guest, an observer or a teacher's second device). Never counted.
+        """
+        from courses.services.zoom_attendance import ZoomAttendanceService
+        from courses.models import UnmatchedZoomParticipant
+
+        live_class = self.get_object()
+        user = request.user
+        is_manager = bool(
+            user.is_superuser
+            or user.is_staff
+            or (live_class.batch and live_class.batch.instructor == user)
+            or live_class.instructor == user
+        )
+        if not is_manager:
+            return Response(
+                {"detail": "Only the instructor or admin can ignore unmatched participants."},
+                status=drf_status.HTTP_403_FORBIDDEN
+            )
+        unmatched_id = request.data.get('unmatched_id')
+        if not unmatched_id or not UnmatchedZoomParticipant.objects.filter(id=unmatched_id, live_class=live_class).exists():
+            return Response({"error": "Unmatched participant not found."}, status=drf_status.HTTP_404_NOT_FOUND)
+        try:
+            unmatched = ZoomAttendanceService.ignore_unmatched_participant(unmatched_id=unmatched_id, admin_user=user)
+        except ValueError as val_err:
+            return Response({"error": str(val_err)}, status=drf_status.HTTP_400_BAD_REQUEST)
+        return Response({"status": "ignored", "unmatched_id": unmatched.id}, status=drf_status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='attendance/reconcile')
     def reconcile_attendance(self, request, pk=None):
@@ -2735,7 +2770,14 @@ class LiveClassViewSet(viewsets.ModelViewSet):
                 status=drf_status.HTTP_200_OK
             )
 
-        result = ZoomAttendanceService.reconcile_meeting_participants(live_class)
+        from courses.services.zoom_attendance import ZoomTransientError
+        try:
+            result = ZoomAttendanceService.reconcile_meeting_participants(live_class)
+        except ZoomTransientError as exc:
+            return Response(
+                {"status": "retry_later", "message": f"Zoom is temporarily unavailable ({exc}). Please try again in a few minutes."},
+                status=drf_status.HTTP_200_OK,
+            )
         return Response(result, status=drf_status.HTTP_200_OK)
 
     @action(detail=True, methods=['get', 'post', 'patch'], url_path='attendance-threshold')
@@ -2961,7 +3003,11 @@ class LiveClassViewSet(viewsets.ModelViewSet):
 
         # Path A: Register with Zoom if valid email and feature flag enabled
         registrant = None
-        if getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False) and user.email and '@' in user.email:
+        if (
+            getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False)
+            and getattr(settings, 'ZOOM_ATTENDANCE_USE_REGISTRATION', False)
+            and user.email and '@' in user.email
+        ):
             try:
                 registrant = ZoomAttendanceService.register_student_for_meeting(live_class, user)
             except Exception as reg_err:
@@ -4640,7 +4686,10 @@ class ZoomWebhookView(APIView):
                 except Exception as comp_err:
                     logger.warning(f"[ZoomWebhook] Failed to complete reservation for LiveClass #{live_class.id} on meeting.ended: {comp_err}")
 
-            if live_class and getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False):
+            from courses.services.attendance_automation import automatic_reconciliation_allowed
+            if live_class and getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False) and not automatic_reconciliation_allowed(live_class):
+                logger.info(f"[ZoomWebhook] LiveClass #{live_class.id} is before ZOOM_ATTENDANCE_AUTOMATION_START (or it is not set); no automatic reconciliation.")
+            elif live_class and getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False):
                 from courses.tasks import reconcile_zoom_attendance_task
                 try:
                     reconcile_zoom_attendance_task.apply_async(args=[live_class.id], countdown=900)

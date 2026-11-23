@@ -141,11 +141,13 @@ class Command(BaseCommand):
             return entry
 
         try:
-            fetched = ZoomAttendanceService.fetch_meeting_report(live_class)
+            # Every meeting run (restarts) of the class; read-only GETs.
+            fetched = ZoomAttendanceService.fetch_meeting_reports(live_class)
         except Exception as exc:
-            entry.update(result="error_fetching_report", error=str(exc))
+            entry.update(result="error_fetching_report", error=str(exc)[:300])
             return entry
-        if fetched.get("status") != "success":
+        entry.update(meeting_runs=fetched.get("runs"), report_status=fetched.get("status"))
+        if fetched.get("status") not in ("success", "partial"):
             entry.update(result=f"report_{fetched.get('status')}", error=str(fetched.get("error", ""))[:300])
             return entry
 
@@ -162,7 +164,11 @@ class Command(BaseCommand):
         unmatched_before = _pending_unmatched(live_class)
         try:
             with transaction.atomic():
-                result = ZoomAttendanceService.apply_meeting_report(live_class, participants)
+                # Incomplete report sets (some runs not ready) are applied promote-only:
+                # nobody is marked ABSENT from partial evidence.
+                result = ZoomAttendanceService.apply_meeting_report(
+                    live_class, participants, complete=fetched.get("status") == "success"
+                )
                 after = _snapshot(live_class)
                 unmatched_after = _pending_unmatched(live_class)
                 if not apply or out_of_window:
@@ -218,6 +224,7 @@ class Command(BaseCommand):
             w(f"    error: {e['error']}")
         if "students" not in e:
             return
+        w(f"    meeting runs={e.get('meeting_runs')} report={e.get('report_status')}")
         w(f"    report rows={e['report_rows']} matched={e['matched_rows']} unmatched={e['unmatched_rows']} "
           f"skipped={e['skipped_rows']} out_of_window={e['report_rows_out_of_window']}")
         c = e.get("classification") or {}
