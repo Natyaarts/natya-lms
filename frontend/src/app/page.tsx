@@ -6,6 +6,7 @@ import { motion, useScroll, useTransform, useMotionValue, useSpring, useMotionTe
 import { useState, useEffect, MouseEvent, useRef } from "react";
 import { Menu } from "lucide-react";
 import MobileNavDrawer from "@/components/navigation/MobileNavDrawer";
+import { useForceDarkTheme } from "@/components/theme/ThemeToggle";
 
 // --- Advanced 3D Tilt Card Component ---
 function TiltCard({ children, className }: { children: React.ReactNode, className?: string }) {
@@ -69,6 +70,8 @@ function TiltCard({ children, className }: { children: React.ReactNode, classNam
 }
 
 export default function Home() {
+  // The cinematic hero is designed dark-only; the saved theme returns on leaving.
+  useForceDarkTheme();
   const [content, setContent] = useState<any>(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);

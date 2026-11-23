@@ -794,6 +794,7 @@ export default function WebVideoPlayer({
     <div
       ref={containerRef}
       id="web-video-player"
+      data-theme-scope="dark"
       className="w-full aspect-video bg-black relative group flex items-center justify-center overflow-hidden md:rounded-2xl md:ring-1 md:ring-white/10 md:shadow-[0_25px_70px_-20px_rgba(0,0,0,0.9)] select-none"
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}

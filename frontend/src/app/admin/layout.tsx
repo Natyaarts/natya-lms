@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import ThemeToggle from "@/components/theme/ThemeToggle";
 
 export default function AdminLayout({
   children,
@@ -323,7 +324,8 @@ export default function AdminLayout({
             </span>
           </div>
           
-          <div className="flex items-center gap-4 shrink-0">
+          <div className="flex items-center gap-3 sm:gap-4 shrink-0">
+            <ThemeToggle className="w-9 h-9" />
             <div className="flex items-center gap-2 sm:pl-4 sm:border-l border-white/5 relative">
               <div className="hidden sm:flex flex-col items-end">
                 <span className="text-sm font-medium text-white leading-none">{user?.first_name || user?.username || 'Super Admin'}</span>

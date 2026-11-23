@@ -10,6 +10,7 @@ import NotificationBell from "@/components/NotificationBell";
 import ChatNotificationBadge from "./ChatNotificationBadge";
 import AccountMenu from "./AccountMenu";
 import MobileNavDrawer from "./MobileNavDrawer";
+import ThemeToggle from "@/components/theme/ThemeToggle";
 
 export default function AppHeader() {
   const pathname = usePathname();
@@ -93,6 +94,8 @@ export default function AppHeader() {
                 <NotificationBell />
               </div>
             )}
+
+            <ThemeToggle />
 
             {/* Desktop Account Menu / Auth CTAs */}
             <div className="hidden lg:flex items-center gap-3">

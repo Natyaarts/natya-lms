@@ -2294,8 +2294,8 @@ export default function LiveClassesPage() {
                 <tr className="bg-[#141419] border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[11px]">
                   <th className="p-3 lg:p-4 font-semibold">Title & Course</th>
                   <th className="p-3 lg:p-4 font-semibold">Scheduled</th>
-                  <th className="p-4 font-semibold hidden lg:table-cell">Duration</th>
-                  <th className="p-4 font-semibold hidden lg:table-cell">Provider</th>
+                  <th className="p-4 font-semibold hidden 2xl:table-cell">Duration</th>
+                  <th className="p-4 font-semibold hidden 2xl:table-cell">Provider</th>
                   <th className="p-3 lg:p-4 font-semibold text-center">Status / Attendance</th>
                   <th className="p-3 lg:p-4 font-semibold text-right">Actions</th>
                 </tr>
@@ -2333,7 +2333,7 @@ export default function LiveClassesPage() {
                       <td className="p-3 lg:p-4 whitespace-nowrap">
                         <div className="text-xs font-medium text-zinc-200">{sched.datePart}</div>
                         <div className="text-[11px] text-zinc-500 font-mono mt-0.5">{sched.timePart}</div>
-                        <div className="lg:hidden text-[11px] text-zinc-500 mt-1 flex items-center gap-1">
+                        <div className="2xl:hidden text-[11px] text-zinc-500 mt-1 flex items-center gap-1">
                           <Clock className="w-3 h-3" /> {lc.duration_minutes} min
                           <span className="text-zinc-600">·</span>
                           {lc.meeting_provider === "ZOOM" ? "Zoom" : (PROVIDER_LABEL[lc.meeting_provider] || lc.meeting_provider)}
@@ -2341,14 +2341,14 @@ export default function LiveClassesPage() {
                       </td>
 
                       {/* Duration */}
-                      <td className="p-4 whitespace-nowrap hidden lg:table-cell">
+                      <td className="p-4 whitespace-nowrap hidden 2xl:table-cell">
                         <span className="inline-flex items-center gap-1 text-xs text-zinc-300 font-mono bg-zinc-900/60 border border-white/5 rounded-md px-2 py-1">
                           <Clock className="w-3 h-3 text-zinc-500" /> {lc.duration_minutes} min
                         </span>
                       </td>
 
                       {/* Provider */}
-                      <td className="p-4 whitespace-nowrap hidden lg:table-cell">
+                      <td className="p-4 whitespace-nowrap hidden 2xl:table-cell">
                         {lc.meeting_provider === "ZOOM" ? (
                           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-medium">
                             <Video className="w-3 h-3" /> Zoom
