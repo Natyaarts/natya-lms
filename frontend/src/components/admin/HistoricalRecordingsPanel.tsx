@@ -281,8 +281,8 @@ export default function HistoricalRecordingsPanel() {
       )}
 
       {player && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setPlayer(null)}>
-          <div className="w-full max-w-4xl bg-zinc-900 border border-white/10 rounded-2xl overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex justify-center p-4 overflow-y-auto" onClick={() => setPlayer(null)}>
+          <div className="my-auto w-full max-w-4xl bg-zinc-900 border border-white/10 rounded-2xl overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-white/5">
               <div className="min-w-0">
                 <h3 className="font-bold text-white text-sm truncate">{player.recording.title || "Untitled session"}</h3>

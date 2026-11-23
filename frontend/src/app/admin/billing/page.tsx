@@ -605,8 +605,8 @@ export default function BillingDashboard() {
 
       {/* Manual Payment Modal */}
       {selectedInvoiceForPayment && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-white/10 rounded-2xl max-w-md w-full p-6 shadow-2xl">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex justify-center p-4 overflow-y-auto">
+          <div className="my-auto bg-zinc-900 border border-white/10 rounded-2xl max-w-md w-full p-6 shadow-2xl">
             <h3 className="text-lg font-bold text-white mb-1">Record Offline Payment</h3>
             <p className="text-zinc-400 text-xs mb-6">Process full settlement for invoice {selectedInvoiceForPayment.invoice_number}.</p>
 

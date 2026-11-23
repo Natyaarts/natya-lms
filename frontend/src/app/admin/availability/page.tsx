@@ -183,7 +183,7 @@ export default function AvailabilityPage() {
               {typeof formError === "string" ? formError : JSON.stringify(formError)}
             </div>
           )}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className={labelCls}>Day</label>
               <select value={dayOfWeek} onChange={(e) => setDayOfWeek(Number(e.target.value))} className={inputCls}>

@@ -784,8 +784,8 @@ function ChatPageContent() {
 
       {/* ================= NEW CONVERSATION MODAL ================= */}
       {showNewChatModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#121214] border border-white/10 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex justify-center p-4 overflow-y-auto">
+          <div className="my-auto bg-[#121214] border border-white/10 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-150">
             <div className="p-4 border-b border-white/10 flex items-center justify-between">
               <div>
                 <h3 className="text-base font-bold text-white">Start Conversation</h3>

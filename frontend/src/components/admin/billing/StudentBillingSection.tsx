@@ -941,7 +941,7 @@ export default function StudentBillingSection({
           Direct storefront one-time purchases and receipts from website catalog checkout.
         </p>
 
-        <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-hidden">
+        <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
@@ -1214,8 +1214,8 @@ export default function StudentBillingSection({
 
       {/* MODAL 2: Change Plan */}
       {showChangePlanModal && activePlanForChange && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-white/10 rounded-2xl max-w-md w-full p-6 shadow-2xl">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex justify-center p-4 overflow-y-auto">
+          <div className="my-auto bg-zinc-900 border border-white/10 rounded-2xl max-w-md w-full p-6 shadow-2xl">
             <h3 className="text-lg font-bold text-white mb-1">Modify Billing Arrangement</h3>
             <p className="text-zinc-400 text-xs mb-6">
               Adjust fee frequency or rate. By default takes effect on the next cycle.
@@ -1312,8 +1312,8 @@ export default function StudentBillingSection({
 
       {/* MODAL 3: Record Manual Payment */}
       {showManualPaymentModal && selectedInvoiceForPayment && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-white/10 rounded-2xl max-w-md w-full p-6 shadow-2xl">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex justify-center p-4 overflow-y-auto">
+          <div className="my-auto bg-zinc-900 border border-white/10 rounded-2xl max-w-md w-full p-6 shadow-2xl">
             <h3 className="text-lg font-bold text-white mb-1">Record Manual Payment</h3>
             <p className="text-zinc-400 text-xs mb-6">Record offline cash, bank transfer, or direct UPI settlement.</p>
 
@@ -1419,8 +1419,8 @@ export default function StudentBillingSection({
 
       {/* MODAL 4: Extend Access Override */}
       {showExtendAccessModal && activePlanForExtend && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-white/10 rounded-2xl max-w-md w-full p-6 shadow-2xl">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex justify-center p-4 overflow-y-auto">
+          <div className="my-auto bg-zinc-900 border border-white/10 rounded-2xl max-w-md w-full p-6 shadow-2xl">
             <h3 className="text-lg font-bold text-white mb-1">Grant Access Extension</h3>
             <p className="text-zinc-400 text-xs mb-6">
               Temporarily grant content access without altering historical invoices or marking them paid.

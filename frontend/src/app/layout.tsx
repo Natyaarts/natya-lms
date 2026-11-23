@@ -1,8 +1,9 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Montserrat } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
 import AppHeader from "@/components/navigation/AppHeader";
+import PwaSetup from "@/components/pwa/PwaSetup";
 
 const montserrat = Montserrat({
   variable: "--font-montserrat",
@@ -12,6 +13,22 @@ const montserrat = Montserrat({
 export const metadata: Metadata = {
   title: "Natya LMS | Learn Classical Arts Online",
   description: "Learn Indian classical arts from the best masters.",
+  applicationName: "Natya",
+  appleWebApp: {
+    capable: true,
+    title: "Natya",
+    statusBarStyle: "black",
+  },
+  icons: {
+    apple: "/apple-touch-icon.png",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#000000",
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
@@ -27,6 +44,7 @@ export default function RootLayout({
           <div className="flex-1 flex flex-col">
             {children}
           </div>
+          <PwaSetup />
         </AuthProvider>
       </body>
     </html>

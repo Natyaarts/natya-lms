@@ -19,6 +19,23 @@ body {
   color-scheme: dark;
 }
 
+/* Responsive safety net: decorative glows and wide elements must never make
+   the whole page scroll sideways on phones. `clip` (unlike `hidden`) does not
+   create a scroll container, so sticky headers keep working. Tables and
+   other wide content scroll inside their own overflow-x-auto wrappers. */
+html,
+body {
+  overflow-x: clip;
+}
+
+/* Installed (standalone) app: keep content clear of the notch/home bar. */
+@media (display-mode: standalone) {
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
 /* ==========================================================================
    Modern Sleek Dark Scrollbar System
    Removes Windows default white scrollbars & arrow buttons globally.

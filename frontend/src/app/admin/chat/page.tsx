@@ -868,8 +868,8 @@ export default function AdminChatPage() {
 
       {/* Moderation Modal Dialog */}
       {moderatingMessage && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 animate-in fade-in">
-          <div className="bg-[#18181b] border border-white/10 rounded-xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex justify-center overflow-y-auto bg-black/75 p-4 animate-in fade-in">
+          <div className="my-auto bg-[#18181b] border border-white/10 rounded-xl max-w-md w-full p-6 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <div className="flex items-center gap-2">
                 {moderationAction === "soft_delete" ? (

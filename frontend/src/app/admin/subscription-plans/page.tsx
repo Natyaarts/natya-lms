@@ -815,7 +815,7 @@ export default function SubscriptionPlansPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div className="bg-black/40 p-3 rounded-xl border border-white/5">
                   <div className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">Price</div>
                   <div className="text-base font-bold text-[#facc15] mt-1">
@@ -1287,8 +1287,8 @@ export default function SubscriptionPlansPage() {
           DELETE SAFEGUARD DIALOG (Subscribers > 0)
           ========================================================================= */}
       {deleteSafeguardPlan && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-amber-500/30 p-6 rounded-2xl w-full max-w-md shadow-2xl relative text-sm">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex justify-center p-4 overflow-y-auto">
+          <div className="my-auto bg-zinc-900 border border-amber-500/30 p-6 rounded-2xl w-full max-w-md shadow-2xl relative text-sm">
             <button
               onClick={() => setDeleteSafeguardPlan(null)}
               className="absolute top-4 right-4 p-2 bg-white/5 hover:bg-white/10 rounded-full transition text-zinc-400 hover:text-white"
@@ -1343,8 +1343,8 @@ export default function SubscriptionPlansPage() {
           CONFIRM DELETE DIALOG (Subscribers === 0)
           ========================================================================= */}
       {confirmDeletePlan && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-red-500/30 p-6 rounded-2xl w-full max-w-md shadow-2xl relative text-sm">
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex justify-center p-4 overflow-y-auto">
+          <div className="my-auto bg-zinc-900 border border-red-500/30 p-6 rounded-2xl w-full max-w-md shadow-2xl relative text-sm">
             <button
               onClick={() => setConfirmDeletePlan(null)}
               className="absolute top-4 right-4 p-2 bg-white/5 hover:bg-white/10 rounded-full transition text-zinc-400 hover:text-white"

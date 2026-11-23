@@ -370,13 +370,13 @@ export default function StudentLiveClassesPage() {
       {/* ---------------- Watch Recording Video Player Modal ---------------- */}
       <AnimatePresence>
         {watchTarget && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setWatchTarget(null)}>
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex justify-center p-4 overflow-y-auto" onClick={() => setWatchTarget(null)}>
             <motion.div
               initial={{ opacity: 0, scale: 0.96 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.96 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-3xl bg-zinc-900 border border-white/10 rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+              className="my-auto w-full max-w-3xl bg-zinc-900 border border-white/10 rounded-2xl overflow-hidden shadow-2xl flex flex-col"
             >
               <div className="flex items-center justify-between px-5 py-4 border-b border-white/5 shrink-0">
                 <h3 className="font-bold text-white text-base truncate pr-4">
@@ -432,13 +432,13 @@ export default function StudentLiveClassesPage() {
       {/* ---------------- Student Class Notes & Feedback Modal ---------------- */}
       <AnimatePresence>
         {reportTarget && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setReportTarget(null)}>
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex justify-center p-4 overflow-y-auto" onClick={() => setReportTarget(null)}>
             <motion.div
               initial={{ opacity: 0, scale: 0.96 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.96 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-2xl bg-zinc-900 border border-white/10 rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[85vh]"
+              className="my-auto w-full max-w-2xl bg-zinc-900 border border-white/10 rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[85vh]"
             >
               <div className="flex items-center justify-between px-5 py-4 border-b border-white/5 shrink-0 bg-[#121216]">
                 <div className="flex items-center gap-2.5">

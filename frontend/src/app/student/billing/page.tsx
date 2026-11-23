@@ -766,7 +766,7 @@ export default function StudentBillingPortalPage() {
               </div>
 
               {/* Fee Line Item */}
-              <div className="border rounded-xl overflow-hidden mt-4">
+              <div className="border rounded-xl overflow-x-auto mt-4">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-zinc-100 text-zinc-700 font-bold border-b">
                     <tr>

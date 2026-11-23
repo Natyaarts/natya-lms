@@ -14,6 +14,8 @@ export default function AdminLayout({
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  // Below lg the sidebar is an off-canvas drawer.
+  const [navOpen, setNavOpen] = useState(false);
 
   const handleLogout = async () => {
     try {
@@ -230,16 +232,37 @@ export default function AdminLayout({
     : [];
 
   return (
-    <div className="min-h-screen bg-[#09090b] text-zinc-100 flex font-sans selection:bg-[#facc15]/30">
-      {/* Sidebar */}
-      <div className="w-60 bg-[#09090b] border-r border-white/5 flex flex-col h-screen sticky top-0">
+    <div className="min-h-dvh bg-[#09090b] text-zinc-100 flex font-sans selection:bg-[#facc15]/30">
+      {/* Backdrop for the mobile/tablet drawer */}
+      {navOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden"
+          onClick={() => setNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Sidebar: static from lg up, slide-in drawer below */}
+      <div
+        className={`fixed inset-y-0 left-0 z-50 w-64 max-w-[85vw] transform transition-transform duration-200 lg:sticky lg:inset-y-auto lg:top-0 lg:z-auto lg:w-60 lg:translate-x-0 bg-[#09090b] border-r border-white/5 flex flex-col h-dvh ${
+          navOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
         <div className="h-14 px-6 border-b border-white/5 flex items-center justify-between shrink-0">
-          <Link href={isFullAdmin ? "/admin" : "/admin/courses"} className="flex items-center gap-2 transition-opacity hover:opacity-80">
+          <Link href={isFullAdmin ? "/admin" : "/admin/courses"} onClick={() => setNavOpen(false)} className="flex items-center gap-2 transition-opacity hover:opacity-80">
             <img src="/img/logo.png" alt="Natya Admin" className="h-6 w-auto" />
             <span className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase mt-0.5">
               {isFullAdmin ? "Admin" : isTeacher ? "Teacher" : "Mentor"}
             </span>
           </Link>
+          <button
+            type="button"
+            onClick={() => setNavOpen(false)}
+            className="lg:hidden -mr-2 p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/5"
+            aria-label="Close menu"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </button>
         </div>
         
         <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto custom-scrollbar">
@@ -253,6 +276,7 @@ export default function AdminLayout({
                     <Link
                       key={link.name}
                       href={link.href}
+                      onClick={() => setNavOpen(false)}
                       className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
                         isActive
                           ? "bg-white/10 text-white shadow-sm"
@@ -272,7 +296,7 @@ export default function AdminLayout({
         </nav>
         
         <div className="p-4 border-t border-white/5 bg-[#09090b]">
-          <Link href="/dashboard" className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-zinc-400 hover:text-white hover:bg-white/5 transition-all w-full">
+          <Link href="/dashboard" onClick={() => setNavOpen(false)} className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-zinc-400 hover:text-white hover:bg-white/5 transition-all w-full">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-500"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
             Exit to App
           </Link>
@@ -280,20 +304,28 @@ export default function AdminLayout({
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col h-screen overflow-hidden bg-[#09090b]">
+      <div className="flex-1 min-w-0 flex flex-col h-dvh overflow-hidden bg-[#09090b]">
         {/* Top Header */}
-        <header className="h-14 shrink-0 border-b border-white/5 flex items-center justify-between px-8 bg-[#09090b]/80 backdrop-blur-md sticky top-0 z-10">
-          <div className="flex items-center text-sm font-medium text-zinc-400">
-            <span className="hover:text-white cursor-pointer transition-colors">Admin</span>
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mx-2 text-zinc-600"><path d="m9 18 6-6-6-6"/></svg>
-            <span className="text-zinc-100 capitalize">
+        <header className="h-14 shrink-0 border-b border-white/5 flex items-center justify-between gap-3 px-4 sm:px-6 lg:px-8 bg-[#09090b]/80 backdrop-blur-md sticky top-0 z-10">
+          <div className="flex items-center min-w-0 text-sm font-medium text-zinc-400">
+            <button
+              type="button"
+              onClick={() => setNavOpen(true)}
+              className="lg:hidden -ml-2 mr-2 p-2 rounded-lg text-zinc-300 hover:text-white hover:bg-white/5 shrink-0"
+              aria-label="Open menu"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></svg>
+            </button>
+            <span className="hidden sm:inline hover:text-white cursor-pointer transition-colors">Admin</span>
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="hidden sm:block mx-2 text-zinc-600 shrink-0"><path d="m9 18 6-6-6-6"/></svg>
+            <span className="text-zinc-100 capitalize truncate">
               {pathname === '/admin' ? 'Overview' : pathname.split('/').pop()?.replace(/-/g, ' ')}
             </span>
           </div>
           
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 pl-4 border-l border-white/5 relative">
-              <div className="flex flex-col items-end">
+          <div className="flex items-center gap-4 shrink-0">
+            <div className="flex items-center gap-2 sm:pl-4 sm:border-l border-white/5 relative">
+              <div className="hidden sm:flex flex-col items-end">
                 <span className="text-sm font-medium text-white leading-none">{user?.first_name || user?.username || 'Super Admin'}</span>
                 <span className="text-[10px] text-zinc-500 mt-1 uppercase tracking-wider">Authenticated</span>
               </div>
@@ -325,7 +357,7 @@ export default function AdminLayout({
         </header>
 
         {/* Scrollable Content */}
-        <main className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 custom-scrollbar">
           <div className="max-w-6xl mx-auto">
             {children}
           </div>

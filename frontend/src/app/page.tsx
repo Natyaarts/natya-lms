@@ -126,7 +126,7 @@ export default function Home() {
         initial={{ y: -100, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: 1, ease: "easeOut", delay: 0.5 }}
-        className="fixed top-0 left-0 right-0 z-50 flex justify-center pt-6 px-6 md:px-12 bg-gradient-to-b from-black/90 via-black/50 to-transparent pb-8 pointer-events-none"
+        className="fixed top-0 left-0 right-0 z-50 flex justify-center pt-6 px-4 sm:px-6 md:px-12 bg-gradient-to-b from-black/90 via-black/50 to-transparent pb-8 pointer-events-none"
       >
         <div className="flex justify-between items-center w-full max-w-7xl pointer-events-auto">
           <Link href="/" className="flex items-center group relative z-50 overflow-visible hover:scale-105 transition-transform duration-500">
@@ -135,15 +135,15 @@ export default function Home() {
 
           <div className="flex items-center gap-2 sm:gap-4 z-50">
             {isLoggedIn ? (
-              <Link href="/dashboard" className="relative group px-5 sm:px-8 py-2 sm:py-3 overflow-hidden rounded-full bg-[#facc15] text-black text-xs sm:text-sm font-bold uppercase tracking-[0.2em] transition-all hover:scale-105 hover:shadow-[0_0_40px_rgba(250,204,21,0.6)]">
+              <Link href="/dashboard" className="relative group whitespace-nowrap px-5 sm:px-8 py-2 sm:py-3 overflow-hidden rounded-full bg-[#facc15] text-black text-xs sm:text-sm font-bold uppercase tracking-[0.2em] transition-all hover:scale-105 hover:shadow-[0_0_40px_rgba(250,204,21,0.6)]">
                 <span className="relative z-10">Dashboard</span>
               </Link>
             ) : (
               <>
-                <Link href="/login" className="flex items-center gap-1.5 px-3 sm:px-5 py-1.5 sm:py-2 text-white/80 text-xs sm:text-sm font-bold uppercase tracking-wider sm:tracking-widest rounded-full hover:text-white hover:bg-white/10 transition-all duration-300">
+                <Link href="/login" className="flex items-center gap-1.5 whitespace-nowrap px-2.5 sm:px-5 py-1.5 sm:py-2 text-white/80 text-xs sm:text-sm font-bold uppercase tracking-wider sm:tracking-widest rounded-full hover:text-white hover:bg-white/10 transition-all duration-300">
                   Sign In
                 </Link>
-                <Link href="/register" className="relative group px-4 sm:px-8 py-2 sm:py-3 overflow-hidden rounded-full bg-white text-black text-xs sm:text-sm font-bold uppercase tracking-wider sm:tracking-[0.2em] transition-all hover:scale-105 hover:shadow-[0_0_40px_rgba(255,255,255,0.4)]">
+                <Link href="/register" className="relative group whitespace-nowrap px-4 sm:px-8 py-2 sm:py-3 overflow-hidden rounded-full bg-white text-black text-xs sm:text-sm font-bold uppercase tracking-wider sm:tracking-[0.2em] transition-all hover:scale-105 hover:shadow-[0_0_40px_rgba(255,255,255,0.4)]">
                   <span className="relative z-10">Sign Up</span>
                   <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/50 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]" />
                 </Link>
@@ -228,9 +228,9 @@ export default function Home() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 1, delay: 1.2, type: "spring" }}
             >
-              <Link href={hero.button_link} className="group relative inline-flex items-center justify-center px-10 py-5 font-bold text-black transition-all duration-300 bg-[#facc15] rounded-full hover:scale-110 hover:shadow-[0_0_60px_rgba(250,204,21,0.6)] focus:outline-none overflow-hidden">
+              <Link href={hero.button_link} className="group relative inline-flex items-center justify-center px-6 py-4 sm:px-10 sm:py-5 font-bold text-black transition-all duration-300 bg-[#facc15] rounded-full hover:scale-110 hover:shadow-[0_0_60px_rgba(250,204,21,0.6)] focus:outline-none overflow-hidden">
                 <div className="absolute inset-0 w-full h-full -mt-1 rounded-lg opacity-30 bg-gradient-to-b from-transparent via-transparent to-black" />
-                <span className="relative flex items-center gap-3 text-lg tracking-wider uppercase">
+                <span className="relative flex items-center gap-3 text-sm sm:text-lg tracking-wider uppercase whitespace-nowrap">
                   {hero.button_text}
                   <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="transition-transform duration-500 group-hover:translate-x-2"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg>
                 </span>
@@ -407,9 +407,9 @@ export default function Home() {
               viewport={{ once: true, margin: "-100px" }}
               transition={{ duration: 1, delay: 0.5 }}
             >
-              <Link href={hero.button_link} className="group relative inline-flex items-center justify-center px-12 py-6 font-bold text-black transition-all duration-500 bg-white rounded-full hover:scale-110 hover:shadow-[0_0_80px_rgba(255,255,255,0.4)] focus:outline-none overflow-hidden">
+              <Link href={hero.button_link} className="group relative inline-flex items-center justify-center px-7 py-4 sm:px-12 sm:py-6 font-bold text-black transition-all duration-500 bg-white rounded-full hover:scale-110 hover:shadow-[0_0_80px_rgba(255,255,255,0.4)] focus:outline-none overflow-hidden">
                 <div className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-black/10 to-transparent -translate-x-full group-hover:animate-[shimmer_1s_infinite]" />
-                <span className="relative text-xl tracking-[0.2em] uppercase">
+                <span className="relative text-base sm:text-xl tracking-[0.12em] sm:tracking-[0.2em] uppercase whitespace-nowrap">
                   {hero.button_text}
                 </span>
               </Link>

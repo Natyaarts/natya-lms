@@ -460,8 +460,8 @@ export default function UserDetailPage() {
     <div className="max-w-6xl mx-auto pb-20 font-sans text-white">
       {/* Assign Course modal */}
       {showAssignModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-white/10 p-6 rounded-2xl w-full max-w-md shadow-2xl">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-center p-4 overflow-y-auto">
+          <div className="my-auto bg-zinc-900 border border-white/10 p-6 rounded-2xl w-full max-w-md shadow-2xl">
             <h2 className="text-xl font-bold mb-1">Assign Course</h2>
             <p className="text-zinc-400 text-xs mb-6">Create a direct student/teacher access enrollment.</p>
             
@@ -867,7 +867,7 @@ export default function UserDetailPage() {
                 No students are currently enrolled in this teacher's assigned courses.
               </div>
             ) : (
-              <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-hidden">
+              <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
@@ -914,7 +914,7 @@ export default function UserDetailPage() {
                 No students assigned to this mentor yet.
               </div>
             ) : (
-              <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-hidden">
+              <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
@@ -959,7 +959,7 @@ export default function UserDetailPage() {
                 No live classes scheduled for this instructor.
               </div>
             ) : (
-              <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-hidden">
+              <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
@@ -999,7 +999,7 @@ export default function UserDetailPage() {
                 No live coaching or interactive sessions scheduled.
               </div>
             ) : (
-              <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-hidden">
+              <div className="bg-zinc-950 border border-white/5 rounded-2xl overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-white/5 border-b border-white/5 text-zinc-400 uppercase tracking-wider">

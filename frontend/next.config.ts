@@ -15,6 +15,20 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  // PWA: the service worker must never be served from an HTTP cache, or
+  // installed apps would keep running an old worker after a deploy.
+  async headers() {
+    return [
+      {
+        source: '/sw.js',
+        headers: [
+          { key: 'Content-Type', value: 'application/javascript; charset=utf-8' },
+          { key: 'Cache-Control', value: 'no-cache, no-store, must-revalidate' },
+          { key: 'Content-Security-Policy', value: "default-src 'self'; script-src 'self'" },
+        ],
+      },
+    ];
+  },
 };
 
 // Production error tracking gap fix. withSentryConfig wraps the build to
