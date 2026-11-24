@@ -41,7 +41,7 @@ type Filters = {
   teachers: { name: string; count: number }[];
   mapping_pending: boolean;
 };
-type Playback = { url: string; subtitle_url: string | null; expires_in: number; session: { title: string; course: string; teacher_name: string; actual_start: string | null } };
+type Playback = { url: string; subtitle_url: string | null; has_subtitles?: boolean; expires_in: number; session: { title: string; course: string; teacher_name: string; actual_start: string | null } };
 
 const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-IN", { timeZone: TZ, day: "2-digit", month: "short", year: "numeric" }) : "—";
@@ -68,7 +68,21 @@ export default function HistoricalRecordingsPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const [player, setPlayer] = useState<{ fileId: number; recording: Recording; playback: Playback | null; error: string } | null>(null);
+  const [player, setPlayer] = useState<{
+    fileId: number;
+    recording: Recording;
+    playback: Playback | null;
+    error: string;
+    subtitleSrc?: string;
+  } | null>(null);
+
+  // Subtitle text is held as a local blob: URL; release it when it changes or the player closes.
+  const subtitleSrc = player?.subtitleSrc;
+  useEffect(() => {
+    return () => {
+      if (subtitleSrc) URL.revokeObjectURL(subtitleSrc);
+    };
+  }, [subtitleSrc]);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(q.trim()), 350);
@@ -120,11 +134,35 @@ export default function HistoricalRecordingsPanel() {
     return r.json();
   }, []);
 
+  // Subtitles come through the API (same authorization as playback), so the
+  // private S3 bucket never needs cross-origin access. Missing or failing
+  // subtitles never block playback.
+  const fetchSubtitles = useCallback(async (fileId: number): Promise<string | undefined> => {
+    try {
+      const r = await fetch(`${API}/api/courses/historical-recordings/files/${fileId}/subtitles/`, { credentials: "include" });
+      if (!r.ok) return undefined;
+      const text = await r.text();
+      return URL.createObjectURL(new Blob([text], { type: "text/vtt" }));
+    } catch {
+      return undefined;
+    }
+  }, []);
+
   const openPlayer = async (recording: Recording, fileId: number) => {
     setPlayer({ fileId, recording, playback: null, error: "" });
     try {
       const playback = await fetchPlayback(fileId);
       setPlayer((p) => (p && p.fileId === fileId ? { ...p, playback } : p));
+      if (playback.has_subtitles || playback.subtitle_url) {
+        const src = await fetchSubtitles(fileId);
+        if (src) {
+          setPlayer((p) => {
+            if (p && p.fileId === fileId) return { ...p, subtitleSrc: src };
+            URL.revokeObjectURL(src); // player closed or switched meanwhile
+            return p;
+          });
+        }
+      }
     } catch (e) {
       setPlayer((p) => (p && p.fileId === fileId ? { ...p, error: (e as Error).message } : p));
     }
@@ -305,6 +343,7 @@ export default function HistoricalRecordingsPanel() {
                   expiresIn={player.playback.expires_in}
                   downloadEnabled={false}
                   watermark={{ enabled: false }}
+                  subtitleSrc={player.subtitleSrc}
                   onRefreshUrls={async () => {
                     try {
                       const fresh = await fetchPlayback(player.fileId);

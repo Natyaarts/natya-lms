@@ -434,3 +434,47 @@ describe("WebVideoPlayer Component", () => {
     expect(refreshMock).not.toHaveBeenCalled();
   });
 });
+
+describe("WebVideoPlayer subtitles", () => {
+  beforeEach(() => {
+    window.HTMLMediaElement.prototype.play = vi.fn().mockImplementation(() => Promise.resolve());
+    window.HTMLMediaElement.prototype.pause = vi.fn().mockImplementation(() => {});
+    window.HTMLMediaElement.prototype.load = vi.fn().mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("adds a subtitle track and a CC toggle only when subtitleSrc is given", () => {
+    const { container } = render(
+      <WebVideoPlayer videoUrl="https://example.com/v.mp4" subtitleSrc="blob:subs-1" subtitleLabel="Subtitles" />
+    );
+    const track = container.querySelector("video track") as HTMLTrackElement | null;
+    expect(track).not.toBeNull();
+    expect(track?.getAttribute("src")).toBe("blob:subs-1");
+    expect(track?.getAttribute("kind")).toBe("subtitles");
+    expect(screen.getByRole("button", { name: "Hide subtitles" })).toBeDefined();
+  });
+
+  it("renders no track or CC button without subtitles", () => {
+    const { container } = render(<WebVideoPlayer videoUrl="https://example.com/v.mp4" />);
+    expect(container.querySelector("video track")).toBeNull();
+    expect(screen.queryByRole("button", { name: /subtitles/i })).toBeNull();
+  });
+
+  it("CC toggle switches the text track between showing and hidden", async () => {
+    const { container } = render(<WebVideoPlayer videoUrl="https://example.com/v.mp4" subtitleSrc="blob:subs-2" />);
+    const video = container.querySelector("video") as HTMLVideoElement;
+    // jsdom has no TextTrack support; give the element one track to drive.
+    const fakeTrack = { mode: "disabled" } as unknown as TextTrack;
+    Object.defineProperty(video, "textTracks", { configurable: true, value: [fakeTrack] });
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide subtitles" }));
+    await waitFor(() => expect(fakeTrack.mode).toBe("hidden"));
+    expect(screen.getByRole("button", { name: "Show subtitles" }).getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(screen.getByRole("button", { name: "Show subtitles" }));
+    await waitFor(() => expect(fakeTrack.mode).toBe("showing"));
+  });
+});

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, StyleSheet, TouchableOpacity, Text, Modal, ActivityIndicator } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEventListener } from 'expo';
@@ -6,6 +6,7 @@ import * as ScreenCapture from 'expo-screen-capture';
 import Slider from '@react-native-community/slider';
 import Icon, { MaterialIcon } from './Icon';
 import { colors, spacing, radius } from '../theme';
+import { activeCueText, SubtitleCue } from '../utils/vtt';
 
 // A helper to format seconds to mm:ss (or h:mm:ss for anything over an hour)
 const formatTime = (seconds: number) => {
@@ -62,6 +63,9 @@ interface CustomVideoPlayerProps {
   screenCaptureProtectionEnabled?: boolean;
   onRefreshUrls?: () => Promise<PlaybackRefreshResult | null>;
   expiresIn?: number;
+  // Optional subtitles (parsed WebVTT). Drawn over the video with a CC toggle;
+  // expo-video cannot load a separate subtitle file itself.
+  captions?: SubtitleCue[];
 }
 
 // How far the alternate audio track is allowed to drift from the video
@@ -82,6 +86,7 @@ export default function CustomVideoPlayer({
   screenCaptureProtectionEnabled = true,
   onRefreshUrls,
   expiresIn = 900,
+  captions,
 }: CustomVideoPlayerProps) {
   const isRefreshingRef = useRef(false);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -90,6 +95,7 @@ export default function CustomVideoPlayer({
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
+  const [captionsOn, setCaptionsOn] = useState(true);
   const [isPlaying, setIsPlaying] = useState(true);
   const [duration, setDuration] = useState(0);
   const [status, setStatus] = useState<'idle' | 'loading' | 'readyToPlay' | 'error'>('idle');
@@ -473,6 +479,11 @@ export default function CustomVideoPlayer({
     }
   };
 
+  const captionText = useMemo(
+    () => (captions && captionsOn ? activeCueText(captions, currentTime) : ''),
+    [captions, captionsOn, currentTime]
+  );
+
   const enterFullscreen = () => {
     videoViewRef.current?.enterFullscreen();
   };
@@ -554,6 +565,13 @@ export default function CustomVideoPlayer({
         </View>
       )}
 
+      {/* Subtitles (above the bottom controls while they are visible) */}
+      {!!captionText && (
+        <View pointerEvents="none" style={[styles.captionContainer, { bottom: showControls ? 64 : 14 }]}>
+          <Text style={styles.captionText} accessibilityLiveRegion="polite">{captionText}</Text>
+        </View>
+      )}
+
       {showControls && (
         <View style={styles.controlsOverlay} pointerEvents="box-none">
           {/* Top Bar: audio language + playback speed */}
@@ -570,6 +588,22 @@ export default function CustomVideoPlayer({
                   <Text style={styles.pillButtonText}>
                     {activeAudioCode === 'en' ? 'English' : (activeTrack?.name || activeAudioCode)}
                   </Text>
+                </TouchableOpacity>
+              )}
+              {!!captions?.length && (
+                <TouchableOpacity
+                  style={styles.pillButton}
+                  onPress={() => setCaptionsOn(on => !on)}
+                  accessibilityRole="button"
+                  accessibilityLabel={captionsOn ? 'Hide subtitles' : 'Show subtitles'}
+                  accessibilityState={{ selected: captionsOn }}
+                >
+                  <MaterialIcon
+                    name={captionsOn ? 'closed-caption' : 'closed-caption-outline'}
+                    size={14}
+                    color={captionsOn ? colors.accent : colors.text}
+                  />
+                  <Text style={styles.pillButtonText}>CC</Text>
                 </TouchableOpacity>
               )}
               <TouchableOpacity
@@ -724,6 +758,23 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFill,
     justifyContent: 'space-between',
     backgroundColor: 'rgba(0,0,0,0.28)',
+  },
+  captionContainer: {
+    position: 'absolute',
+    left: spacing.lg,
+    right: spacing.lg,
+    alignItems: 'center',
+  },
+  captionText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    lineHeight: 21,
+    textAlign: 'center',
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+    overflow: 'hidden',
   },
   topBar: {
     flexDirection: 'row',

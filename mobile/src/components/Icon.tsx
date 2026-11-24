@@ -18,7 +18,7 @@ export type FeatherIconName =
   | 'message-square' | 'message-circle' | 'send' | 'paperclip' | 'file' | 'image' | 'plus'
   | 'info' | 'hard-drive';
 
-type MaterialIconName = 'gauge';
+type MaterialIconName = 'gauge' | 'closed-caption' | 'closed-caption-outline';
 
 type IconProps = {
   name: FeatherIconName;

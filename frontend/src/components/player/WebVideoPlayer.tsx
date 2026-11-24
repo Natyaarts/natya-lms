@@ -16,6 +16,8 @@ import {
   AlertCircle,
   RefreshCw,
   Gauge,
+  Captions,
+  CaptionsOff,
 } from "lucide-react";
 
 export interface AudioTrackOption {
@@ -55,6 +57,9 @@ export interface WebVideoPlayerProps {
   expiresIn?: number;
   onRefreshUrls?: () => Promise<PlaybackRefreshResult | null>;
   onAuthRevoked?: (message?: string) => void;
+  /** Same-origin (e.g. blob:) WebVTT URL. Optional; adds a native subtitle track and a CC toggle. */
+  subtitleSrc?: string;
+  subtitleLabel?: string;
 }
 
 const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -112,9 +117,25 @@ export default function WebVideoPlayer({
   expiresIn = 900,
   onRefreshUrls,
   onAuthRevoked,
+  subtitleSrc,
+  subtitleLabel = "Subtitles",
 }: WebVideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [subtitlesOn, setSubtitlesOn] = useState(true);
+
+  // Keep the subtitle track's visibility in sync with the CC toggle. Re-applied
+  // after the source URL is refreshed (a new load can reset track modes).
+  const applySubtitleMode = useCallback(() => {
+    const tracks = videoRef.current?.textTracks;
+    if (!tracks) return;
+    for (let i = 0; i < tracks.length; i++) {
+      tracks[i].mode = subtitleSrc && subtitlesOn ? "showing" : "hidden";
+    }
+  }, [subtitleSrc, subtitlesOn]);
+  useEffect(() => {
+    applySubtitleMode();
+  }, [applySubtitleMode]);
   const audioRef = useRef<HTMLAudioElement>(null);
 
   const [currentVideoUrl, setCurrentVideoUrl] = useState<string>(videoUrl);
@@ -824,9 +845,14 @@ export default function WebVideoPlayer({
           setHasError(false);
         }}
         onClick={togglePlay}
+        onLoadedData={applySubtitleMode}
         playsInline
         autoPlay
-      />
+      >
+        {subtitleSrc && (
+          <track kind="subtitles" src={subtitleSrc} srcLang="en" label={subtitleLabel} default onLoad={applySubtitleMode} />
+        )}
+      </video>
 
       {/* Hidden Audio Element for translated voice-over */}
       <audio ref={audioRef} onError={handleAudioError} className="hidden" />
@@ -1133,6 +1159,19 @@ export default function WebVideoPlayer({
                 )}
               </AnimatePresence>
             </div>
+
+            {/* Subtitles (CC) toggle -- only when the recording has subtitles */}
+            {subtitleSrc && (
+              <button
+                onClick={() => setSubtitlesOn((on) => !on)}
+                aria-label={subtitlesOn ? "Hide subtitles" : "Show subtitles"}
+                aria-pressed={subtitlesOn}
+                title={subtitlesOn ? "Hide subtitles" : "Show subtitles"}
+                className={`p-2 rounded-full hover:bg-white/10 transition-colors ${subtitlesOn ? "text-[#facc15]" : "hover:text-[#facc15]"}`}
+              >
+                {subtitlesOn ? <Captions className="w-5 h-5" /> : <CaptionsOff className="w-5 h-5" />}
+              </button>
+            )}
 
             {/* Fullscreen Button */}
             <button

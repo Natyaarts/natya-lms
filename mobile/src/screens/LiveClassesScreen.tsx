@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import client from '../api/client';
 import ScreenHeader from '../components/ScreenHeader';
 import EmptyState from '../components/EmptyState';
+import Icon from '../components/Icon';
 import { colors, spacing, radius, typography } from '../theme';
 
 // Phase 4.9 -- read-only live class list + join link. Reuses
@@ -154,6 +155,21 @@ export default function LiveClassesScreen({ navigation, route }: any) {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
         contentContainerStyle={styles.listContainer}
         showsVerticalScrollIndicator={false}
+        ListHeaderComponent={
+          <TouchableOpacity
+            style={styles.recordingsEntry}
+            onPress={() => navigation.navigate('HistoricalRecordings')}
+            accessibilityRole="button"
+            accessibilityLabel="Earlier class recordings"
+          >
+            <Icon name="film" size={18} color={colors.accent} />
+            <View style={styles.recordingsEntryBody}>
+              <Text style={styles.recordingsEntryTitle}>Earlier class recordings</Text>
+              <Text style={styles.recordingsEntrySub}>Recordings of your batch's previous classes</Text>
+            </View>
+            <Icon name="chevron-right" size={18} color={colors.textTertiary} />
+          </TouchableOpacity>
+        }
         ListEmptyComponent={
           <EmptyState
             icon="video"
@@ -231,6 +247,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
+  recordingsEntry: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.card,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.accentBorder,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  recordingsEntryBody: { flex: 1, marginHorizontal: spacing.md },
+  recordingsEntryTitle: { color: colors.text, fontSize: 14, fontWeight: '700' },
+  recordingsEntrySub: { ...typography.caption, color: colors.textSecondary, marginTop: 2 },
   joinButtonSecondaryText: {
     color: colors.text,
     fontSize: 14,

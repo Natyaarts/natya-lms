@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.db.models import Count, Max, Min, Prefetch, Q
-from django.http import Http404
+from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 
 from rest_framework import generics, permissions
@@ -35,6 +35,8 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 URL_EXPIRY_SECONDS = 900
+# Subtitles are proxied as text (no S3 CORS needed); cap what we read.
+MAX_SUBTITLE_BYTES = 2 * 1024 * 1024
 # Dates in filters are interpreted in the academy's local time.
 LOCAL_TZ = ZoneInfo("Asia/Kolkata")
 
@@ -314,6 +316,39 @@ class HistoricalRecordingFiltersView(APIView):
         })
 
 
+def _visible_playable_file(user, file_id):
+    """
+    The single authorization check for serving a historical recording file:
+    the file must be verified, in the expected private bucket/prefix, and its
+    session visible to this user (batch mapping / teacher mapping / admin).
+    Anything else raises 404 so file ids cannot be probed.
+    """
+    file_obj = (
+        playable_files()
+        .select_related("session", "session__course")
+        .filter(pk=file_id, session__in=visible_sessions(user))
+        .first()
+    )
+    if file_obj is None or not HistoricalRecordingSessionListView.valid_file(file_obj):
+        raise Http404
+    return file_obj
+
+
+def _session_subtitle_file(file_obj):
+    """The verified VTT for this file's session (the file itself if it is a VTT), or None."""
+    if file_obj.file_type == HistoricalRecordingFile.FileType.VTT:
+        return file_obj
+    return next(
+        (
+            f for f in playable_files()
+            .filter(session_id=file_obj.session_id, file_type=HistoricalRecordingFile.FileType.VTT)
+            .order_by("id")
+            if HistoricalRecordingSessionListView.valid_file(f)
+        ),
+        None,
+    )
+
+
 class HistoricalRecordingPlaybackView(APIView):
     """
     GET /api/courses/historical-recordings/files/<file_id>/playback/
@@ -338,26 +373,8 @@ class HistoricalRecordingPlaybackView(APIView):
         ), content_type
 
     def get(self, request, file_id):
-        file_obj = (
-            playable_files()
-            .select_related("session", "session__course")
-            .filter(pk=file_id, session__in=visible_sessions(request.user))
-            .first()
-        )
-        if file_obj is None or not HistoricalRecordingSessionListView.valid_file(file_obj):
-            raise Http404
-
-        subtitle = None
-        if file_obj.file_type == HistoricalRecordingFile.FileType.MP4:
-            subtitle = next(
-                (
-                    f for f in playable_files()
-                    .filter(session_id=file_obj.session_id, file_type=HistoricalRecordingFile.FileType.VTT)
-                    .order_by("id")
-                    if HistoricalRecordingSessionListView.valid_file(f)
-                ),
-                None,
-            )
+        file_obj = _visible_playable_file(request.user, file_id)
+        subtitle = _session_subtitle_file(file_obj) if file_obj.file_type == HistoricalRecordingFile.FileType.MP4 else None
 
         try:
             client = HistoricalRecordingSessionListView.get_s3_client()
@@ -374,6 +391,7 @@ class HistoricalRecordingPlaybackView(APIView):
             "content_type": content_type,
             "url": url,
             "subtitle_url": subtitle_url,
+            "has_subtitles": subtitle is not None,
             "expires_in": URL_EXPIRY_SECONDS,
             "session": {
                 "id": session.pk,
@@ -383,3 +401,40 @@ class HistoricalRecordingPlaybackView(APIView):
                 "actual_start": session.actual_start.isoformat() if session.actual_start else None,
             },
         })
+
+
+class HistoricalRecordingSubtitleView(APIView):
+    """
+    GET /api/courses/historical-recordings/files/<file_id>/subtitles/
+
+    The WebVTT subtitles of a recording, as text. <file_id> may be the video
+    or the subtitle file. Same authorization as playback (404 when the session
+    is not visible to the caller). Served through the API so browsers and the
+    app never need cross-origin access to the private S3 bucket.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, file_id):
+        file_obj = _visible_playable_file(request.user, file_id)
+        subtitle = _session_subtitle_file(file_obj)
+        if subtitle is None:
+            raise Http404
+
+        try:
+            client = HistoricalRecordingSessionListView.get_s3_client()
+            obj = client.get_object(Bucket=RECORDING_BUCKET, Key=subtitle.s3_key)
+            data = obj["Body"].read(MAX_SUBTITLE_BYTES + 1)
+        except (ClientError, BotoCoreError):
+            logger.exception("Historical recording subtitle read failed; file_id=%s", subtitle.pk)
+            raise APIException("Unable to load subtitles.")
+        if len(data) > MAX_SUBTITLE_BYTES:
+            logger.warning("Historical recording subtitle too large; file_id=%s", subtitle.pk)
+            raise APIException("Subtitle file is too large.")
+
+        text = data.decode("utf-8-sig", errors="replace")
+        if not text.lstrip().startswith("WEBVTT"):
+            text = "WEBVTT\n\n" + text
+        response = HttpResponse(text, content_type="text/vtt; charset=utf-8")
+        response["Cache-Control"] = "private, no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
