@@ -643,3 +643,41 @@ class TeacherPayrollLine(models.Model):
 
     def __str__(self):
         return f"Line #{self.id} - {self.class_title} - {self.amount}"
+
+
+class TeacherPayrollSettings(models.Model):
+    """
+    Admin-editable calculation rules for teacher salary (singleton, pk=1).
+    Applied when a draft statement is calculated/recalculated; approved and
+    paid statements are never recalculated.
+    """
+    class MissingZoomTime(models.TextChoices):
+        REVIEW = 'REVIEW', 'Flag for review (pay nothing until minutes are entered)'
+        USE_SCHEDULED = 'USE_SCHEDULED', 'Pay the scheduled duration'
+
+    count_late_as_attended = models.BooleanField(default=True)
+    count_excused_as_attended = models.BooleanField(default=False)
+    cap_zoom_time_at_schedule = models.BooleanField(default=True)
+    missing_zoom_time = models.CharField(max_length=20, choices=MissingZoomTime.choices, default=MissingZoomTime.REVIEW)
+    updated_by = models.ForeignKey(User, related_name='+', null=True, blank=True, on_delete=models.SET_NULL)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = "Teacher payroll settings"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get_solo(cls):
+        obj = cls.objects.filter(pk=1).first()
+        return obj if obj is not None else cls(pk=1)
+
+    def counted_statuses(self):
+        statuses = ['PRESENT']
+        if self.count_late_as_attended:
+            statuses.append('LATE')
+        if self.count_excused_as_attended:
+            statuses.append('EXCUSED')
+        return tuple(statuses)

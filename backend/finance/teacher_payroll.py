@@ -12,12 +12,16 @@ substitute, when assigned, is the one paid):
     line amount = hours pay + class pay + student pay
 
   * Paid minutes = actual Zoom meeting time (meeting.started/ended webhooks),
-    capped at the scheduled duration. No Zoom time -> nothing is guessed: the
-    line is flagged NO_ZOOM_TIME and pays 0 until the admin enters minutes.
-  * Attending students = attendance records marked PRESENT or LATE, excluding
-    staff, teaching staff and excluded/test accounts (the same exclusion rule
-    the Zoom attendance pipeline uses). The admin can correct the count per
-    line while the statement is a draft.
+    capped at the scheduled duration (setting). No Zoom time -> by default
+    nothing is guessed: the line is flagged NO_ZOOM_TIME and pays 0 until the
+    admin enters minutes; the admin can instead choose to pay the scheduled
+    duration (setting).
+  * Attending students = attendance records marked PRESENT (+ LATE / EXCUSED
+    per the settings), excluding staff, teaching staff and excluded/test
+    accounts (the same exclusion rule the Zoom attendance pipeline uses). The
+    admin can correct the count per line while the statement is a draft.
+  * These rules live in TeacherPayrollSettings (admin-editable) and apply
+    whenever a draft is calculated; approved/paid statements never change.
   * Rate card: the teacher's card for the class's course, else their default
     card (course empty). No active card -> NO_RATE_CARD, pays 0.
 
@@ -42,7 +46,6 @@ CENT = Decimal("0.01")
 # (same protected set used for historical recordings and Zoom host sync).
 PAYROLL_EXCLUDED_USER_IDS = frozenset({1, 25, 39, 96})
 
-COUNTED_ATTENDANCE_STATUSES = ("PRESENT", "LATE")
 
 # Flags. Blocking flags must be resolved (or the line excluded) before approval.
 NO_RATE_CARD = "NO_RATE_CARD"
@@ -50,6 +53,7 @@ NO_ZOOM_TIME = "NO_ZOOM_TIME"
 NO_TIER_FOR_STUDENTS = "NO_TIER_FOR_STUDENTS"
 BLOCKING_FLAGS = frozenset({NO_RATE_CARD, NO_ZOOM_TIME, NO_TIER_FOR_STUDENTS})
 ZOOM_TIME_CAPPED = "ZOOM_TIME_CAPPED"
+SCHEDULED_TIME_USED = "SCHEDULED_TIME_USED"
 ATTENDANCE_NOT_FINALIZED = "ATTENDANCE_NOT_FINALIZED"
 NO_STUDENTS = "NO_STUDENTS"
 MINUTES_OVERRIDDEN = "MINUTES_OVERRIDDEN"
@@ -138,14 +142,21 @@ def _claimed_class_ids(exclude_statement_id=None):
     return set(qs.values_list("live_class_id", flat=True))
 
 
-def counted_attendees(live_class):
-    """Students counted as attending: PRESENT/LATE, never staff, teaching staff or excluded accounts."""
+def payroll_settings():
+    from .models import TeacherPayrollSettings
+
+    return TeacherPayrollSettings.get_solo()
+
+
+def counted_attendees(live_class, statuses=None):
+    """Students counted as attending (statuses per the settings), never staff, teaching staff or excluded accounts."""
     from courses.models import Attendance
     from courses.services.attendance_identity import excluded_user_reason
 
+    statuses = statuses or payroll_settings().counted_statuses()
     records = (
         Attendance.objects
-        .filter(live_class=live_class, status__in=COUNTED_ATTENDANCE_STATUSES)
+        .filter(live_class=live_class, status__in=statuses)
         .select_related("student")
     )
     return sum(1 for r in records if excluded_user_reason(r.student, live_class) is None)
@@ -175,24 +186,30 @@ def _tiers_snapshot(card):
     ]
 
 
-def compute_line(line):
+def compute_line(line, settings=None):
     """(Re)compute a line's paid values and flags from its snapshot + admin corrections. Does not save."""
-    from .models import tier_label
+    from .models import TeacherPayrollSettings, tier_label
 
+    settings = settings or payroll_settings()
     flags = []
     if line.is_substitute:
         flags.append(SUBSTITUTE)
     if not line.attendance_finalized:
         flags.append(ATTENDANCE_NOT_FINALIZED)
 
-    # Minutes: admin value, else Zoom time capped at the schedule, else unknown.
+    # Minutes: admin value, else Zoom time (capped at the schedule if set),
+    # else the scheduled duration or "unknown", per the settings.
     if line.minutes_override is not None:
         minutes = line.minutes_override
         flags.append(MINUTES_OVERRIDDEN)
     elif line.zoom_minutes is not None:
-        minutes = min(line.zoom_minutes, line.scheduled_minutes) if line.scheduled_minutes else line.zoom_minutes
-        if line.scheduled_minutes and line.zoom_minutes > line.scheduled_minutes:
+        minutes = line.zoom_minutes
+        if settings.cap_zoom_time_at_schedule and line.scheduled_minutes and line.zoom_minutes > line.scheduled_minutes:
+            minutes = line.scheduled_minutes
             flags.append(ZOOM_TIME_CAPPED)
+    elif settings.missing_zoom_time == TeacherPayrollSettings.MissingZoomTime.USE_SCHEDULED and line.scheduled_minutes:
+        minutes = line.scheduled_minutes
+        flags.append(SCHEDULED_TIME_USED)
     else:
         minutes = None
         flags.append(NO_ZOOM_TIME)
@@ -255,7 +272,7 @@ def recompute_totals(statement):
     return statement
 
 
-def _build_line(statement, live_class, teacher_id, cards):
+def _build_line(statement, live_class, teacher_id, cards, statuses):
     from .models import TeacherPayrollLine
 
     card = cards.get(live_class.course_id) or cards.get(None)
@@ -270,7 +287,7 @@ def _build_line(statement, live_class, teacher_id, cards):
         is_substitute=live_class.substitute_instructor_id == teacher_id,
         scheduled_minutes=live_class.duration_minutes or 0,
         zoom_minutes=zoom_minutes(live_class),
-        attendee_count=counted_attendees(live_class),
+        attendee_count=counted_attendees(live_class, statuses),
         attendance_finalized=live_class.attendance_finalized_at is not None,
         rate_card=card,
         rate_tiers_snapshot=_tiers_snapshot(card) if card else [],
@@ -326,12 +343,14 @@ def generate_statement(teacher, year, month, actor=None):
             statement.lines.all().delete()
 
         cards = active_rate_cards(teacher.pk)
+        settings = payroll_settings()
+        statuses = settings.counted_statuses()
         lines = []
         for lc in classes:
-            line = _build_line(statement, lc, teacher.pk, cards)
+            line = _build_line(statement, lc, teacher.pk, cards, statuses)
             if lc.pk in corrections:
                 line.minutes_override, line.attendee_count_override, line.is_excluded, line.admin_note = corrections[lc.pk]
-            lines.append(compute_line(line))
+            lines.append(compute_line(line, settings))
         TeacherPayrollLine.objects.bulk_create(lines)
 
         statement.generated_at = timezone.now()

@@ -38,7 +38,17 @@ describe("TeacherSalaryPage", () => {
   beforeEach(() => {
     vi.stubGlobal(
       "fetch",
-      vi.fn((url: string) => {
+      vi.fn((url: string, init?: RequestInit) => {
+        if (url.includes("/settings/")) {
+          const base = {
+            count_late_as_attended: true, count_excused_as_attended: false, cap_zoom_time_at_schedule: true,
+            missing_zoom_time: "REVIEW", updated_at: null, updated_by_name: "",
+          };
+          if (init?.method === "PUT") {
+            return json({ ...base, ...JSON.parse(String(init.body)), updated_at: "2026-11-25T06:00:00Z", updated_by_name: "natyalms" });
+          }
+          return json(base);
+        }
         if (url.includes("/teachers/")) return json(TEACHERS);
         if (url.includes("/statements/11/")) return json({ ...STATEMENT, lines: [LINE, BLOCKED] });
         if (url.includes("/statements/?month=")) return json([STATEMENT]);
@@ -82,5 +92,21 @@ describe("TeacherSalaryPage", () => {
     expect(await screen.findByText("All other courses (default)")).toBeTruthy();
     expect(screen.getByText("₹800.00/hr")).toBeTruthy();
     expect(screen.getByText("no rates")).toBeTruthy(); // Ravi has no rate card yet
+  });
+
+  it("edits and saves the calculation settings", async () => {
+    render(<TeacherSalaryPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const late = (await screen.findByRole("checkbox", { name: /Count Late students/ })) as HTMLInputElement;
+    expect(late.checked).toBe(true);
+    fireEvent.click(late);
+    fireEvent.click(screen.getByRole("radio", { name: /Pay the scheduled duration/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(await screen.findByText(/Saved\. Click Calculate/)).toBeTruthy();
+    const put = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === "PUT");
+    expect(JSON.parse(String(put?.[1]?.body))).toEqual({
+      count_late_as_attended: false, count_excused_as_attended: false,
+      cap_zoom_time_at_schedule: true, missing_zoom_time: "USE_SCHEDULED",
+    });
   });
 });

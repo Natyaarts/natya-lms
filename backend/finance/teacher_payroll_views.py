@@ -18,7 +18,7 @@ from users.permissions import IsSuperAdminOrAdmin
 
 from . import teacher_payroll as payroll
 from .models import (
-    TeacherPayrollLine, TeacherPayrollStatement, TeacherRateCard, TeacherRateTier,
+    TeacherPayrollLine, TeacherPayrollSettings, TeacherPayrollStatement, TeacherRateCard, TeacherRateTier,
 )
 
 User = get_user_model()
@@ -457,3 +457,41 @@ class PayrollLineView(APIView):
                f"Line #{line.pk} on statement #{line.statement_id} corrected.",
                {"changes": {k: v for k, v in changes.items()}, "amount": str(line.amount)})
         return Response(_statement_detail(line.statement))
+
+
+class PayrollSettingsSerializer(serializers.ModelSerializer):
+    updated_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TeacherPayrollSettings
+        fields = ["count_late_as_attended", "count_excused_as_attended", "cap_zoom_time_at_schedule",
+                  "missing_zoom_time", "updated_at", "updated_by_name"]
+        read_only_fields = ["updated_at", "updated_by_name"]
+
+    def get_updated_by_name(self, obj):
+        return _name(obj.updated_by) if obj.updated_by_id else ""
+
+
+SETTINGS_KEYS = ("count_late_as_attended", "count_excused_as_attended", "cap_zoom_time_at_schedule", "missing_zoom_time")
+
+
+class PayrollSettingsView(APIView):
+    """GET/PUT teacher-salary/settings/ -- the admin-editable calculation rules."""
+    permission_classes = [IsSuperAdminOrAdmin]
+
+    def get(self, request):
+        return Response(PayrollSettingsSerializer(TeacherPayrollSettings.get_solo()).data)
+
+    def put(self, request):
+        settings_obj = TeacherPayrollSettings.get_solo()
+        before = PayrollSettingsSerializer(settings_obj).data
+        serializer = PayrollSettingsSerializer(settings_obj, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        settings_obj = serializer.save(updated_by=request.user)
+        after = PayrollSettingsSerializer(settings_obj).data
+        _audit(request, "TEACHER_PAYROLL_SETTINGS_UPDATED", "TeacherPayrollSettings", 1,
+               "Teacher salary calculation settings updated.",
+               {"before": {k: before[k] for k in SETTINGS_KEYS}, "after": {k: after[k] for k in SETTINGS_KEYS}})
+        return Response(after)
+
+    patch = put

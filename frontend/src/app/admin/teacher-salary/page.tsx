@@ -7,6 +7,7 @@
  *    + per-class + per-student amounts), review/correct each class, then
  *    approve and record the payment.
  *  - Rate Cards: each teacher's rates, per course or as a default.
+ *  - Settings: which attendance counts and how class time is taken.
  * All rules live in the backend (finance/teacher_payroll.py); this page only
  * displays and edits.
  */
@@ -55,6 +56,10 @@ interface Line {
 }
 interface StatementDetail extends Statement { lines: Line[] }
 interface GenerateResult { teacher_id: number; statement_id: number | null; result: string; reason?: string }
+interface PayrollSettings {
+  count_late_as_attended: boolean; count_excused_as_attended: boolean; cap_zoom_time_at_schedule: boolean;
+  missing_zoom_time: "REVIEW" | "USE_SCHEDULED"; updated_at: string | null; updated_by_name: string;
+}
 
 // ---------------------------------------------------------------- helpers
 function csrf() {
@@ -101,6 +106,7 @@ const FLAG_LABELS: Record<string, { label: string; tone: "red" | "amber" | "zinc
   NO_TIER_FOR_STUDENTS: { label: "No rate for this student count", tone: "red" },
   ATTENDANCE_NOT_FINALIZED: { label: "Attendance not finalized", tone: "amber" },
   ZOOM_TIME_CAPPED: { label: "Capped at schedule", tone: "zinc" },
+  SCHEDULED_TIME_USED: { label: "No Zoom time – scheduled time paid", tone: "amber" },
   NO_STUDENTS: { label: "No students", tone: "amber" },
   MINUTES_OVERRIDDEN: { label: "Minutes edited", tone: "zinc" },
   STUDENTS_OVERRIDDEN: { label: "Students edited", tone: "zinc" },
@@ -127,7 +133,7 @@ const btnGhost = `${btn} bg-zinc-900 border border-white/10 hover:bg-zinc-800 te
 
 // ================================================================= page
 export default function TeacherSalaryPage() {
-  const [tab, setTab] = useState<"salary" | "rates">("salary");
+  const [tab, setTab] = useState<"salary" | "rates" | "settings">("salary");
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [courses, setCourses] = useState<CourseRef[]>([]);
   const [loadError, setLoadError] = useState("");
@@ -160,7 +166,7 @@ export default function TeacherSalaryPage() {
           </p>
         </div>
         <div className="flex p-1 bg-zinc-900 border border-white/10 rounded-xl self-start">
-          {(["salary", "rates"] as const).map((t) => (
+          {(["salary", "rates", "settings"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -168,7 +174,7 @@ export default function TeacherSalaryPage() {
                 tab === t ? "bg-[#facc15] text-black" : "text-zinc-400 hover:text-white"
               }`}
             >
-              {t === "salary" ? "Monthly Salary" : "Rate Cards"}
+              {t === "salary" ? "Monthly Salary" : t === "rates" ? "Rate Cards" : "Settings"}
             </button>
           ))}
         </div>
@@ -176,11 +182,9 @@ export default function TeacherSalaryPage() {
 
       {loadError && <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-xl mb-6 text-sm">{loadError}</div>}
 
-      {tab === "salary" ? (
-        <MonthlySalary teachers={teachers} />
-      ) : (
-        <RateCards teachers={teachers} courses={courses} onChanged={loadTeachers} />
-      )}
+      {tab === "salary" && <MonthlySalary teachers={teachers} />}
+      {tab === "rates" && <RateCards teachers={teachers} courses={courses} onChanged={loadTeachers} />}
+      {tab === "settings" && <SalarySettings />}
     </div>
   );
 }
@@ -982,6 +986,121 @@ function RateCards({ teachers, courses, onChanged }: { teachers: Teacher[]; cour
               </div>
             )}
           </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ================================================================= settings
+function SalarySettings() {
+  const [settings, setSettings] = useState<PayrollSettings | null>(null);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<PayrollSettings>("/settings/")
+      .then((data) => !cancelled && setSettings(data))
+      .catch((e) => !cancelled && setError((e as Error).message));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const save = async () => {
+    if (!settings) return;
+    setSaving(true);
+    setError("");
+    setSaved("");
+    try {
+      const data = await api<PayrollSettings>("/settings/", {
+        method: "PUT",
+        body: JSON.stringify({
+          count_late_as_attended: settings.count_late_as_attended,
+          count_excused_as_attended: settings.count_excused_as_attended,
+          cap_zoom_time_at_schedule: settings.cap_zoom_time_at_schedule,
+          missing_zoom_time: settings.missing_zoom_time,
+        }),
+      });
+      setSettings(data);
+      setSaved("Saved. Click Calculate (or Recalculate on a draft) to apply the new rules. Approved and paid statements are not changed.");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!settings) {
+    return error ? (
+      <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-xl text-sm">{error}</div>
+    ) : (
+      <div className="text-zinc-500 text-sm">Loading settings...</div>
+    );
+  }
+
+  const set = (patch: Partial<PayrollSettings>) => setSettings({ ...settings, ...patch });
+  const toggle = (key: "count_late_as_attended" | "count_excused_as_attended" | "cap_zoom_time_at_schedule", title: string, help: string) => (
+    <label className="flex items-start gap-3 p-4 rounded-xl border border-white/10 bg-zinc-950 cursor-pointer">
+      <input type="checkbox" className="mt-1" checked={settings[key]} onChange={(e) => set({ [key]: e.target.checked })} />
+      <span>
+        <span className="block text-sm font-semibold text-white">{title}</span>
+        <span className="block text-xs text-zinc-500 mt-0.5">{help}</span>
+      </span>
+    </label>
+  );
+
+  return (
+    <div className="max-w-3xl space-y-6">
+      {error && <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-xl text-sm">{error}</div>}
+      {saved && <div className="bg-green-500/10 border border-green-500/20 text-green-400 p-4 rounded-xl text-sm">{saved}</div>}
+
+      <section className="bg-zinc-900 border border-white/10 rounded-2xl p-5 space-y-3">
+        <h2 className="font-bold">Which students count as attended</h2>
+        <p className="text-xs text-zinc-500">Students marked Present always count. Used for the hourly-rate tier and the per-student amount.</p>
+        {toggle("count_late_as_attended", "Count Late students", "Students marked Late are counted as attended.")}
+        {toggle("count_excused_as_attended", "Count Excused students", "Students marked Excused are counted as attended.")}
+      </section>
+
+      <section className="bg-zinc-900 border border-white/10 rounded-2xl p-5 space-y-3">
+        <h2 className="font-bold">Class time paid</h2>
+        {toggle(
+          "cap_zoom_time_at_schedule",
+          "Cap Zoom time at the scheduled duration",
+          "If a 60-minute class runs 75 minutes on Zoom, pay 60. Turn off to pay the full Zoom time."
+        )}
+        <div className="p-4 rounded-xl border border-white/10 bg-zinc-950 space-y-2">
+          <div className="text-sm font-semibold text-white">When Zoom has no time for a class</div>
+          {([
+            ["REVIEW", "Flag it for review", "The class pays nothing until you enter the minutes (safest)."],
+            ["USE_SCHEDULED", "Pay the scheduled duration", "Pays the scheduled length and labels the class so you can still check it."],
+          ] as const).map(([value, title, help]) => (
+            <label key={value} className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="radio"
+                name="missing_zoom_time"
+                className="mt-1"
+                checked={settings.missing_zoom_time === value}
+                onChange={() => set({ missing_zoom_time: value })}
+              />
+              <span>
+                <span className="block text-sm text-white">{title}</span>
+                <span className="block text-xs text-zinc-500">{help}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </section>
+
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <button disabled={saving} className={btnPrimary} onClick={save}>{saving ? "Saving..." : "Save settings"}</button>
+        {settings.updated_at && (
+          <span className="text-xs text-zinc-500">
+            Last changed {new Date(settings.updated_at).toLocaleString("en-IN")}
+            {settings.updated_by_name && ` by ${settings.updated_by_name}`}
+          </span>
         )}
       </div>
     </div>

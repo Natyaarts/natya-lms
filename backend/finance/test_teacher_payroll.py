@@ -325,3 +325,67 @@ class RateCardApiTests(TeacherPayrollTestBase):
         self.assertNotIn(39, ids)
         self.assertNotIn(self.students[0].pk, ids)
         self.assertTrue(any(c["title"] == "Kuchipudi" for c in data["courses"]))
+
+
+class PayrollSettingsTests(TeacherPayrollTestBase):
+    def put_settings(self, **body):
+        return self.client.put(reverse("teacher-salary-settings"), body, format="json")
+
+    def test_defaults(self):
+        data = self.client.get(reverse("teacher-salary-settings")).data
+        self.assertEqual(
+            (data["count_late_as_attended"], data["count_excused_as_attended"], data["cap_zoom_time_at_schedule"], data["missing_zoom_time"]),
+            (True, False, True, "REVIEW"),
+        )
+
+    def test_attendance_statuses_follow_settings(self):
+        self.card(tiers=((0, None, "600"),), per_student="10")
+        lc = self.live_class(zoom=60, present=2, late=1)
+        Attendance.objects.create(live_class=lc, student=self.students[5], status="EXCUSED")
+        self.put_settings(count_late_as_attended=False, count_excused_as_attended=True)
+        self.generate()
+        line = self.detail(self.statement())["lines"][0]
+        self.assertEqual(line["students_counted"], 3)            # 2 present + 1 excused, late not counted
+        self.assertEqual(line["student_amount"], "30.00")
+
+    def test_uncapped_zoom_time(self):
+        self.card(tiers=((1, None, "600"),))
+        self.live_class(zoom=90, present=1)
+        self.put_settings(cap_zoom_time_at_schedule=False)
+        self.generate()
+        line = self.detail(self.statement())["lines"][0]
+        self.assertEqual((line["paid_minutes"], line["amount"]), (90, "900.00"))
+        self.assertNotIn(payroll.ZOOM_TIME_CAPPED, line["flags"])
+
+    def test_missing_zoom_time_can_pay_scheduled_duration(self):
+        self.card(tiers=((1, None, "600"),))
+        self.live_class(zoom=None, present=1, duration=45)
+        self.put_settings(missing_zoom_time="USE_SCHEDULED")
+        self.generate()
+        st = self.statement()
+        line = self.detail(st)["lines"][0]
+        self.assertEqual((line["paid_minutes"], line["amount"], line["blocking"]), (45, "450.00", False))
+        self.assertIn(payroll.SCHEDULED_TIME_USED, line["flags"])
+        self.assertEqual(self.client.post(reverse("teacher-salary-approve", kwargs={"pk": st.pk})).status_code, 200)
+
+    def test_settings_change_never_alters_approved_statement(self):
+        self.card(tiers=((1, None, "600"),))
+        self.live_class(zoom=90, present=1)
+        self.generate()
+        st = self.statement()
+        self.client.post(reverse("teacher-salary-approve", kwargs={"pk": st.pk}))
+        self.put_settings(cap_zoom_time_at_schedule=False)
+        st.refresh_from_db()
+        self.assertEqual(st.net_amount, Decimal("600.00"))
+        self.assertEqual(self.generate().data["results"][0]["result"], "skipped")
+
+    def test_settings_validation_audit_and_admin_only(self):
+        self.assertEqual(self.put_settings(missing_zoom_time="GUESS").status_code, 400)
+        res = self.put_settings(count_late_as_attended=False)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["updated_by_name"], "pay_admin")
+        log = AdminAuditLog.objects.get(action="TEACHER_PAYROLL_SETTINGS_UPDATED")
+        self.assertEqual((log.metadata["before"]["count_late_as_attended"], log.metadata["after"]["count_late_as_attended"]), (True, False))
+        self.client.force_authenticate(self.teacher)
+        self.assertEqual(self.client.get(reverse("teacher-salary-settings")).status_code, 403)
+        self.assertEqual(self.put_settings(count_late_as_attended=True).status_code, 403)

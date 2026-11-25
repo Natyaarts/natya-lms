@@ -8,7 +8,7 @@ from .views import (
     RefundEligibilityView,
 )
 from .teacher_payroll_views import (
-    PayrollLineView, RateCardDetailView, RateCardListCreateView, SalaryTeachersView, StatementActionView,
+    PayrollLineView, PayrollSettingsView, RateCardDetailView, RateCardListCreateView, SalaryTeachersView, StatementActionView,
     StatementDetailView, StatementGenerateView, StatementListView,
 )
 
@@ -41,6 +41,7 @@ urlpatterns = [
     path('admin/finance-health/', FinanceHealthSummaryView.as_view(), name='finance-admin-health'),
     # Teacher salary: rate cards + monthly statements from conducted live classes.
     path('admin/teacher-salary/teachers/', SalaryTeachersView.as_view(), name='teacher-salary-teachers'),
+    path('admin/teacher-salary/settings/', PayrollSettingsView.as_view(), name='teacher-salary-settings'),
     path('admin/teacher-salary/rate-cards/', RateCardListCreateView.as_view(), name='teacher-salary-rate-cards'),
     path('admin/teacher-salary/rate-cards/<int:pk>/', RateCardDetailView.as_view(), name='teacher-salary-rate-card'),
     path('admin/teacher-salary/statements/', StatementListView.as_view(), name='teacher-salary-statements'),
