@@ -57,7 +57,15 @@ export default function CertificatePage() {
             body.error ||
               "This course is not yet complete -- finish every lesson and pass every required assessment to earn your certificate."
           );
-        } else if (res.status === 401 || res.status === 403) {
+        } else if (res.status === 403) {
+          // 403 is either "not logged in" or "withheld by the academy" (code: certificate_inactive).
+          const body = await res.json().catch(() => ({}));
+          setError(
+            body.code === "certificate_inactive" && body.error
+              ? body.error
+              : "Please log in to view your certificate."
+          );
+        } else if (res.status === 401) {
           setError("Please log in to view your certificate.");
         } else {
           setError("Something went wrong loading your certificate.");

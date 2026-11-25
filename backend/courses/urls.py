@@ -10,7 +10,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     CourseViewSet, ModuleViewSet, VideoLessonViewSet, AdminEnrollmentViewSet, LiveClassViewSet, LiveBatchViewSet,
     TeacherAvailabilityViewSet, AssessmentViewSet, AssessmentAttemptViewSet, CertificateViewSet, AssignmentViewSet,
-    AssignmentSubmissionViewSet, AdminCertificateListView, AdminAssignmentListView,
+    AssignmentSubmissionViewSet, AdminCertificateListView, AdminCertificateStatusView, AdminAssignmentListView,
     CertificateTemplateView,
     AdminZoomMeetingCreateView,
     AdminZoomManualReviewRequestOTPView,
@@ -59,6 +59,7 @@ urlpatterns = [
     path('certificate-template/', CertificateTemplateView.as_view(), name='certificate-template'),
     path('admin/certificate-template/', CertificateTemplateView.as_view(), name='admin-certificate-template'),
     path('admin/certificates/', AdminCertificateListView.as_view(), name='admin-certificates'),
+    path('admin/certificates/<int:pk>/status/', AdminCertificateStatusView.as_view(), name='admin-certificate-status'),
     path('admin/assignments/', AdminAssignmentListView.as_view(), name='admin-assignments'),
     path('video-protection-settings/', VideoProtectionSettingView.as_view(), name='video-protection-settings'),
     path('attendance-settings/', AttendanceConfigurationView.as_view(), name='attendance-settings'),

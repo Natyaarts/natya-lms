@@ -357,10 +357,11 @@ class CertificateAdmin(admin.ModelAdmin):
     implemented in this phase (not requested, no existing requirement
     found during the audit).
     """
-    list_display = ('verification_id', 'learner_name_snapshot', 'course_title_snapshot', 'student', 'issued_at')
-    list_filter = ('course',)
+    list_display = ('verification_id', 'learner_name_snapshot', 'course_title_snapshot', 'student', 'issued_at', 'is_active')
+    list_filter = ('is_active', 'course')
     search_fields = ('verification_id', 'learner_name_snapshot', 'course_title_snapshot', 'student__username', 'student__email')
-    readonly_fields = ('student', 'course', 'verification_id', 'learner_name_snapshot', 'course_title_snapshot', 'issued_at')
+    readonly_fields = ('student', 'course', 'verification_id', 'learner_name_snapshot', 'course_title_snapshot', 'issued_at',
+                       'is_active', 'status_changed_at', 'status_changed_by')
 
     def has_add_permission(self, request):
         return False

@@ -436,3 +436,120 @@ def _complete_lesson_only_course_for(student, suffix):
     Enrollment.objects.create(user=student, course=course)
     LessonProgress.objects.create(user=student, lesson=lesson, completed=True, video_duration=10, last_watched_position=10)
     return course
+
+
+class CertificateActiveSwitchTests(APITestCase):
+    """Admin on/off switch: an inactive certificate is withheld from the student
+    and fails public verification; switching it back on restores it unchanged."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()  # verify endpoint is throttled
+        self.admin = User.objects.create_user(username="cert_switch_admin", password="pw", is_staff=True, is_student=False)
+        self.student = User.objects.create_user(username="cert_switch_student", password="pw")
+        self.other = User.objects.create_user(username="cert_switch_other", password="pw")
+        self.course = _complete_lesson_only_course(self.student)
+        self.client.force_authenticate(self.student)
+        self.cert = Certificate.objects.get(pk=self.client.get(
+            reverse('certificate-by-course', kwargs={'course_id': self.course.id})).data['id'])
+
+    def _set(self, user, value):
+        self.client.force_authenticate(user)
+        return self.client.post(reverse('admin-certificate-status', kwargs={'pk': self.cert.pk}),
+                                {'is_active': value}, format='json')
+
+    def _verify(self):
+        return self.client_class().get(reverse('certificate-verify', kwargs={'verification_id': self.cert.verification_id}))
+
+    def test_new_certificates_are_active(self):
+        self.assertTrue(self.cert.is_active)
+        self.assertTrue(self._verify().data['valid'])
+
+    def test_admin_deactivate_withholds_everywhere(self):
+        from users.models import AdminAuditLog
+        res = self._set(self.admin, False)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(res.data['is_active'])
+        self.assertIsNotNone(res.data['status_changed_at'])
+        self.cert.refresh_from_db()
+        self.assertFalse(self.cert.is_active)
+        self.assertEqual(self.cert.status_changed_by, self.admin)
+        self.assertTrue(AdminAuditLog.objects.filter(action='CERTIFICATE_DEACTIVATED', target_id=str(self.cert.pk)).exists())
+
+        self.client.force_authenticate(self.student)
+        by_course = self.client.get(reverse('certificate-by-course', kwargs={'course_id': self.course.id}))
+        self.assertEqual(by_course.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(by_course.data['code'], 'certificate_inactive')
+        self.assertNotIn('verification_id', by_course.data)
+        listed = self.client.get(reverse('certificate-list')).data
+        listed = listed.get('results', listed) if isinstance(listed, dict) else listed
+        self.assertEqual(list(listed), [])
+        self.assertEqual(self.client.get(reverse('certificate-detail', kwargs={'pk': self.cert.pk})).status_code, status.HTTP_404_NOT_FOUND)
+
+        verify = self._verify()
+        self.assertEqual(verify.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(verify.data['valid'])
+        for leaked in ('learner_name_snapshot', 'course_title_snapshot', 'issued_at'):
+            self.assertNotIn(leaked, verify.data)
+
+    def test_no_duplicate_certificate_is_created_while_inactive(self):
+        self._set(self.admin, False)
+        self.client.force_authenticate(self.student)
+        self.client.get(reverse('certificate-by-course', kwargs={'course_id': self.course.id}))
+        self.assertEqual(Certificate.objects.filter(student=self.student, course=self.course).count(), 1)
+
+    def test_reactivate_restores_same_certificate(self):
+        original = (self.cert.verification_id, self.cert.learner_name_snapshot, self.cert.course_title_snapshot)
+        self._set(self.admin, False)
+        res = self._set(self.admin, True)
+        self.assertTrue(res.data['is_active'])
+        self.cert.refresh_from_db()
+        self.assertEqual((self.cert.verification_id, self.cert.learner_name_snapshot, self.cert.course_title_snapshot), original)
+        self.client.force_authenticate(self.student)
+        by_course = self.client.get(reverse('certificate-by-course', kwargs={'course_id': self.course.id}))
+        self.assertEqual(by_course.status_code, status.HTTP_200_OK)
+        self.assertEqual(by_course.data['verification_id'], original[0])
+        self.assertTrue(self._verify().data['valid'])
+
+    def test_repeat_same_state_is_noop_without_audit(self):
+        from users.models import AdminAuditLog
+        res = self._set(self.admin, True)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.cert.refresh_from_db()
+        self.assertIsNone(self.cert.status_changed_at)
+        self.assertFalse(AdminAuditLog.objects.filter(target_type='Certificate').exists())
+
+    def test_non_admins_cannot_switch(self):
+        teacher = User.objects.create_user(username="cert_switch_teacher", password="pw", is_teacher=True, is_student=False)
+        for user in (self.student, self.other, teacher):
+            self.assertEqual(self._set(user, False).status_code, status.HTTP_403_FORBIDDEN)
+        self.client.force_authenticate(None)
+        self.assertIn(self.client.post(reverse('admin-certificate-status', kwargs={'pk': self.cert.pk}),
+                                       {'is_active': False}, format='json').status_code,
+                      (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))
+        self.cert.refresh_from_db()
+        self.assertTrue(self.cert.is_active)
+
+    def test_rejects_non_boolean_and_unknown_certificate(self):
+        for bad in ('false', 0, None, 'yes'):
+            self.assertEqual(self._set(self.admin, bad).status_code, status.HTTP_400_BAD_REQUEST)
+        self.cert.refresh_from_db()
+        self.assertTrue(self.cert.is_active)
+        self.client.force_authenticate(self.admin)
+        missing = self.client.post(reverse('admin-certificate-status', kwargs={'pk': 999999}), {'is_active': False}, format='json')
+        self.assertEqual(missing.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_list_shows_status_and_filters(self):
+        other_course = _complete_lesson_only_course(self.other)
+        self.client.force_authenticate(self.other)
+        self.client.get(reverse('certificate-by-course', kwargs={'course_id': other_course.id}))
+        self._set(self.admin, False)
+        self.client.force_authenticate(self.admin)
+        rows = {r['id']: r for r in self.client.get(reverse('admin-certificates')).data['results']}
+        self.assertFalse(rows[self.cert.pk]['is_active'])
+        self.assertEqual(len(rows), 2)
+        inactive = self.client.get(reverse('admin-certificates'), {'is_active': 'false'}).data
+        self.assertEqual([r['id'] for r in inactive['results']], [self.cert.pk])
+        active = self.client.get(reverse('admin-certificates'), {'is_active': 'true'}).data
+        self.assertNotIn(self.cert.pk, [r['id'] for r in active['results']])
+        self.assertEqual(active['count'], 1)

@@ -1455,6 +1455,18 @@ class Certificate(models.Model):
 
     issued_at = models.DateTimeField(auto_now_add=True)
 
+    # Admin on/off switch. An inactive certificate stays on record (same
+    # verification_id, same snapshots; re-activating restores it exactly),
+    # but is withheld everywhere else: hidden from the student's list,
+    # refused by the by-course endpoint, and reported as not valid by
+    # public verification. Changed only through AdminCertificateStatusView,
+    # which also writes an AdminAuditLog entry.
+    is_active = models.BooleanField(default=True, db_index=True)
+    status_changed_at = models.DateTimeField(null=True, blank=True)
+    status_changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+
     class Meta:
         constraints = [
             # The DB-level backstop behind get_or_create_certificate's

@@ -45,6 +45,8 @@ interface Certificate {
   course_title_snapshot: string;
   issued_at: string;
   student: CertStudentRef;
+  is_active: boolean;
+  status_changed_at: string | null;
 }
 
 interface PaginatedResponse<T> {
@@ -79,6 +81,8 @@ export default function AdminCertificatesPage() {
   const [totalCount, setTotalCount] = useState(0);
   const [studentIdFilter, setStudentIdFilter] = useState("");
   const [courseIdFilter, setCourseIdFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"" | "true" | "false">("");
+  const [togglingId, setTogglingId] = useState<number | null>(null);
 
   // Helper: File to base64 Data URL
   const handleImageUpload = (
@@ -146,6 +150,7 @@ export default function AdminCertificatesPage() {
       const params = new URLSearchParams({ page: page.toString() });
       if (studentIdFilter) params.set("student_id", studentIdFilter);
       if (courseIdFilter) params.set("course_id", courseIdFilter);
+      if (statusFilter) params.set("is_active", statusFilter);
 
       const res = await fetch(`${API_BASE}/api/courses/admin/certificates/?${params.toString()}`, {
         credentials: "include",
@@ -222,6 +227,48 @@ export default function AdminCertificatesPage() {
       } catch {}
       setSaveSuccess("Reset to default classical arts template.");
       setTimeout(() => setSaveSuccess(""), 3000);
+    }
+  };
+
+  // Turn one issued certificate on or off. Inactive = hidden from the student
+  // and reported as not valid on the public verification page.
+  const handleToggleActive = async (c: Certificate) => {
+    const next = !c.is_active;
+    if (
+      !next &&
+      !confirm(
+        `Deactivate the certificate for ${c.learner_name_snapshot} (${c.course_title_snapshot})?
+
+` +
+          "The student will no longer see or download it, and its verification link will show it as not valid. " +
+          "You can turn it back on at any time."
+      )
+    ) {
+      return;
+    }
+    setTogglingId(c.id);
+    setIssuedError("");
+    try {
+      const res = await fetch(`${API_BASE}/api/courses/admin/certificates/${c.id}/status/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCsrfToken(),
+        },
+        credentials: "include",
+        body: JSON.stringify({ is_active: next }),
+      });
+      if (res.ok) {
+        const updated: Certificate = await res.json();
+        setCertificates((prev) => prev.map((x) => (x.id === c.id ? { ...x, ...updated } : x)));
+      } else {
+        const body = await res.json().catch(() => ({}));
+        setIssuedError(body.error || body.detail || "Could not update the certificate status.");
+      }
+    } catch {
+      setIssuedError("Network error updating the certificate status.");
+    } finally {
+      setTogglingId(null);
     }
   };
 
@@ -1247,6 +1294,16 @@ export default function AdminCertificatesPage() {
               onChange={(e) => setCourseIdFilter(e.target.value)}
               className="w-full md:w-56 bg-zinc-900 border border-white/5 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#facc15] placeholder:text-zinc-500"
             />
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as "" | "true" | "false")}
+              aria-label="Filter by certificate status"
+              className="w-full md:w-44 bg-zinc-900 border border-white/5 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#facc15]"
+            >
+              <option value="">All statuses</option>
+              <option value="true">Active only</option>
+              <option value="false">Inactive only</option>
+            </select>
             <button
               type="submit"
               className="px-5 py-3 bg-zinc-900 border border-white/10 hover:bg-zinc-800 text-sm font-semibold rounded-xl transition-all"
@@ -1266,13 +1323,14 @@ export default function AdminCertificatesPage() {
                     <th className="p-4 font-semibold">Course Title</th>
                     <th className="p-4 font-semibold">Verification ID</th>
                     <th className="p-4 font-semibold">Issued At</th>
+                    <th className="p-4 font-semibold">Status</th>
                     <th className="p-4 font-semibold text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5 text-zinc-300">
                   {issuedLoading ? (
                     <tr>
-                      <td colSpan={6} className="p-16 text-center text-zinc-500">
+                      <td colSpan={7} className="p-16 text-center text-zinc-500">
                         <div className="flex flex-col items-center justify-center gap-3">
                           <div className="w-6 h-6 border-2 border-[#facc15] border-t-transparent rounded-full animate-spin" />
                           <span className="text-sm">Loading certificates...</span>
@@ -1281,19 +1339,44 @@ export default function AdminCertificatesPage() {
                     </tr>
                   ) : certificates.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="p-16 text-center text-zinc-500 text-sm">
+                      <td colSpan={7} className="p-16 text-center text-zinc-500 text-sm">
                         No certificates found. Certificates are automatically issued when students complete all
                         required lessons and assessments.
                       </td>
                     </tr>
                   ) : (
                     certificates.map((c) => (
-                      <tr key={c.id} className="hover:bg-white/5 transition-colors">
+                      <tr key={c.id} className={`hover:bg-white/5 transition-colors ${c.is_active ? "" : "opacity-70"}`}>
                         <td className="p-4 font-bold text-white text-sm">{c.learner_name_snapshot}</td>
                         <td className="p-4 text-zinc-400">{c.student.username}</td>
                         <td className="p-4 text-zinc-400 max-w-xs truncate">{c.course_title_snapshot}</td>
                         <td className="p-4 font-mono text-xs text-[#facc15] select-all">{c.verification_id}</td>
                         <td className="p-4 text-zinc-400">{new Date(c.issued_at).toLocaleString()}</td>
+                        <td className="p-4">
+                          <div className="flex items-center gap-2 whitespace-nowrap">
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={c.is_active}
+                              aria-label={`${c.is_active ? "Deactivate" : "Activate"} certificate for ${c.learner_name_snapshot}`}
+                              title={c.is_active ? "Active - click to deactivate" : "Inactive - click to activate"}
+                              disabled={togglingId === c.id}
+                              onClick={() => handleToggleActive(c)}
+                              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors disabled:opacity-50 disabled:cursor-wait focus:outline-none focus-visible:ring-2 focus-visible:ring-[#facc15] ${
+                                c.is_active ? "bg-green-500 border-green-500" : "bg-zinc-700 border-white/10"
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-4 w-4 rounded-full bg-[#ffffff] shadow transition-transform ${
+                                  c.is_active ? "translate-x-6" : "translate-x-1"
+                                }`}
+                              />
+                            </button>
+                            <span className={`text-xs font-semibold ${c.is_active ? "text-green-400" : "text-zinc-500"}`}>
+                              {togglingId === c.id ? "Saving..." : c.is_active ? "Active" : "Inactive"}
+                            </span>
+                          </div>
+                        </td>
                         <td className="p-4 text-right">
                           <a
                             href={`/verify/${c.verification_id}`}

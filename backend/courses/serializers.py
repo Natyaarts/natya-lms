@@ -1237,7 +1237,7 @@ class AdminCertificateSerializer(CertificateSerializer):
     student = serializers.SerializerMethodField()
 
     class Meta(CertificateSerializer.Meta):
-        fields = CertificateSerializer.Meta.fields + ['student']
+        fields = CertificateSerializer.Meta.fields + ['student', 'is_active', 'status_changed_at']
         read_only_fields = fields
 
     def get_student(self, obj):

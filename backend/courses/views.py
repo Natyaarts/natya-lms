@@ -3295,6 +3295,9 @@ from .throttles import (
 )
 
 
+CERTIFICATE_WITHHELD_MESSAGE = "This certificate is currently not available. Please contact the academy."
+
+
 class CertificateViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     """
     Learner-facing certificate access, plus one public/unauthenticated
@@ -3314,7 +3317,8 @@ class CertificateViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, views
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return Certificate.objects.filter(student=self.request.user).select_related('course')
+        # Inactive (admin-withheld) certificates are never listed or retrievable by the student.
+        return Certificate.objects.filter(student=self.request.user, is_active=True).select_related('course')
 
     @action(detail=False, methods=['get'], url_path=r'course/(?P<course_id>[^/.]+)')
     def by_course(self, request, course_id=None):
@@ -3335,6 +3339,11 @@ class CertificateViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, views
                 {"error": "This course is not yet complete. Finish all lessons and pass all required assessments to earn a certificate."},
                 status=drf_status.HTTP_404_NOT_FOUND,
             )
+        if not certificate.is_active:
+            return Response(
+                {"error": CERTIFICATE_WITHHELD_MESSAGE, "code": "certificate_inactive"},
+                status=drf_status.HTTP_403_FORBIDDEN,
+            )
         return Response(CertificateSerializer(certificate).data)
 
     @action(detail=False, methods=['get'], url_path=r'verify/(?P<verification_id>[^/.]+)', permission_classes=[permissions.AllowAny], throttle_classes=[CertificateVerificationThrottle])
@@ -3353,6 +3362,9 @@ class CertificateViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, views
             certificate = Certificate.objects.get(verification_id=verification_id)
         except Certificate.DoesNotExist:
             return Response({"valid": False, "error": "No certificate found for this verification ID."}, status=drf_status.HTTP_404_NOT_FOUND)
+        if not certificate.is_active:
+            # Withheld by the academy: not valid, and none of its details are returned.
+            return Response({"valid": False, "error": "This certificate is not currently active."}, status=drf_status.HTTP_404_NOT_FOUND)
         data = PublicCertificateVerificationSerializer(certificate).data
         data['valid'] = True
         return Response(data)
@@ -3398,7 +3410,59 @@ class AdminCertificateListView(generics.ListAPIView):
         if course_id:
             qs = qs.filter(course_id=course_id)
 
+        is_active = (params.get('is_active') or '').strip().lower()
+        if is_active in ('true', '1'):
+            qs = qs.filter(is_active=True)
+        elif is_active in ('false', '0'):
+            qs = qs.filter(is_active=False)
+
         return qs
+
+
+class AdminCertificateStatusView(generics.GenericAPIView):
+    """
+    POST /api/courses/admin/certificates/<pk>/status/  {"is_active": true|false}
+
+    Admin on/off switch for one issued certificate. Nothing else about the
+    certificate changes (verification_id and snapshots stay as issued), so
+    switching it back on restores it exactly. Every real change is written
+    to AdminAuditLog; repeating the current state is a no-op.
+    """
+    permission_classes = [IsSuperAdminOrAdmin]
+    serializer_class = AdminCertificateSerializer
+    queryset = Certificate.objects.all()
+
+    def post(self, request, pk=None):
+        value = request.data.get('is_active')
+        if not isinstance(value, bool):
+            return Response({"error": "is_active must be true or false."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        from django.db import transaction
+        from users.models import AdminAuditLog
+
+        with transaction.atomic():
+            certificate = get_object_or_404(Certificate.objects.select_for_update(), pk=pk)
+            changed = certificate.is_active != value
+            if changed:
+                certificate.is_active = value
+                certificate.status_changed_at = timezone.now()
+                certificate.status_changed_by = request.user
+                certificate.save(update_fields=['is_active', 'status_changed_at', 'status_changed_by'])
+
+        if changed:
+            AdminAuditLog.record(
+                actor=request.user,
+                action='CERTIFICATE_ACTIVATED' if value else 'CERTIFICATE_DEACTIVATED',
+                target_type='Certificate',
+                target_id=certificate.pk,
+                description=f"Certificate {certificate.verification_id} {'activated' if value else 'deactivated'}.",
+                metadata={'verification_id': certificate.verification_id, 'student_id': certificate.student_id,
+                          'course_id': certificate.course_id, 'is_active': value},
+            )
+        certificate = Certificate.objects.select_related('student', 'course').get(pk=certificate.pk)
+        return Response(AdminCertificateSerializer(certificate).data)
+
+    patch = post
 
 
 from rest_framework.views import APIView
