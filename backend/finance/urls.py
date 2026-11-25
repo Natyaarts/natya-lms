@@ -7,6 +7,10 @@ from .views import (
     MyInvoicesView, MyPayoutListView, MyRefundDetailView, MyRefundsView, PayoutDetailView, PayoutListView,
     RefundEligibilityView,
 )
+from .teacher_payroll_views import (
+    PayrollLineView, RateCardDetailView, RateCardListCreateView, SalaryTeachersView, StatementActionView,
+    StatementDetailView, StatementGenerateView, StatementListView,
+)
 
 urlpatterns = [
     path('my-earnings/', MyEarningsView.as_view(), name='finance-my-earnings'),
@@ -35,4 +39,16 @@ urlpatterns = [
     # Phase 3.5.7: finance reconciliation -- admin-only, read-only.
     path('admin/reconciliation/', FinanceReconciliationView.as_view(), name='finance-admin-reconciliation'),
     path('admin/finance-health/', FinanceHealthSummaryView.as_view(), name='finance-admin-health'),
+    # Teacher salary: rate cards + monthly statements from conducted live classes.
+    path('admin/teacher-salary/teachers/', SalaryTeachersView.as_view(), name='teacher-salary-teachers'),
+    path('admin/teacher-salary/rate-cards/', RateCardListCreateView.as_view(), name='teacher-salary-rate-cards'),
+    path('admin/teacher-salary/rate-cards/<int:pk>/', RateCardDetailView.as_view(), name='teacher-salary-rate-card'),
+    path('admin/teacher-salary/statements/', StatementListView.as_view(), name='teacher-salary-statements'),
+    path('admin/teacher-salary/statements/generate/', StatementGenerateView.as_view(), name='teacher-salary-generate'),
+    path('admin/teacher-salary/statements/<int:pk>/', StatementDetailView.as_view(), name='teacher-salary-statement'),
+    path('admin/teacher-salary/statements/<int:pk>/regenerate/', StatementActionView.as_view(action='regenerate'), name='teacher-salary-regenerate'),
+    path('admin/teacher-salary/statements/<int:pk>/approve/', StatementActionView.as_view(action='approve'), name='teacher-salary-approve'),
+    path('admin/teacher-salary/statements/<int:pk>/mark-paid/', StatementActionView.as_view(action='mark-paid'), name='teacher-salary-mark-paid'),
+    path('admin/teacher-salary/statements/<int:pk>/cancel/', StatementActionView.as_view(action='cancel'), name='teacher-salary-cancel'),
+    path('admin/teacher-salary/lines/<int:pk>/', PayrollLineView.as_view(), name='teacher-salary-line'),
 ]

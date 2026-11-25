@@ -465,3 +465,181 @@ class Refund(models.Model):
 
     def __str__(self):
         return f"Refund #{self.id} - {self.customer.username} - {self.amount} {self.currency} - {self.status}"
+
+
+# =============================================================================
+# Teacher salary (live-class teaching pay)
+#
+# Separate from Payout/LedgerEntry on purpose: those carry course-sale revenue
+# share and are reconciled against sales; teaching pay is computed from classes
+# actually conducted. Flow: admin sets rate cards -> generates a monthly DRAFT
+# statement per teacher (one line per completed class) -> reviews/corrects lines
+# -> APPROVED -> PAID. Nothing here moves money; PAID only records that the
+# admin paid outside the system. See finance/teacher_payroll.py.
+# =============================================================================
+
+class TeacherRateCard(models.Model):
+    """
+    How one teacher is paid for live classes of one course (course=None: the
+    teacher's default for every course without its own card).
+
+    Per class:  hourly rate (from the tier matching the number of attending
+    students) x hours taught  +  per_class_amount  +  per_student_amount x
+    attending students.
+    """
+    teacher = models.ForeignKey(User, related_name='teacher_rate_cards', on_delete=models.CASCADE)
+    course = models.ForeignKey(
+        'courses.Course', related_name='teacher_rate_cards', null=True, blank=True, on_delete=models.CASCADE,
+        help_text="Leave empty for the teacher's default rates (used for any course without its own card).",
+    )
+    per_class_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    per_student_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    currency = models.CharField(max_length=3, default='INR')
+    is_active = models.BooleanField(default=True)
+    notes = models.TextField(blank=True)
+    updated_by = models.ForeignKey(User, related_name='+', null=True, blank=True, on_delete=models.SET_NULL)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['teacher_id', 'course_id']
+        constraints = [
+            models.UniqueConstraint(fields=['teacher', 'course'], condition=models.Q(course__isnull=False),
+                                    name='unique_teacher_rate_card_per_course'),
+            models.UniqueConstraint(fields=['teacher'], condition=models.Q(course__isnull=True),
+                                    name='unique_teacher_default_rate_card'),
+            models.CheckConstraint(condition=models.Q(per_class_amount__gte=0) & models.Q(per_student_amount__gte=0),
+                                   name='teacher_rate_card_amounts_non_negative'),
+        ]
+
+    def __str__(self):
+        scope = "default" if self.course_id is None else f"course {self.course_id}"
+        return f"Rates for teacher {self.teacher_id} / {scope}"
+
+
+class TeacherRateTier(models.Model):
+    """Hourly rate for classes attended by min_students..max_students (max empty = and above)."""
+    rate_card = models.ForeignKey(TeacherRateCard, related_name='tiers', on_delete=models.CASCADE)
+    min_students = models.PositiveIntegerField()
+    max_students = models.PositiveIntegerField(null=True, blank=True)
+    hourly_rate = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        ordering = ['rate_card_id', 'min_students']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(hourly_rate__gte=0), name='teacher_rate_tier_rate_non_negative'),
+            models.CheckConstraint(
+                condition=models.Q(max_students__isnull=True) | models.Q(max_students__gte=models.F('min_students')),
+                name='teacher_rate_tier_range_valid',
+            ),
+        ]
+
+    def covers(self, students):
+        return students >= self.min_students and (self.max_students is None or students <= self.max_students)
+
+    def label(self):
+        return tier_label(self.min_students, self.max_students)
+
+
+def tier_label(min_students, max_students):
+    if max_students is None:
+        return f"{min_students}+ students"
+    if min_students == max_students:
+        return f"{min_students} student" + ("" if min_students == 1 else "s")
+    return f"{min_students}-{max_students} students"
+
+
+class TeacherPayrollStatement(models.Model):
+    """One teacher's teaching pay for one calendar month (Asia/Kolkata)."""
+    class Status(models.TextChoices):
+        DRAFT = 'DRAFT', 'Draft'
+        APPROVED = 'APPROVED', 'Approved'
+        PAID = 'PAID', 'Paid'
+        CANCELLED = 'CANCELLED', 'Cancelled'
+
+    teacher = models.ForeignKey(User, related_name='payroll_statements', on_delete=models.PROTECT)
+    period_start = models.DateField()
+    period_end = models.DateField()
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True)
+    currency = models.CharField(max_length=3, default='INR')
+
+    class_count = models.PositiveIntegerField(default=0)
+    total_minutes = models.PositiveIntegerField(default=0)
+    classes_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    adjustment_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0,
+                                            help_text="Bonus (+) or deduction (-) applied by the admin.")
+    adjustment_reason = models.CharField(max_length=255, blank=True)
+    net_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    notes = models.TextField(blank=True)
+    method = models.CharField(max_length=20, choices=Payout.Method.choices, blank=True)
+    reference_number = models.CharField(max_length=255, blank=True)
+    created_by = models.ForeignKey(User, related_name='+', null=True, blank=True, on_delete=models.SET_NULL)
+    generated_at = models.DateTimeField(null=True, blank=True)
+    approved_by = models.ForeignKey(User, related_name='+', null=True, blank=True, on_delete=models.SET_NULL)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    paid_by = models.ForeignKey(User, related_name='+', null=True, blank=True, on_delete=models.SET_NULL)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-period_start', 'teacher_id']
+        constraints = [
+            # At most one live (non-cancelled) statement per teacher per month.
+            models.UniqueConstraint(fields=['teacher', 'period_start'], condition=~models.Q(status='CANCELLED'),
+                                    name='unique_active_payroll_statement_per_teacher_month'),
+        ]
+
+    def __str__(self):
+        return f"Payroll #{self.id} - teacher {self.teacher_id} - {self.period_start:%Y-%m} - {self.status}"
+
+
+class TeacherPayrollLine(models.Model):
+    """
+    One completed live class on a statement. Values are snapshots taken when
+    the statement was (re)generated, so later rate or class edits never change
+    an approved/paid statement. Admin corrections (minutes, student count,
+    exclusion) are stored separately from the system-computed values.
+    """
+    statement = models.ForeignKey(TeacherPayrollStatement, related_name='lines', on_delete=models.CASCADE)
+    live_class = models.ForeignKey('courses.LiveClass', related_name='payroll_lines', null=True, blank=True,
+                                   on_delete=models.SET_NULL)
+    course = models.ForeignKey('courses.Course', related_name='+', null=True, blank=True, on_delete=models.SET_NULL)
+    batch_id_snapshot = models.PositiveIntegerField(null=True, blank=True)
+    class_title = models.CharField(max_length=255)
+    course_title = models.CharField(max_length=255, blank=True)
+    scheduled_start = models.DateTimeField()
+    is_substitute = models.BooleanField(default=False)
+
+    scheduled_minutes = models.PositiveIntegerField(default=0)
+    zoom_minutes = models.PositiveIntegerField(null=True, blank=True, help_text="Actual Zoom meeting time; empty if unknown.")
+    attendee_count = models.PositiveIntegerField(default=0, help_text="Students marked Present/Late (system count).")
+    attendance_finalized = models.BooleanField(default=False)
+
+    minutes_override = models.PositiveIntegerField(null=True, blank=True)
+    attendee_count_override = models.PositiveIntegerField(null=True, blank=True)
+    is_excluded = models.BooleanField(default=False)
+    admin_note = models.CharField(max_length=255, blank=True)
+
+    rate_card = models.ForeignKey(TeacherRateCard, related_name='+', null=True, blank=True, on_delete=models.SET_NULL)
+    rate_tiers_snapshot = models.JSONField(default=list, blank=True)
+    per_class_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    per_student_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    paid_minutes = models.PositiveIntegerField(default=0)
+    students_counted = models.PositiveIntegerField(default=0)
+    hourly_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    tier_label = models.CharField(max_length=64, blank=True)
+    hours_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    class_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    student_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    flags = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ['scheduled_start', 'id']
+
+    def __str__(self):
+        return f"Line #{self.id} - {self.class_title} - {self.amount}"

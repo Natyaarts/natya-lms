@@ -184,6 +184,7 @@ export default function AdminLayout({
           links: [
             { name: "Earnings", href: "/admin/earnings", icon: icons.earnings },
             { name: "Payouts", href: "/admin/payouts", icon: icons.payouts },
+            { name: "Teacher Salary", href: "/admin/teacher-salary", icon: icons.earnings },
             { name: "Reconciliation", href: "/admin/reconciliation", icon: icons.reconciliation },
           ],
         },
