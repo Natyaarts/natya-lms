@@ -507,6 +507,46 @@ class ZoomService:
                 topic=topic,
             )
 
+    # Registration settings for personal (per-student) join links: registrants
+    # are approved automatically and Zoom sends them no emails. Each student's
+    # personal link carries their registrant ID, which Zoom reports back in the
+    # participant webhooks and reports, so attendance is matched exactly.
+    REGISTRATION_SETTINGS = {
+        "approval_type": 0,                        # automatically approve
+        "registration_type": 1,                    # recurring: register once, attend any occurrence
+        "registrants_confirmation_email": False,
+        "registrants_email_notification": False,
+        "show_share_button": False,
+    }
+
+    @classmethod
+    def enable_meeting_registration(cls, meeting_id):
+        """
+        Turns on auto-approved registration for an existing meeting (PATCH
+        /meetings/{id}). Returns True on success. Used lazily the first time a
+        student joins a meeting created before personal links were enabled.
+        """
+        meeting_id = re.sub(r"\D", "", str(meeting_id or ""))
+        if not meeting_id:
+            return False
+        try:
+            token = cls.get_access_token()
+            res = cls._request_with_429_retry(
+                requests.patch, f"https://api.zoom.us/v2/meetings/{meeting_id}",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"settings": dict(cls.REGISTRATION_SETTINGS)},
+                timeout=cls.DEFAULT_TIMEOUT_SECONDS,
+                context=f"enable_meeting_registration {meeting_id}",
+            )
+        except Exception as exc:
+            logger.warning(f"[ZoomService] Could not enable registration for meeting {meeting_id}: {cls._sanitize_string(str(exc))}")
+            return False
+        if res.status_code in (200, 204):
+            logger.info(f"[ZoomService] Registration enabled for meeting {meeting_id}.")
+            return True
+        logger.warning(f"[ZoomService] Enabling registration for meeting {meeting_id} returned {res.status_code}.")
+        return False
+
     @classmethod
     def create_meeting(cls, host_id=None, topic=None, start_time_iso=None, duration_minutes=60,
                        alternative_hosts=None, agenda=None, settings_override=None):
@@ -539,6 +579,8 @@ class ZoomService:
         }
         if start_time_iso:
             payload["start_time"] = start_time_iso
+        if getattr(settings, "ZOOM_ATTENDANCE_USE_REGISTRATION", False) and start_time_iso:
+            payload["settings"].update(cls.REGISTRATION_SETTINGS)
         if alternative_hosts:
             payload["settings"]["alternative_hosts"] = str(alternative_hosts).strip()
         if agenda:

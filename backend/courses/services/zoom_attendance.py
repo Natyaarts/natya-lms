@@ -4,6 +4,7 @@ import secrets
 import datetime
 import re
 import requests
+from django.core.cache import cache
 from django.conf import settings
 from django.utils import timezone
 from django.db import transaction, IntegrityError
@@ -22,10 +23,12 @@ from courses.services.zoom import ZoomService
 from courses.services.recording import ZoomRecordingService
 from courses.services.attendance_classification import (
     apply_automatic_attendance,
+    finalization_ready_at,
     is_class_in_progress,
     meeting_end_estimate,
 )
 from courses.services.attendance_identity import (
+    class_roster,
     excluded_user_reason,
     is_class_member,
     participant_email,
@@ -50,11 +53,30 @@ class ZoomTransientError(Exception):
 def _zoom_get(url, headers):
     try:
         res = requests.get(url, headers=headers, timeout=15)
+        if res.status_code == 401:
+            # The cached token expired or was replaced: refresh once and retry.
+            rejected = str(headers.get("Authorization", "")).replace("Bearer ", "", 1)
+            fresh = ZoomService.get_access_token(force_refresh=True, rejected_token=rejected or None)
+            headers = dict(headers, Authorization=f"Bearer {fresh}")
+            res = requests.get(url, headers=headers, timeout=15)
     except (requests.Timeout, requests.ConnectionError) as exc:
         raise ZoomTransientError(f"network error: {exc.__class__.__name__}") from exc
     if res.status_code == 429 or res.status_code >= 500:
         raise ZoomTransientError(f"Zoom API HTTP {res.status_code}")
     return res
+
+
+def event_time(value, fallback=None):
+    """Aware datetime of a Zoom timestamp (ISO or epoch ms), or None when missing/unparseable."""
+    raw = value or fallback
+    if not raw:
+        return None
+    try:
+        if isinstance(raw, str) and raw.isdigit():
+            raw = int(raw)
+        return parse_zoom_timestamp(raw)
+    except Exception:
+        return None
 
 
 def encode_zoom_uuid(uuid_str: str) -> str:
@@ -108,43 +130,91 @@ class ZoomAttendanceService:
     6. Post-meeting report reconciliation without overwriting manual admin decisions.
     """
 
-    @classmethod
-    def register_student_for_meeting(cls, live_class, student):
+    @staticmethod
+    def registrant_email(student):
         """
-        Path A: If student has a valid email address, registers student with Zoom.
-        Returns LiveClassRegistrant or None.
+        The email used to register a student with Zoom: their own address, or
+        (no usable email, e.g. phone-only accounts) an internal address that
+        identifies the account. Zoom sends registrants no emails (registration
+        is created with confirmation emails off).
         """
         email = (student.email or '').strip()
-        if not email or '@' not in email:
-            return None
+        if email and '@' in email and len(email) <= 254:
+            return email
+        domain = getattr(settings, 'ZOOM_REGISTRANT_EMAIL_DOMAIN', 'students.natyaarts.com')
+        return f"student-{student.pk}@{domain}"
 
-        existing = LiveClassRegistrant.objects.filter(live_class=live_class, student=student).first()
-        if existing:
-            return existing
+    @staticmethod
+    def registrant_names(student):
+        """(first_name, last_name) shown in Zoom: the student's real name when the account has one."""
+        first = (student.first_name or '').strip()
+        last = (student.last_name or '').strip()
+        if first or last:
+            return (first or last)[:64], (last if first else '')[:64]
+        return "Student", f"#{student.pk}"
 
+    @staticmethod
+    def _meeting_id_for(live_class):
         meeting_id = live_class.zoom_meeting_id
         if not meeting_id and live_class.meeting_url:
             match = re.search(r'/j/(\d+)', live_class.meeting_url)
             if match:
                 meeting_id = match.group(1)
+        return str(meeting_id or '').strip()
 
+    @classmethod
+    def register_student_for_meeting(cls, live_class, student):
+        """
+        Path A: gives the student a PERSONAL Zoom join link (Zoom registrant),
+        so Zoom reports exactly which student joined (registrant_id).
+          * Already registered for this class -> reuse.
+          * Registered for another class of the same Zoom meeting (recurring
+            series, "register once") -> reuse that registration.
+          * Otherwise register with Zoom; if the meeting was created without
+            registration, turn it on once (auto-approve, no emails) and retry.
+        Returns LiveClassRegistrant or None (caller falls back to the plain link).
+        """
+        existing = LiveClassRegistrant.objects.filter(live_class=live_class, student=student).first()
+        if existing:
+            return existing
+
+        meeting_id = cls._meeting_id_for(live_class)
         if not meeting_id:
             logger.warning(f"[ZoomAttendance] LiveClass #{live_class.id} has no zoom_meeting_id for registration.")
             return None
 
+        sibling = (
+            LiveClassRegistrant.objects
+            .filter(student=student, live_class__zoom_meeting_id=meeting_id)
+            .exclude(registrant_id='')
+            .order_by('-created_at')
+            .first()
+        )
+        if sibling:
+            registrant, _ = LiveClassRegistrant.objects.get_or_create(
+                live_class=live_class, student=student,
+                defaults={'registrant_id': sibling.registrant_id, 'join_url': sibling.join_url, 'email': sibling.email},
+            )
+            return registrant
+
+        unsupported_key = f"zoom_registration_unsupported:{meeting_id}"
+        if cache.get(unsupported_key):
+            return None
+
+        email = cls.registrant_email(student)
+        first_name, last_name = cls.registrant_names(student)
+        payload = {"email": email, "first_name": first_name}
+        if last_name:
+            payload["last_name"] = last_name
+
         try:
-            token = ZoomService.get_access_token()
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "email": email,
-                "first_name": student.first_name.strip() or student.username,
-                "last_name": student.last_name.strip() or "Student"
-            }
-            url = f"https://api.zoom.us/v2/meetings/{meeting_id}/registrants"
-            res = requests.post(url, headers=headers, json=payload, timeout=10)
+            res = cls._post_registrant(meeting_id, payload)
+            if res.status_code != 201 and cls._registration_disabled(res):
+                if ZoomService.enable_meeting_registration(meeting_id):
+                    res = cls._post_registrant(meeting_id, payload)
+                else:
+                    cache.set(unsupported_key, True, 6 * 3600)
+                    return None
 
             if res.status_code == 201:
                 data = res.json()
@@ -159,15 +229,38 @@ class ZoomAttendanceService:
                 )
                 logger.info(f"[ZoomAttendance] Registered student #{student.id} for meeting {meeting_id}: reg_id={registrant.registrant_id}")
                 return registrant
-            else:
-                logger.info(
-                    f"[ZoomAttendance] Zoom registrant registration returned {res.status_code} for meeting {meeting_id}: {res.text}. "
-                    f"Class will use standard join link."
-                )
-                return None
+            logger.info(
+                f"[ZoomAttendance] Zoom registrant registration returned {res.status_code} for meeting {meeting_id}. "
+                f"Class will use standard join link."
+            )
+            return None
         except Exception as e:
             logger.warning(f"[ZoomAttendance] Error during Zoom meeting registrant call: {e}")
             return None
+
+    @staticmethod
+    def _post_registrant(meeting_id, payload):
+        url = f"https://api.zoom.us/v2/meetings/{meeting_id}/registrants"
+        token = ZoomService.get_access_token()
+        res = requests.post(url, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                            json=payload, timeout=10)
+        if res.status_code == 401:
+            token = ZoomService.get_access_token(force_refresh=True, rejected_token=token)
+            res = requests.post(url, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                                json=payload, timeout=10)
+        return res
+
+    @staticmethod
+    def _registration_disabled(res):
+        """True when Zoom refused because the meeting has no registration enabled."""
+        if res.status_code not in (400, 404):
+            return False
+        try:
+            data = res.json()
+        except Exception:
+            data = {}
+        message = str(data.get('message') or getattr(res, 'text', '') or '').lower()
+        return 'registration' in message and ('not' in message or 'disabled' in message)
 
     @classmethod
     def create_join_intent(cls, live_class, student, ip_address=None, user_agent=""):
@@ -208,6 +301,19 @@ class ZoomAttendanceService:
             ).select_related('student').first()
             if reg:
                 return reg.student
+            # Recurring meetings: one registration covers every occurrence, so the
+            # student may join this class with the personal link from an earlier one.
+            meeting_id = cls._meeting_id_for(live_class)
+            if meeting_id:
+                students = {
+                    r.student for r in LiveClassRegistrant.objects.filter(
+                        registrant_id=registrant_id, live_class__zoom_meeting_id=meeting_id,
+                    ).select_related('student')
+                }
+                if len(students) == 1:
+                    student = students.pop()
+                    if is_class_member(live_class, student):
+                        return student
 
         customer_key = str(participant.get('customer_key') or '').strip()
         if customer_key:
@@ -355,7 +461,8 @@ class ZoomAttendanceService:
         if not isinstance(participant, dict):
             participant = {}
 
-        live_class = ZoomRecordingService.find_live_class_for_zoom_meeting(meeting_id, meeting_uuid)
+        join_time = parse_zoom_timestamp(participant.get('join_time') or payload.get('event_ts'))
+        live_class = ZoomRecordingService.find_live_class_for_zoom_meeting(meeting_id, meeting_uuid, at=join_time)
         if not live_class:
             logger.warning(f"[ZoomAttendance] No LiveClass found for meeting_id={meeting_id}, uuid={meeting_uuid}")
             return False
@@ -363,9 +470,6 @@ class ZoomAttendanceService:
         participant_uuid = str(participant.get('participant_uuid') or participant.get('id') or '')
         zoom_user_id = str(participant.get('user_id') or '')
         registrant_id = str(participant.get('registrant_id') or '')
-        user_name = str(participant.get('user_name') or '')
-        email = str(participant.get('email') or participant.get('user_email') or '')
-        join_time = parse_zoom_timestamp(participant.get('join_time') or payload.get('event_ts'))
 
         # Instructors, staff, host accounts and test accounts: never counted, never queued.
         reason = participant_exclusion_reason(live_class, participant)
@@ -450,7 +554,8 @@ class ZoomAttendanceService:
         if not isinstance(participant, dict):
             participant = {}
 
-        live_class = ZoomRecordingService.find_live_class_for_zoom_meeting(meeting_id, meeting_uuid)
+        leave_time = parse_zoom_timestamp(participant.get('leave_time') or payload.get('event_ts'))
+        live_class = ZoomRecordingService.find_live_class_for_zoom_meeting(meeting_id, meeting_uuid, at=leave_time)
         if not live_class:
             logger.warning(f"[ZoomAttendance] No LiveClass found for meeting_id={meeting_id}, uuid={meeting_uuid}")
             return False
@@ -458,9 +563,6 @@ class ZoomAttendanceService:
         participant_uuid = str(participant.get('participant_uuid') or participant.get('id') or '')
         zoom_user_id = str(participant.get('user_id') or '')
         registrant_id = str(participant.get('registrant_id') or '')
-        user_name = str(participant.get('user_name') or '')
-        email = str(participant.get('email') or participant.get('user_email') or '')
-        leave_time = parse_zoom_timestamp(participant.get('leave_time') or payload.get('event_ts'))
         duration_sec = int(participant.get('duration', 0) or 0)
 
         reason = participant_exclusion_reason(live_class, participant)
@@ -564,7 +666,7 @@ class ZoomAttendanceService:
         or {"status": "no_meeting_id" | "not_ready" | "error", ...}.
         Raises ZoomTransientError on 429/5xx/network errors. Writes nothing.
         """
-        meeting_identifier = meeting_identifier or live_class.zoom_uuid or live_class.zoom_meeting_id
+        meeting_identifier = meeting_identifier or live_class.zoom_uuid or cls._meeting_id_for(live_class)
         if not meeting_identifier:
             logger.warning(f"[ZoomAttendance] LiveClass #{live_class.id} has no zoom_uuid or zoom_meeting_id for reconciliation.")
             return {"status": "no_meeting_id"}
@@ -602,9 +704,10 @@ class ZoomAttendanceService:
         """
         uuids = set(run_state(live_class, refresh=True)["uuids"])
         source = "webhook" if uuids else ""
-        if live_class.zoom_meeting_id:
+        meeting_id = cls._meeting_id_for(live_class)
+        if meeting_id:
             res = _zoom_get(
-                f"https://api.zoom.us/v2/past_meetings/{encode_zoom_uuid(live_class.zoom_meeting_id)}/instances",
+                f"https://api.zoom.us/v2/past_meetings/{encode_zoom_uuid(meeting_id)}/instances",
                 cls._zoom_headers(),
             )
             if res.status_code == 200:
@@ -629,14 +732,14 @@ class ZoomAttendanceService:
           no_meeting_id.
         Raises ZoomTransientError on 429/5xx/network errors.
         """
-        if not (live_class.zoom_uuid or live_class.zoom_meeting_id):
+        if not (live_class.zoom_uuid or cls._meeting_id_for(live_class)):
             return {"status": "no_meeting_id"}
         uuids, source = cls.fetch_meeting_instances(live_class)
         if not uuids:
             # No run discovered (instances API unavailable, no webhooks): fall
             # back to the stored identifier; rows outside the class window are
             # dropped when applied.
-            uuids, source = [live_class.zoom_uuid or live_class.zoom_meeting_id], "stored_identifier"
+            uuids, source = [live_class.zoom_uuid or cls._meeting_id_for(live_class)], "stored_identifier"
 
         participants, statuses = [], []
         for uuid in uuids:
@@ -667,13 +770,66 @@ class ZoomAttendanceService:
         report = cls.fetch_meeting_reports(live_class)
         if report["status"] not in ("success", "partial"):
             return report
-        result = cls.apply_meeting_report(live_class, report["participants"], complete=report["status"] == "success")
+        result = cls.apply_meeting_report(
+            live_class, report["participants"], complete=report["status"] == "success",
+            run_source=report.get("run_source", ""),
+        )
         result["status"] = report["status"]
         result["runs"] = report.get("runs")
         return result
 
     @classmethod
-    def apply_meeting_report(cls, live_class, all_participants, now=None, complete=True):
+    def apply_meeting_report(cls, live_class, all_participants, now=None, complete=True, run_source=""):
+        """
+        Serialized per class: a row lock on the LiveClass makes concurrent
+        reconciliations of the same class (duplicate task, catch-up plus
+        meeting.ended, manual Sync) run one after the other; the second one
+        then finds everything already recorded and changes nothing.
+        """
+        with transaction.atomic():
+            LiveClass.objects.select_for_update().filter(pk=live_class.pk).first()
+            was_finalized = bool(
+                LiveClass.objects.filter(pk=live_class.pk).values_list('attendance_finalized_at', flat=True).first()
+            )
+            result = cls._apply_meeting_report(live_class, all_participants, now=now, complete=complete,
+                                               run_source=run_source)
+        cls._audit_finalization(live_class, result, was_finalized)
+        return result
+
+    @staticmethod
+    def _audit_finalization(live_class, result, was_finalized):
+        """Audit trail entry (counts only, no student details) for each final pass."""
+        classification = result.get("classification") or {}
+        if not classification.get("final"):
+            return
+        try:
+            from users.models import AdminAuditLog
+            AdminAuditLog.record(
+                actor=None,
+                action="ZOOM_ATTENDANCE_FINALIZED" if not was_finalized else "ZOOM_ATTENDANCE_REFINALIZED",
+                target_type="LiveClass",
+                target_id=str(live_class.pk),
+                description="Attendance finalized automatically from the Zoom participant report.",
+                metadata={
+                    "report_rows": result.get("total_records", 0),
+                    "matched_rows": result.get("reconciled", 0),
+                    "unmatched_rows": result.get("unmatched", 0),
+                    "excluded_rows": result.get("excluded", 0),
+                    "skipped_rows": result.get("skipped", 0),
+                    "present": classification.get("present", 0),
+                    "late": classification.get("late", 0),
+                    "no_show_absent": classification.get("no_show_absent", 0),
+                    "absent": classification.get("absent", 0),
+                    "other": classification.get("other", 0),
+                    "changed": classification.get("changed", 0),
+                    "manual": classification.get("manual", 0),
+                },
+            )
+        except Exception:
+            logger.exception(f"[ZoomAttendance] Could not write the finalization audit entry for LiveClass #{live_class.pk}.")
+
+    @classmethod
+    def _apply_meeting_report(cls, live_class, all_participants, now=None, complete=True, run_source=""):
         """
         Records Zoom report rows as REPORT sessions (idempotent: keyed per
         participant + join time and updated in place), then runs the
@@ -767,7 +923,11 @@ class ZoomAttendanceService:
                 att.save()
             reconciled_count += 1
 
-        classification = cls.finalize_attendance(live_class, now=now, complete=complete)
+        classification = cls.finalize_attendance(
+            live_class, now=now, complete=complete,
+            evidence_rows=reconciled_count + unmatched_count + excluded_count,
+            report_rows=len(all_participants), run_source=run_source,
+        )
 
         logger.info(
             f"[ZoomAttendance] Reconciled LiveClass #{live_class.id}: {reconciled_count} matched, "
@@ -786,19 +946,80 @@ class ZoomAttendanceService:
         }
 
     @classmethod
-    def finalize_attendance(cls, live_class, now=None, complete=True):
+    def finalization_blocker(cls, live_class, now, complete, evidence_rows, report_rows=None, run_source=""):
         """
-        Classification pass over every attendance row of a class: PRESENT at or
-        above the threshold; ABSENT below it only when the report set is
-        complete and no meeting run is still active (final). Manual
-        status/duration overrides are preserved. A final pass stamps
-        LiveClass.attendance_finalized_at.
+        Why attendance cannot be finalized yet, or None. Nobody is marked ABSENT while any applies.
+
+        Failed and not-ready reports never get here (reconciliation stops
+        before applying them); a partial report set arrives with complete=False.
+        A complete report with ZERO participants is valid evidence of a class
+        nobody attended -- but only once Zoom has confirmed this meeting run
+        happened and ended, and no live join event contradicts it.
         """
+        if not complete:
+            return "report_incomplete"          # some run's report failed / is not ready
+        if evidence_rows is not None and evidence_rows == 0:
+            if report_rows:
+                # Rows exist but none fall in this class's time window: the
+                # report is for another occurrence of the meeting ID.
+                return "report_outside_class_window"
+            if not cls._meeting_end_confirmed(live_class, run_source):
+                return "empty_report_meeting_end_unconfirmed"
+            if cls._live_join_evidence_exists(live_class):
+                return "empty_report_contradicts_live_joins"
+        if is_class_in_progress(live_class, now):
+            return "meeting_in_progress"
+        ready = finalization_ready_at(live_class)
+        if ready is None or now < ready:
+            return "waiting_finalization_period"
+        return None
+
+    @staticmethod
+    def _meeting_end_confirmed(live_class, run_source):
+        """
+        Zoom itself confirmed a run of this class's meeting ended: a meeting.ended
+        webhook inside the class window, or the run was listed by Zoom's past
+        meeting instances API (which only lists meetings that have ended).
+        """
+        return bool(run_state(live_class)["ended"]) or "instances_api" in (run_source or "")
+
+    @staticmethod
+    def _live_join_evidence_exists(live_class):
+        """Webhook joins recorded for this class (identified or not)."""
+        return (
+            AttendanceSession.objects.filter(attendance__live_class=live_class,
+                                             source=AttendanceSession.Source.WEBHOOK).exists()
+            or UnmatchedZoomParticipant.objects.filter(live_class=live_class).exists()
+        )
+
+    @classmethod
+    def finalize_attendance(cls, live_class, now=None, complete=True, evidence_rows=None, report_rows=None,
+                            run_source=""):
+        """
+        Classification pass over every attendance row of a class: PRESENT (or
+        LATE) at or above the threshold; ABSENT below it only on a final pass.
+        A pass is final only when every run's report was fetched and processed,
+        the report has rows for this class, no run is still active and the
+        configured waiting period after the meeting ended has passed.
+
+        A final pass also marks ABSENT every roster student with no attendance
+        row at all (never joined) -- only for classes inside the automation
+        window (ZOOM_ATTENDANCE_AUTOMATION_START), so historical classes are
+        never touched. Manual and EXCUSED rows are preserved. A final pass
+        stamps LiveClass.attendance_finalized_at.
+        """
+        from courses.services.attendance_automation import automatic_reconciliation_allowed
+
         now = now or timezone.now()
         run_state(live_class, now, refresh=True)
-        final = bool(complete) and not is_class_in_progress(live_class, now)
         meeting_end_estimate(live_class, refresh=True)
-        counts = {"final": final, "present": 0, "absent": 0, "other": 0, "changed": 0, "manual": 0}
+        blocker = cls.finalization_blocker(live_class, now, complete, evidence_rows, report_rows, run_source)
+        final = blocker is None
+        counts = {"final": final, "not_final_reason": blocker, "present": 0, "late": 0, "absent": 0,
+                  "other": 0, "changed": 0, "manual": 0, "no_show_absent": 0}
+
+        if final and automatic_reconciliation_allowed(live_class):
+            counts["no_show_absent"] = cls._mark_no_shows_absent(live_class, now)
 
         att_ids = list(Attendance.objects.filter(live_class=live_class).values_list('id', flat=True))
         for att_id in att_ids:
@@ -822,6 +1043,8 @@ class ZoomAttendanceService:
                 counts["changed"] += 1
             if att.status == Attendance.Status.PRESENT:
                 counts["present"] += 1
+            elif att.status == Attendance.Status.LATE:
+                counts["late"] += 1
             elif att.status == Attendance.Status.ABSENT:
                 counts["absent"] += 1
             else:
@@ -831,6 +1054,27 @@ class ZoomAttendanceService:
             live_class.attendance_finalized_at = now
             live_class.save(update_fields=['attendance_finalized_at'])
         return counts
+
+    @classmethod
+    def _mark_no_shows_absent(cls, live_class, now):
+        """Creates ABSENT rows for roster students with no attendance row; existing rows are left alone."""
+        existing = set(Attendance.objects.filter(live_class=live_class).values_list('student_id', flat=True))
+        created = 0
+        for student in class_roster(live_class):
+            if student.pk in existing:
+                continue
+            _, was_created = Attendance.objects.get_or_create(
+                live_class=live_class, student=student,
+                defaults={
+                    'status': Attendance.Status.ABSENT,
+                    'duration_minutes': 0,
+                    'reconciliation_status': 'RECONCILED',
+                    'reconciled_at': now,
+                    'notes': 'Automatically marked absent: no verified Zoom attendance.',
+                },
+            )
+            created += int(was_created)
+        return created
 
     @classmethod
     def link_unmatched_participant(cls, unmatched_id, student_id, admin_user):

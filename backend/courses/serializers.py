@@ -862,6 +862,12 @@ class LiveClassSerializer(serializers.ModelSerializer):
             ret['attendance_present_count'] = 0
             ret['attendance_avg_duration'] = 0
 
+        # History list only: actual Zoom minutes and Zoom joiners still to identify.
+        if 'conducted_minutes' in self.context:
+            ret['conducted_minutes'] = self.context['conducted_minutes'].get(instance.id)
+        if 'unmatched_counts' in self.context:
+            ret['unmatched_count'] = self.context['unmatched_counts'].get(instance.id, 0)
+
         # LiveClassReport representation scoping
         report = getattr(instance, 'report', None)
         ret['has_report'] = bool(report)
@@ -1063,6 +1069,8 @@ class AttendanceConfigurationSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'default_min_attendance_percentage',
+            'late_after_minutes',
+            'finalize_after_minutes',
             'updated_at',
             'updated_by',
             'updated_by_name'
@@ -1078,6 +1086,16 @@ class AttendanceConfigurationSerializer(serializers.ModelSerializer):
     def validate_default_min_attendance_percentage(self, value):
         if value is None or value < 1 or value > 100:
             raise serializers.ValidationError("Percentage must be an integer between 1 and 100.")
+        return value
+
+    def validate_finalize_after_minutes(self, value):
+        if value is None or value < 0 or value > 1440:
+            raise serializers.ValidationError("Finalize after must be between 0 and 1440 minutes.")
+        return value
+
+    def validate_late_after_minutes(self, value):
+        if value is None or value < 0 or value > 240:
+            raise serializers.ValidationError("Late after must be between 0 (off) and 240 minutes.")
         return value
 
 

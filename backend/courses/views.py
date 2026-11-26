@@ -2879,12 +2879,28 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         queryset = queryset.filter(status=LiveClass.ClassStatus.COMPLETED).order_by('-scheduled_start')
 
         page = self.paginate_queryset(queryset)
+        rows = page if page is not None else list(queryset)
+        serializer = self.get_serializer(rows, many=True, context=self._history_context(rows))
         if page is not None:
-            serializer = self.get_serializer(page, many=True)
             return self.get_paginated_response(serializer.data)
-
-        serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+
+    def _history_context(self, rows):
+        """Adds actual Zoom minutes and pending unmatched-participant counts for a page of classes."""
+        context = self.get_serializer_context()
+        from courses.models import UnmatchedZoomParticipant
+        from courses.services.conducted_time import bulk_conducted_minutes
+        try:
+            context['conducted_minutes'] = bulk_conducted_minutes(rows)
+        except Exception as exc:  # display-only
+            logger.warning(f"[LiveClassHistory] Could not derive conducted time: {exc}")
+            context['conducted_minutes'] = {}
+        context['unmatched_counts'] = dict(
+            UnmatchedZoomParticipant.objects
+            .filter(live_class_id__in=[lc.id for lc in rows], status=UnmatchedZoomParticipant.Status.PENDING)
+            .values('live_class_id').annotate(n=Count('id')).values_list('live_class_id', 'n')
+        )
+        return context
 
     @action(detail=True, methods=['post'], url_path='sync-recording')
     def sync_recording(self, request, pk=None):
@@ -3001,12 +3017,12 @@ class LiveClassViewSet(viewsets.ModelViewSet):
         now = timezone.now()
         from courses.services.zoom_attendance import ZoomAttendanceService
 
-        # Path A: Register with Zoom if valid email and feature flag enabled
+        # Path A: personal Zoom join link (registrant) when personal links are on.
+        # Works for phone-only accounts too (an internal registrant email is used).
         registrant = None
         if (
             getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False)
             and getattr(settings, 'ZOOM_ATTENDANCE_USE_REGISTRATION', False)
-            and user.email and '@' in user.email
         ):
             try:
                 registrant = ZoomAttendanceService.register_student_for_meeting(live_class, user)
@@ -4480,8 +4496,18 @@ class ZoomWebhookView(APIView):
         else:
             event_id = f"zoom:{event}:{meeting_uuid or meeting_id}:{event_ts}"
 
-        # Find matching LiveClass if present
-        live_class = ZoomRecordingService.find_live_class_for_zoom_meeting(meeting_id, meeting_uuid)
+        # Find matching LiveClass if present. Meeting and participant events
+        # carry a time, so a meeting ID shared by several classes resolves to
+        # the occurrence the event belongs to (not the latest scheduled one).
+        event_at = None
+        if str(event).startswith('meeting.'):
+            from courses.services.zoom_attendance import event_time
+            event_at = event_time(
+                participant_data.get('join_time') or participant_data.get('leave_time')
+                or object_data.get('start_time'),
+                fallback=str(event_ts) if event_ts else None,
+            )
+        live_class = ZoomRecordingService.find_live_class_for_zoom_meeting(meeting_id, meeting_uuid, at=event_at)
 
         # 4. Durable persistence via trusted SECURITY DEFINER function or ORM create
         is_redelivery = False

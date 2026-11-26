@@ -513,9 +513,10 @@ class LiveClass(models.Model):
         percentage = min(100.0, round(raw_pct, 1))
         effective_threshold = self.get_effective_min_attendance_percentage()
 
-        # PRESENT at/above the global threshold, otherwise ABSENT. LATE is never
-        # suggested automatically (it remains available as a manual status).
-        if zoom_sec > 0 and percentage >= effective_threshold:
+        # PRESENT at/above the global threshold, otherwise ABSENT. Compared on
+        # the unrounded percentage, so 74.96% is below a 75% threshold. LATE is
+        # decided separately (apply_automatic_attendance, optional late rule).
+        if zoom_sec > 0 and raw_pct >= effective_threshold:
             suggested_status = "PRESENT"
         else:
             suggested_status = "ABSENT"
@@ -702,6 +703,24 @@ class AttendanceConfiguration(models.Model):
         validators=[MinValueValidator(1), MaxValueValidator(100)],
         help_text="Global default minimum attendance percentage (1-100) required to suggest PRESENT."
     )
+    late_after_minutes = models.PositiveSmallIntegerField(
+        default=0,
+        db_default=0,
+        validators=[MaxValueValidator(240)],
+        help_text=(
+            "0 = off. Otherwise a student who meets the threshold but first joined Zoom more than "
+            "this many minutes after the class started is marked LATE instead of PRESENT."
+        ),
+    )
+    finalize_after_minutes = models.PositiveSmallIntegerField(
+        default=15,
+        db_default=15,
+        validators=[MaxValueValidator(1440)],
+        help_text=(
+            "Minutes to wait after the Zoom meeting ended before attendance is finalized "
+            "(students with no verified Zoom attendance are then marked ABSENT)."
+        ),
+    )
     updated_at = models.DateTimeField(auto_now=True)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -736,6 +755,16 @@ class AttendanceConfiguration(models.Model):
     def get_default_percentage(cls):
         config = cls.objects.filter(pk=1).first()
         return config.default_min_attendance_percentage if config else 75
+
+    @classmethod
+    def get_finalize_after_minutes(cls):
+        config = cls.objects.filter(pk=1).first()
+        return config.finalize_after_minutes if config else 15
+
+    @classmethod
+    def get_late_after_minutes(cls):
+        config = cls.objects.filter(pk=1).first()
+        return config.late_after_minutes if config else 0
 
     @classmethod
     def get_solo(cls):

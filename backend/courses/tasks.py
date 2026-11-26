@@ -953,7 +953,7 @@ def zoom_attendance_catch_up_task(lookback_hours=72, limit=25):
     from django.utils import timezone as _tz
     from courses.models import LiveClass
     from courses.services.attendance_automation import automation_start
-    from courses.services.attendance_classification import is_class_in_progress, scheduled_end
+    from courses.services.attendance_classification import finalization_ready_at, is_class_in_progress, scheduled_end
 
     if not getattr(settings, 'ENABLE_ZOOM_ATTENDANCE_V2', False):
         return {"status": "disabled"}
@@ -962,18 +962,28 @@ def zoom_attendance_catch_up_task(lookback_hours=72, limit=25):
         logger.warning("[ZoomAttendanceCatchUp] ZOOM_ATTENDANCE_AUTOMATION_START is missing or invalid; doing nothing.")
         return {"status": "automation_start_not_configured", "queued": []}
 
+    from django.db.models import Exists, OuterRef
+    from courses.models import ZoomWebhookEvent
+
     now = _tz.now()
+    # Zoom classes, plus classes created with a pasted Zoom link whose meeting
+    # sent us meeting events (proof it runs on our Zoom account, so its
+    # participant report is readable).
+    zoom_events = ZoomWebhookEvent.objects.filter(
+        live_class_id=OuterRef('pk'), event_type__in=('meeting.started', 'meeting.ended'),
+    )
     candidates = (
         LiveClass.objects
         .filter(
-            meeting_provider=LiveClass.MeetingProvider.ZOOM,
+            Q(meeting_provider=LiveClass.MeetingProvider.ZOOM)
+            | (Q(meeting_url__icontains='zoom.us/') & Exists(zoom_events)),
             attendance_finalized_at__isnull=True,
             # Never before the automation start, never older than the lookback.
             scheduled_start__gte=max(now - _dt.timedelta(hours=lookback_hours), start),
             scheduled_start__lte=now,
         )
         .exclude(status=LiveClass.ClassStatus.CANCELLED)
-        .exclude(Q(zoom_meeting_id='') & Q(zoom_uuid=''))
+        .exclude(Q(zoom_meeting_id='') & Q(zoom_uuid='') & ~Q(meeting_url__icontains='zoom.us/'))
         .order_by('scheduled_start')
     )
     queued = []
@@ -981,9 +991,12 @@ def zoom_attendance_catch_up_task(lookback_hours=72, limit=25):
         if len(queued) >= limit:
             break
         end = scheduled_end(live_class)
-        if end and now < end + _dt.timedelta(minutes=15):
+        if end and now < end:
             continue
         if is_class_in_progress(live_class, now):
+            continue
+        ready = finalization_ready_at(live_class)
+        if ready and now < ready:
             continue
         # One pending reconciliation per class; the task clears the key when done.
         if cache.add(ZOOM_ATTENDANCE_PENDING_KEY.format(live_class.id), 1, timeout=6 * 3600):

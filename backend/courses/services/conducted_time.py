@@ -69,19 +69,61 @@ def get_conducted_time(live_class, now=None):
 
     if not live_class.scheduled_start:
         return None
+    events = (
+        ZoomWebhookEvent.objects
+        .filter(_class_event_filter(live_class))
+        .filter(event_type__in=ENDED_EVENTS + STARTED_EVENTS)
+        .only('event_type', 'payload')
+    )
+    return _conducted_from_events(live_class, events, now)
+
+
+def bulk_conducted_minutes(live_classes, now=None):
+    """
+    {live_class_id: minutes | None} for many classes with ONE events query
+    (for list pages). Same rules as get_conducted_time; classes with no Zoom
+    evidence are left out.
+    """
+    from courses.models import ZoomWebhookEvent
+
+    classes = [lc for lc in live_classes if lc.scheduled_start]
+    if not classes:
+        return {}
+    ids = [lc.id for lc in classes]
+    uuids = [lc.zoom_uuid for lc in classes if lc.zoom_uuid]
+    meeting_ids = [lc.zoom_meeting_id for lc in classes if lc.zoom_meeting_id]
+    q = Q(live_class_id__in=ids)
+    if uuids:
+        q |= Q(meeting_uuid__in=uuids)
+    if meeting_ids:
+        q |= Q(live_class__zoom_meeting_id__in=meeting_ids)
+    events = list(
+        ZoomWebhookEvent.objects
+        .filter(q, event_type__in=ENDED_EVENTS + STARTED_EVENTS)
+        .select_related('live_class')
+        .only('event_type', 'payload', 'meeting_uuid', 'live_class_id', 'live_class__zoom_meeting_id')
+    )
+    result = {}
+    for lc in classes:
+        mine = [
+            ev for ev in events
+            if ev.live_class_id == lc.id
+            or (lc.zoom_uuid and ev.meeting_uuid == lc.zoom_uuid)
+            or (lc.zoom_meeting_id and ev.live_class_id and ev.live_class.zoom_meeting_id == lc.zoom_meeting_id)
+        ]
+        info = _conducted_from_events(lc, mine, now) if mine else None
+        if info is not None:
+            result[lc.id] = info["minutes"]
+    return result
+
+
+def _conducted_from_events(live_class, events, now=None):
     now = now or timezone.now()
     window_start = live_class.scheduled_start - WINDOW_BEFORE
     window_end = (
         live_class.scheduled_start
         + datetime.timedelta(minutes=live_class.duration_minutes or 60)
         + WINDOW_AFTER
-    )
-
-    events = (
-        ZoomWebhookEvent.objects
-        .filter(_class_event_filter(live_class))
-        .filter(event_type__in=ENDED_EVENTS + STARTED_EVENTS)
-        .only('event_type', 'payload')
     )
 
     segments = set()

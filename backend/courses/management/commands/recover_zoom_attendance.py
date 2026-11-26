@@ -167,7 +167,8 @@ class Command(BaseCommand):
                 # Incomplete report sets (some runs not ready) are applied promote-only:
                 # nobody is marked ABSENT from partial evidence.
                 result = ZoomAttendanceService.apply_meeting_report(
-                    live_class, participants, complete=fetched.get("status") == "success"
+                    live_class, participants, complete=fetched.get("status") == "success",
+                    run_source=fetched.get("run_source", ""),
                 )
                 after = _snapshot(live_class)
                 unmatched_after = _pending_unmatched(live_class)

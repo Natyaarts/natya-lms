@@ -148,9 +148,14 @@ class ZoomRecordingService:
         return False
 
     @classmethod
-    def find_live_class_for_zoom_meeting(cls, meeting_id, meeting_uuid=''):
+    def find_live_class_for_zoom_meeting(cls, meeting_id, meeting_uuid='', at=None):
         """
         Finds a LiveClass by Zoom meeting UUID, numeric meeting ID, or URL substring.
+
+        `at` (aware datetime, optional) is when the Zoom event happened. Several
+        classes can share one meeting ID (a series re-using one link); with `at`
+        the occurrence whose time window contains it is chosen, instead of the
+        most recently scheduled one -- which may be next week's class.
         """
         from courses.models import LiveClass
         if meeting_uuid:
@@ -158,16 +163,37 @@ class ZoomRecordingService:
             if lc:
                 return lc
         if meeting_id:
-            lc = LiveClass.objects.filter(zoom_meeting_id=meeting_id).order_by('-scheduled_start').first()
-            if lc:
-                return lc
-            lc = LiveClass.objects.filter(meeting_url__icontains=meeting_id).order_by('-scheduled_start').first()
-            if lc:
-                return lc
-            lc = LiveClass.objects.filter(host_url__icontains=meeting_id).order_by('-scheduled_start').first()
-            if lc:
-                return lc
+            for field in ('zoom_meeting_id', 'meeting_url__icontains', 'host_url__icontains'):
+                lc = cls._pick_occurrence(LiveClass.objects.filter(**{field: meeting_id}), at)
+                if lc:
+                    return lc
         return None
+
+    @staticmethod
+    def _pick_occurrence(queryset, at):
+        """The class of `queryset` that the event at `at` belongs to (see find_live_class_for_zoom_meeting)."""
+        import datetime as _dt
+        from courses.models import LiveClass
+        from courses.services.conducted_time import WINDOW_AFTER, WINDOW_BEFORE
+
+        if at is None:
+            return queryset.order_by('-scheduled_start').first()
+        candidates = list(
+            queryset.exclude(scheduled_start__isnull=True)
+            .filter(scheduled_start__lte=at + WINDOW_BEFORE)
+            .order_by('-scheduled_start')[:20]
+        )
+        active = [lc for lc in candidates if lc.status != LiveClass.ClassStatus.CANCELLED] or candidates
+        in_window = [
+            lc for lc in active
+            if lc.scheduled_start - WINDOW_BEFORE <= at
+            <= lc.scheduled_start + _dt.timedelta(minutes=lc.duration_minutes or 60) + WINDOW_AFTER
+        ]
+        if in_window:
+            return min(in_window, key=lambda lc: abs((lc.scheduled_start - at).total_seconds()))
+        if active:
+            return active[0]  # latest occurrence that had started by then
+        return queryset.order_by('-scheduled_start').first()
 
     @classmethod
     def stream_zoom_recording_to_s3(

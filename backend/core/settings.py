@@ -1026,9 +1026,14 @@ ZOOM_ATTENDANCE_EXCLUDED_USER_IDS = frozenset(
 ZOOM_ATTENDANCE_EXCLUDED_EMAILS = frozenset(
     v.strip().lower() for v in os.environ.get('ZOOM_ATTENDANCE_EXCLUDED_EMAILS', '').split(',') if '@' in v
 )
-# Option B (no Zoom registration): the per-join registrants API call is off,
-# because it can only fail on meetings without registration enabled.
+# Personal Zoom join links: when on (with ENABLE_ZOOM_ATTENDANCE_V2), a student
+# who taps Join is registered with Zoom and gets their own join link, so Zoom
+# reports exactly who attended. New meetings are created with auto-approved
+# registration; older meetings get it switched on at the first join.
 ZOOM_ATTENDANCE_USE_REGISTRATION = os.environ.get('ZOOM_ATTENDANCE_USE_REGISTRATION', 'False').strip().lower() in ('true', '1', 'yes')
+# Personal join links need an email per registrant; accounts without one are
+# registered as student-<id>@<this domain> (Zoom sends registrants no emails).
+ZOOM_REGISTRANT_EMAIL_DOMAIN = os.environ.get('ZOOM_REGISTRANT_EMAIL_DOMAIN', 'students.natyaarts.com').strip() or 'students.natyaarts.com'
 # Automatic attendance reconciliation (catch-up, auto-complete, meeting.ended)
 # only runs for classes scheduled at or after this moment. ISO 8601 with an
 # explicit UTC offset, e.g. 2026-11-25T00:00:00+05:30. Missing or invalid ->

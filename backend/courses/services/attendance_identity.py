@@ -50,6 +50,30 @@ def is_class_member(live_class, user):
     return False
 
 
+def class_roster(live_class):
+    """
+    Students expected in this class, for automatic ABSENT marking: the class's
+    own batch (only the course enrollments when the class has no batch -- a
+    course can have several batches), as it stood when the class ended.
+    Teachers, staff and excluded/test accounts are left out.
+    """
+    import datetime
+    from django.contrib.auth import get_user_model
+    from courses.models import Enrollment, LiveBatchStudent
+
+    if not live_class.scheduled_start:
+        return []
+    end = live_class.scheduled_start + datetime.timedelta(minutes=live_class.duration_minutes or 60)
+    if live_class.batch_id:
+        ids = LiveBatchStudent.objects.filter(batch_id=live_class.batch_id, created_at__lte=end).values_list("student_id", flat=True)
+    elif live_class.course_id:
+        ids = Enrollment.objects.filter(course_id=live_class.course_id, enrolled_at__lte=end).values_list("user_id", flat=True)
+    else:
+        return []
+    users = get_user_model().objects.filter(pk__in=set(ids), is_active=True)
+    return [u for u in users if not excluded_user_reason(u, live_class)]
+
+
 def teaching_staff_user_ids(live_class):
     """Instructor, substitute, batch instructor/mentor and course teaching staff."""
     cached = getattr(live_class, "_teaching_staff_ids", None)

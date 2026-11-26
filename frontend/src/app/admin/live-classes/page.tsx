@@ -138,10 +138,14 @@ export default function LiveClassesPage() {
   const [globalAttendanceConfig, setGlobalAttendanceConfig] = useState<{
     id: number;
     default_min_attendance_percentage: number;
+    late_after_minutes?: number;
+    finalize_after_minutes?: number;
     updated_at?: string;
     updated_by_name?: string;
   } | null>(null);
   const [globalAttendanceInput, setGlobalAttendanceInput] = useState<number | string>(75);
+  const [lateAfterInput, setLateAfterInput] = useState<number | string>(0);
+  const [finalizeAfterInput, setFinalizeAfterInput] = useState<number | string>(15);
   const [globalAttendanceLoading, setGlobalAttendanceLoading] = useState(false);
   const [globalAttendanceSaving, setGlobalAttendanceSaving] = useState(false);
   const [globalAttendanceMsg, setGlobalAttendanceMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -227,6 +231,8 @@ export default function LiveClassesPage() {
         const data = await res.json();
         setGlobalAttendanceConfig(data);
         setGlobalAttendanceInput(data.default_min_attendance_percentage);
+        setLateAfterInput(data.late_after_minutes ?? 0);
+        setFinalizeAfterInput(data.finalize_after_minutes ?? 15);
       }
     } catch (e) {
       console.error("Failed to load attendance settings", e);
@@ -242,23 +248,35 @@ export default function LiveClassesPage() {
       setGlobalAttendanceMsg({ type: "error", text: "Percentage must be an integer between 1 and 100." });
       return;
     }
+    const late = Number(lateAfterInput || 0);
+    if (!Number.isInteger(late) || late < 0 || late > 240) {
+      setGlobalAttendanceMsg({ type: "error", text: "Late after must be a whole number of minutes from 0 (off) to 240." });
+      return;
+    }
+    const finalizeAfter = Number(finalizeAfterInput === "" ? 15 : finalizeAfterInput);
+    if (!Number.isInteger(finalizeAfter) || finalizeAfter < 0 || finalizeAfter > 1440) {
+      setGlobalAttendanceMsg({ type: "error", text: "Finalize after must be a whole number of minutes from 0 to 1440." });
+      return;
+    }
     setGlobalAttendanceSaving(true);
     setGlobalAttendanceMsg(null);
     try {
       const res = await authedFetch("/api/courses/attendance-settings/", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ default_min_attendance_percentage: val }),
+        body: JSON.stringify({ default_min_attendance_percentage: val, late_after_minutes: late, finalize_after_minutes: finalizeAfter }),
       });
       if (res.ok) {
         const data = await res.json();
         setGlobalAttendanceConfig(data);
         setGlobalAttendanceInput(data.default_min_attendance_percentage);
-        setGlobalAttendanceMsg({ type: "success", text: "Global attendance threshold updated successfully." });
+        setLateAfterInput(data.late_after_minutes ?? 0);
+        setFinalizeAfterInput(data.finalize_after_minutes ?? 15);
+        setGlobalAttendanceMsg({ type: "success", text: "Attendance settings saved." });
         setTimeout(() => setGlobalAttendanceMsg(null), 4000);
       } else {
         const err = await res.json().catch(() => ({}));
-        setGlobalAttendanceMsg({ type: "error", text: err.detail || err.default_min_attendance_percentage?.[0] || "Failed to update global settings." });
+        setGlobalAttendanceMsg({ type: "error", text: err.detail || err.default_min_attendance_percentage?.[0] || err.late_after_minutes?.[0] || err.finalize_after_minutes?.[0] || "Failed to update global settings." });
       }
     } catch (err: any) {
       setGlobalAttendanceMsg({ type: "error", text: err.message || "Network error while saving." });
@@ -1143,7 +1161,11 @@ export default function LiveClassesPage() {
       const res = await authedFetch(`/api/courses/live-batches/${lc.batch}/students/?page_size=200`);
       if (res.ok) {
         const data = await res.json();
-        roster = Array.isArray(data) ? data : data.results || [];
+        roster = (Array.isArray(data) ? data : data.results || []).map((r: { student_name?: string | null; student_username?: string }) => ({
+          ...r,
+          // Show the real name; the username of migrated accounts is just "legacy_<id>".
+          student_username: (r.student_name || "").trim() || r.student_username,
+        }));
       }
     }
     const aRes = await authedFetch(`/api/courses/live-classes/${lc.id}/attendance/`);
@@ -1426,6 +1448,16 @@ export default function LiveClassesPage() {
                                 <span className="text-[10px] text-zinc-500 mt-0.5">
                                   Avg {lc.attendance_avg_duration} min
                                 </span>
+                              )}
+                              {lc.unmatched_count > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => openAttendance(lc)}
+                                  className="mt-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20"
+                                  title="People who joined on Zoom but could not be matched to a student. Open attendance to link them."
+                                >
+                                  {lc.unmatched_count} Zoom joiner{lc.unmatched_count > 1 ? "s" : ""} to identify
+                                </button>
                               )}
                             </div>
                           )}
@@ -2152,6 +2184,32 @@ export default function LiveClassesPage() {
                       />
                       <span className="absolute right-3 top-2.5 text-zinc-500 text-xs font-bold">%</span>
                     </div>
+                    <label className="flex items-center gap-2 text-[11px] text-zinc-400" title="0 = off. Students who reach the threshold but first joined more than this many minutes after the class started are marked LATE.">
+                      Late after
+                      <input
+                        type="number"
+                        min="0"
+                        max="240"
+                        value={lateAfterInput}
+                        onChange={(e) => setLateAfterInput(e.target.value)}
+                        className="w-16 px-2 py-2 bg-black border border-white/10 rounded-xl text-white font-mono font-bold text-sm text-center focus:outline-none focus:border-[#facc15]"
+                        aria-label="Late after minutes (0 = off)"
+                      />
+                      min
+                    </label>
+                    <label className="flex items-center gap-2 text-[11px] text-zinc-400" title="How long to wait after the Zoom meeting ends before attendance is finalized. Students with no verified Zoom attendance are then marked ABSENT.">
+                      Finalize after
+                      <input
+                        type="number"
+                        min="0"
+                        max="1440"
+                        value={finalizeAfterInput}
+                        onChange={(e) => setFinalizeAfterInput(e.target.value)}
+                        className="w-16 px-2 py-2 bg-black border border-white/10 rounded-xl text-white font-mono font-bold text-sm text-center focus:outline-none focus:border-[#facc15]"
+                        aria-label="Finalize after minutes"
+                      />
+                      min
+                    </label>
                     <button
                       type="submit"
                       disabled={globalAttendanceSaving}
@@ -2185,7 +2243,7 @@ export default function LiveClassesPage() {
                   <div className="p-3 bg-black/40 rounded-lg border border-white/5 space-y-1">
                     <span className="font-semibold text-white block">Status Evaluation</span>
                     <p className="text-zinc-300">
-                      <span className="text-green-400 font-semibold">≥ Threshold</span>: PRESENT · <span className="text-yellow-400 font-semibold">&gt; 0%</span>: LATE · <span className="text-red-400 font-semibold">0%</span>: ABSENT
+                      <span className="text-green-400 font-semibold">≥ Threshold</span>: PRESENT{Number(lateAfterInput) > 0 ? <> (<span className="text-yellow-400 font-semibold">LATE</span> if first joined more than {lateAfterInput} min after the class started)</> : null} · <span className="text-red-400 font-semibold">Below threshold or did not join</span>: ABSENT, set {finalizeAfterInput || 0} min after the meeting ends once the full Zoom report is processed (excused and admin-edited records are never changed)
                     </p>
                   </div>
                   <div className="p-3 bg-black/40 rounded-lg border border-white/5 space-y-1">
@@ -2308,7 +2366,7 @@ export default function LiveClassesPage() {
                           <span className="text-zinc-300">{sched.datePart}</span>
                           <span className="font-mono">{sched.timePart}</span>
                           <span className="text-zinc-600">·</span>
-                          <Clock className="w-3 h-3" /> {lc.duration_minutes} min
+                          <Clock className="w-3 h-3" /> {lc.duration_minutes} min {lc.conducted_minutes != null && <span className="text-emerald-400" title="Actual Zoom meeting time">(Zoom {lc.conducted_minutes} min)</span>}
                           <span className="text-zinc-600">·</span>
                           {lc.meeting_provider === "ZOOM" ? "Zoom" : (PROVIDER_LABEL[lc.meeting_provider] || lc.meeting_provider)}
                         </p>
@@ -2366,7 +2424,7 @@ export default function LiveClassesPage() {
                         <div className="text-xs font-medium text-zinc-200">{sched.datePart}</div>
                         <div className="text-[11px] text-zinc-500 font-mono mt-0.5">{sched.timePart}</div>
                         <div className="2xl:hidden text-[11px] text-zinc-500 mt-1 flex items-center gap-1">
-                          <Clock className="w-3 h-3" /> {lc.duration_minutes} min
+                          <Clock className="w-3 h-3" /> {lc.duration_minutes} min {lc.conducted_minutes != null && <span className="text-emerald-400" title="Actual Zoom meeting time">(Zoom {lc.conducted_minutes} min)</span>}
                           <span className="text-zinc-600">·</span>
                           {lc.meeting_provider === "ZOOM" ? "Zoom" : (PROVIDER_LABEL[lc.meeting_provider] || lc.meeting_provider)}
                         </div>
@@ -2377,6 +2435,9 @@ export default function LiveClassesPage() {
                         <span className="inline-flex items-center gap-1 text-xs text-zinc-300 font-mono bg-zinc-900/60 border border-white/5 rounded-md px-2 py-1">
                           <Clock className="w-3 h-3 text-zinc-500" /> {lc.duration_minutes} min
                         </span>
+                        {lc.conducted_minutes != null && (
+                          <div className="text-[10px] text-emerald-400 mt-1" title="Actual Zoom meeting time">Zoom: {lc.conducted_minutes} min</div>
+                        )}
                       </td>
 
                       {/* Provider */}
@@ -2995,12 +3056,20 @@ export default function LiveClassesPage() {
                             }}
                             className="bg-zinc-900 border border-white/10 text-white text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-amber-400"
                           >
-                            <option value="">Select Enrolled Student...</option>
-                            {attendanceRoster.map((s: any) => (
-                              <option key={s.student} value={s.student}>
-                                {s.student_username || `Student #${s.student}`}
-                              </option>
-                            ))}
+                            <option value="">Select enrolled student...</option>
+                            {[...attendanceRoster]
+                              .sort((a: { student_username?: string }, b: { student_username?: string }) =>
+                                String(a.student_username || "").localeCompare(String(b.student_username || ""))
+                              )
+                              .map((s: { student: number; student_username?: string; student_phone?: string | null }) => {
+                                const present = ["PRESENT", "LATE"].includes(attendanceRecords[s.student]);
+                                const phone = s.student_phone ? ` · ${s.student_phone}` : "";
+                                return (
+                                  <option key={s.student} value={s.student}>
+                                    {s.student_username || `Student #${s.student}`}{phone}{present ? " (already present)" : ""}
+                                  </option>
+                                );
+                              })}
                           </select>
 
                           <button
