@@ -36,9 +36,9 @@ class User(AbstractUser):
     is_onboarded = models.BooleanField(default=False)
     onboarding_data = models.JSONField(default=dict, blank=True)
     
-    phone_number = models.CharField(max_length=15, blank=True, null=True)
+    phone_number = models.CharField(max_length=16, blank=True, null=True)  # E.164: "+" and up to 15 digits
     parent_name = models.CharField(max_length=255, blank=True, null=True)
-    parent_phone = models.CharField(max_length=15, blank=True, null=True)
+    parent_phone = models.CharField(max_length=16, blank=True, null=True)
     whatsapp_opt_in = models.BooleanField(
         default=False,
         help_text="Explicit student consent to receive WhatsApp live class notifications."

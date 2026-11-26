@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, Plus, X, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Check, Eye } from "lucide-react";
 import CountrySelect from "@/components/CountrySelect";
+import { joinPhone } from "@/lib/phone";
 
 function buildPageItems(currentPage: number, totalPages: number): (number | "ellipsis")[] {
   if (totalPages <= 7) {
@@ -167,22 +168,10 @@ export default function AdminUsers() {
     e.preventDefault();
     setFormError("");
     
-    const formatPhone = (phone: string, code: string) => {
-      if (!phone) return "";
-      const trimmed = phone.trim();
-      if (trimmed.startsWith("+")) return trimmed;
-      const clean = trimmed.replace(/^0+/, "");
-      return `${code}${clean}`;
-    };
-
-    const formattedPhone = formatPhone(formFields.phone_number, countryCode);
-    const formattedParentPhone = formatPhone(formFields.parent_phone, parentCountryCode);
-
-    // Formatting validation
-    if (formattedPhone && !formattedPhone.startsWith('+')) {
-      setFormError("Phone number must include country code (e.g. +919999999999).");
-      return;
-    }
+    // "+<code><digits>": spaces, dashes and a trunk "0" (e.g. Irish 087...) removed.
+    // The server validates the number for its country and rejects duplicates.
+    const formattedPhone = joinPhone(countryCode, formFields.phone_number);
+    const formattedParentPhone = joinPhone(parentCountryCode, formFields.parent_phone);
 
     setSubmitting(true);
     

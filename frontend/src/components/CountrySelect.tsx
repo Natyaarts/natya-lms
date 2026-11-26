@@ -1,27 +1,8 @@
 import { useState, useRef, useEffect } from "react";
+import { COUNTRY_OPTIONS } from "@/lib/phone";
 
-const COUNTRIES = [
-  { name: 'India', code: '+91', iso: 'IN' },
-  { name: 'United States', code: '+1', iso: 'US' },
-  { name: 'United Kingdom', code: '+44', iso: 'GB' },
-  { name: 'Australia', code: '+61', iso: 'AU' },
-  { name: 'United Arab Emirates', code: '+971', iso: 'AE' },
-  { name: 'Canada', code: '+1', iso: 'CA' },
-  { name: 'Singapore', code: '+65', iso: 'SG' },
-  { name: 'Malaysia', code: '+60', iso: 'MY' },
-  { name: 'New Zealand', code: '+64', iso: 'NZ' },
-  { name: 'South Africa', code: '+27', iso: 'ZA' },
-  { name: 'Germany', code: '+49', iso: 'DE' },
-  { name: 'France', code: '+33', iso: 'FR' },
-  { name: 'Italy', code: '+39', iso: 'IT' },
-  { name: 'Spain', code: '+34', iso: 'ES' },
-  { name: 'Netherlands', code: '+31', iso: 'NL' },
-  { name: 'Saudi Arabia', code: '+966', iso: 'SA' },
-  { name: 'Qatar', code: '+974', iso: 'QA' },
-  { name: 'Oman', code: '+968', iso: 'OM' },
-  { name: 'Kuwait', code: '+965', iso: 'KW' },
-  { name: 'Bahrain', code: '+973', iso: 'BH' },
-];
+// India first (default), then every country alphabetically -- incl. Ireland (+353).
+const COUNTRIES = COUNTRY_OPTIONS;
 
 interface CountrySelectProps {
   value: string;

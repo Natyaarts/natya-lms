@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import CountrySelect from "@/components/CountrySelect";
+import { joinPhone } from "@/lib/phone";
 
 export default function Login() {
   const [formData, setFormData] = useState({
@@ -72,7 +73,7 @@ export default function Login() {
 
     try {
       const finalIdentifier = authMethod === 'mobile'
-        ? `${countryCode}${formData.identifier}`
+        ? joinPhone(countryCode, formData.identifier)
         : formData.identifier;
 
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/send-otp/`, {
@@ -109,7 +110,7 @@ export default function Login() {
 
     try {
       const finalIdentifier = authMethod === 'mobile'
-        ? `${countryCode}${formData.identifier}`
+        ? joinPhone(countryCode, formData.identifier)
         : formData.identifier;
 
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/verify-otp/`, {
@@ -244,7 +245,7 @@ export default function Login() {
         ) : (
           <form onSubmit={handleVerifyOTP} className="space-y-4">
             <div>
-              <div className="text-sm text-zinc-400 mb-2">We sent a 6-digit code to {authMethod === 'mobile' ? `${countryCode}${formData.identifier}` : formData.identifier}</div>
+              <div className="text-sm text-zinc-400 mb-2">We sent a 6-digit code to {authMethod === 'mobile' ? joinPhone(countryCode, formData.identifier) : formData.identifier}</div>
               {devOtp && (
                 <div className="mb-3 px-3 py-2 rounded-xl bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-xs flex items-center justify-between">
                   <span>Dev Mode OTP: <strong className="text-sm text-yellow-300 font-mono tracking-wider ml-1">{devOtp}</strong></span>

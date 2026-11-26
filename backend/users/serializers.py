@@ -6,6 +6,20 @@ from dj_rest_auth.serializers import UserDetailsSerializer
 
 User = get_user_model()
 
+_PHONE_FORMAT_HELP = "Enter a valid mobile number with its country code, e.g. +91 98765 43210 or +353 87 123 4567."
+
+
+def _normalized_or_error(value):
+    """'' / None stay empty; anything else must be a valid number -> E.164."""
+    from .phone import normalize_phone
+
+    if value in (None, ""):
+        return value
+    normalized = normalize_phone(value, strict=True)
+    if not normalized:
+        raise serializers.ValidationError(_PHONE_FORMAT_HELP)
+    return normalized
+
 # Phase 3.9: the exact role/privilege fields AdminAuditLog needs to
 # compare before/after on every AdminUserSerializer.update() -- see that
 # method below.
@@ -55,6 +69,11 @@ class CustomUserDetailsSerializer(UserDetailsSerializer):
             'is_teacher', 'is_student', 'is_mentor', 'is_onboarded', 'whatsapp_opt_in_updated_at',
         )
 
+    def validate_parent_phone(self, value):
+        if self.instance is not None and value == self.instance.parent_phone:
+            return value
+        return _normalized_or_error(value)
+
 class AdminUserSerializer(serializers.ModelSerializer):
     courses_count = serializers.SerializerMethodField()
     password = serializers.CharField(write_only=True, required=False)
@@ -71,9 +90,28 @@ class AdminUserSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'student_id', 'date_joined', 'courses_count', 'whatsapp_opt_in_updated_at')
 
     def validate_phone_number(self, value):
-        if value and not value.startswith('+'):
-            raise serializers.ValidationError("Phone number must include country code prefix (e.g., +91).")
-        return value
+        """
+        Stored in E.164 (e.g. +353871234567) so OTP login finds the account, and never
+        shared with another account (OTP login could not tell them apart). Accounts
+        that already have this number in an older format are detected too.
+        """
+        from .phone import same_phone_users
+
+        if self.instance is not None and value == self.instance.phone_number:
+            return value  # unchanged: legacy stored numbers are kept exactly as they are
+        normalized = _normalized_or_error(value)
+        if not normalized:
+            return normalized
+        if self.instance is not None and normalized == (self.instance.phone_number or ""):
+            return normalized
+        if same_phone_users(normalized, exclude_pk=getattr(self.instance, "pk", None)):
+            raise serializers.ValidationError("This mobile number is already linked to another account.")
+        return normalized
+
+    def validate_parent_phone(self, value):
+        if self.instance is not None and value == self.instance.parent_phone:
+            return value
+        return _normalized_or_error(value)
 
     def validate(self, attrs):
         # AdminUserViewSet is reachable by is_staff "Admin" accounts, not

@@ -5,6 +5,8 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { ChevronLeft, Plus, Trash2, BookOpen, Users, DollarSign, Calendar, MessageSquare, Video, UserCircle } from "lucide-react";
 import StudentBillingSection from "@/components/admin/billing/StudentBillingSection";
+import CountrySelect from "@/components/CountrySelect";
+import { DEFAULT_DIAL_CODE, joinPhone, splitPhone } from "@/lib/phone";
 
 export default function UserDetailPage() {
   const { id } = useParams();
@@ -55,6 +57,11 @@ export default function UserDetailPage() {
     parent_name: "",
     parent_phone: "",
   });
+  // Phone fields are edited as country code + number; the stored values are kept to
+  // detect "unchanged" (an unchanged number is not sent, so legacy values stay as they are).
+  const [phoneCode, setPhoneCode] = useState(DEFAULT_DIAL_CODE);
+  const [parentPhoneCode, setParentPhoneCode] = useState(DEFAULT_DIAL_CODE);
+  const [storedPhones, setStoredPhones] = useState({ phone_number: "", parent_phone: "" });
   const [studentSaving, setStudentSaving] = useState(false);
   const [studentSaved, setStudentSaved] = useState(false);
   const [studentError, setStudentError] = useState("");
@@ -89,17 +96,22 @@ export default function UserDetailPage() {
         const userData = await res.json();
         setUser(userData);
 
+        const phone = splitPhone(userData.phone_number);
+        const parentPhone = splitPhone(userData.parent_phone);
+        setPhoneCode(phone.code);
+        setParentPhoneCode(parentPhone.code);
+        setStoredPhones({ phone_number: userData.phone_number || "", parent_phone: userData.parent_phone || "" });
         setStudentForm({
           student_type: userData.student_type || "CAREER_ACADEMY",
           first_name: userData.first_name || "",
           last_name: userData.last_name || "",
           email: userData.email || "",
-          phone_number: userData.phone_number || "",
+          phone_number: phone.national,
           state: userData.state || "",
           district: userData.district || "",
           pincode: userData.pincode || "",
           parent_name: userData.parent_name || "",
-          parent_phone: userData.parent_phone || "",
+          parent_phone: parentPhone.national,
         });
         
         // Dynamic tab selection for teachers
@@ -290,6 +302,27 @@ export default function UserDetailPage() {
     }
   };
 
+  // Phones as "+<code><number>"; a phone the admin did not change is left out of the
+  // request so a legacy stored value is never reformatted or re-validated.
+  const studentPayload = () => {
+    const body: Record<string, string> = { ...studentForm };
+    const fields: [keyof typeof storedPhones, string][] = [
+      ["phone_number", phoneCode],
+      ["parent_phone", parentPhoneCode],
+    ];
+    for (const [field, code] of fields) {
+      const joined = joinPhone(code, studentForm[field]);
+      const original = splitPhone(storedPhones[field]);
+      const unchanged = joined === joinPhone(original.code, original.national) || joined === storedPhones[field];
+      if (unchanged) {
+        delete body[field];
+      } else {
+        body[field] = joined;
+      }
+    }
+    return body;
+  };
+
   const handleSaveStudentProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     setStudentSaving(true);
@@ -302,12 +335,13 @@ export default function UserDetailPage() {
           "Content-Type": "application/json",
           "X-CSRFToken": getCsrfToken(),
         },
-        body: JSON.stringify(studentForm),
+        body: JSON.stringify(studentPayload()),
         credentials: "include",
       });
       if (res.ok) {
         const updated = await res.json();
         setUser(updated);
+        setStoredPhones({ phone_number: updated.phone_number || "", parent_phone: updated.parent_phone || "" });
         setEditingStudent(false);
         setStudentSaved(true);
         setTimeout(() => setStudentSaved(false), 3000);
@@ -1114,12 +1148,18 @@ export default function UserDetailPage() {
                     </div>
                     <div>
                       <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase">Phone Number</label>
-                      <input
-                        type="tel"
-                        value={studentForm.phone_number}
-                        onChange={e => setStudentForm({ ...studentForm, phone_number: e.target.value })}
-                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                      />
+                      <div className="flex gap-2">
+                        <CountrySelect value={phoneCode} onChange={setPhoneCode} />
+                        <input
+                          type="tel"
+                          inputMode="tel"
+                          aria-label="Phone number without country code"
+                          placeholder={phoneCode === "+91" ? "98765 43210" : "Mobile number"}
+                          value={studentForm.phone_number}
+                          onChange={e => setStudentForm({ ...studentForm, phone_number: e.target.value })}
+                          className="min-w-0 flex-1 bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                        />
+                      </div>
                     </div>
                   </div>
 
@@ -1168,12 +1208,17 @@ export default function UserDetailPage() {
                     </div>
                     <div>
                       <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase">Parent Phone</label>
-                      <input
-                        type="tel"
-                        value={studentForm.parent_phone}
-                        onChange={e => setStudentForm({ ...studentForm, parent_phone: e.target.value })}
-                        className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                      />
+                      <div className="flex gap-2">
+                        <CountrySelect value={parentPhoneCode} onChange={setParentPhoneCode} />
+                        <input
+                          type="tel"
+                          inputMode="tel"
+                          aria-label="Parent phone number without country code"
+                          value={studentForm.parent_phone}
+                          onChange={e => setStudentForm({ ...studentForm, parent_phone: e.target.value })}
+                          className="min-w-0 flex-1 bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>

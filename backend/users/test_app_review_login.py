@@ -338,16 +338,25 @@ class AppReviewLoginTests(APITestCase):
         APP_REVIEW_PHONE_NUMBER="+919999900001",
         APP_REVIEW_STATIC_OTP="839201"
     )
+    def test_indian_trunk_zero_is_the_same_number(self):
+        from users.views import _normalize_phone_identifier
+        self.assertEqual(_normalize_phone_identifier("09999900001"), "+919999900001")
+        self.assertEqual(_normalize_phone_identifier("+919999900001"), "+919999900001")
+
     def test_malformed_phone_identifier_rejected_safely(self):
         """
         Malformed or malicious phone identifiers (letters, invalid lengths, script injections)
         must be rejected safely and never silently mapped to a valid account.
+        
+        "09999900001" is no longer in this list: with international numbers (users/phone.py)
+        it is the Indian national format of +919999900001 (trunk "0"), so it is read as that
+        same number -- see test_indian_trunk_zero_is_the_same_number below.
         """
         malformed_inputs = [
             "alice9999900001",      # letters mixed with digits
             "123",                  # too short (< 7 digits)
             "+",                    # plus sign only
-            "09999900001",          # leading zero country code
+            "0000000",              # zeros only: no country, not a number
             "+1234567890123456789", # too long (> 15 digits)
             "invalid_phone",        # pure text
         ]

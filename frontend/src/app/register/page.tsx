@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import CountrySelect from "@/components/CountrySelect";
+import { joinPhone } from "@/lib/phone";
 
 export default function Register() {
   const [formData, setFormData] = useState({
@@ -48,7 +49,7 @@ export default function Register() {
     try {
       // Format the identifier if it's a mobile number
       const finalIdentifier = authMethod === 'mobile'
-        ? `${countryCode}${formData.identifier}`
+        ? joinPhone(countryCode, formData.identifier)
         : formData.identifier;
 
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/send-otp/`, {
@@ -81,7 +82,7 @@ export default function Register() {
 
     try {
       const finalIdentifier = authMethod === 'mobile'
-        ? `${countryCode}${formData.identifier}`
+        ? joinPhone(countryCode, formData.identifier)
         : formData.identifier;
 
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/verify-otp/`, {
@@ -188,7 +189,7 @@ export default function Register() {
         ) : (
           <form onSubmit={handleVerifyOTP} className="space-y-4">
             <div>
-              <div className="text-sm text-zinc-400 mb-2">We sent a 6-digit code to {authMethod === 'mobile' ? `${countryCode}${formData.identifier}` : formData.identifier}</div>
+              <div className="text-sm text-zinc-400 mb-2">We sent a 6-digit code to {authMethod === 'mobile' ? joinPhone(countryCode, formData.identifier) : formData.identifier}</div>
               <input
                 type="text"
                 name="otp"

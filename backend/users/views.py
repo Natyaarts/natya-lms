@@ -1,5 +1,6 @@
 import logging
 import re
+import os
 import secrets
 
 from rest_framework.views import APIView
@@ -32,12 +33,13 @@ def _normalize_phone_identifier(raw: str) -> str:
 
     - For emails (contains '@'): strips whitespace, validates basic RFC structure,
       and returns lowercased email. Does not convert emails into phone numbers.
-    - For phone numbers:
-      - Rejects malformed input containing letters, scripts, or invalid characters.
-      - Strips benign formatting characters (spaces, dashes, parentheses, dots).
-      - Handles international dial prefix ('00').
-      - Validates E.164 digit length (7 to 15 digits) and non-zero country code prefix.
-      - Returns canonical E.164 string with leading '+' prefix (e.g., '+919999900001').
+    - For phone numbers: users.phone.normalize_phone (libphonenumber rules, any
+      country): formatting characters and an international "00" prefix are
+      accepted, a national trunk "0" is dropped ("+353 087..." -> "+35387..."),
+      and a number typed without a country code is read as Indian
+      ("9876543210" -> "+919876543210"). Lenient on purpose (possible length,
+      not number-range metadata) so no student is locked out of OTP login.
+      Returns canonical E.164 with a leading '+' (e.g. '+919999900001').
     - Returns empty string '' for invalid or malformed identifiers so callers can reject safely.
     """
     if not raw:
@@ -53,31 +55,35 @@ def _normalize_phone_identifier(raw: str) -> str:
             return cleaned.lower()
         return ''
 
-    # Phone handling:
-    # 1. Reject if it contains letters or disallowed punctuation
-    if re.search(r'[^\d\s\+\-\(\)\.]', cleaned):
-        return ''
+    # Phone handling (letters / scripts / other punctuation are rejected there).
+    from .phone import normalize_phone
+    return normalize_phone(cleaned)
 
-    # 2. Check for international prefix '00' (e.g., '00919999900001')
-    digits_raw = cleaned
-    if digits_raw.startswith('00'):
-        digits_raw = digits_raw[2:]
-    elif digits_raw.startswith('+00'):
-        digits_raw = digits_raw[3:]
 
-    # 3. Extract only digits
-    digits = re.sub(r'[^\d]', '', digits_raw)
+def _find_phone_account(identifier):
+    """
+    The account that owns this (normalized) phone number, for OTP login:
+      (user, None)    exactly one account -- stored as given, or stored in another
+                      format such as "+91 98765 43210" (found, never rewritten);
+      (None, None)    no account yet;
+      (None, error)   several accounts share the number -- never guess which one.
+    """
+    from .phone import same_phone_users
 
-    # 4. Validate E.164 constraints:
-    # Standard ITU-T E.164 allows 7 to 15 digits
-    if len(digits) < 7 or len(digits) > 15:
-        return ''
-
-    # E.164 country codes never start with '0'
-    if digits.startswith('0'):
-        return ''
-
-    return f"+{digits}"
+    exact = list(User.objects.filter(phone_number=identifier).order_by('id')[:2])
+    if len(exact) == 1:
+        return exact[0], None
+    matches = exact if len(exact) > 1 else same_phone_users(identifier, explicit_only=True)
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) > 1:
+        logger.warning("OTP login: %d accounts share the phone number ending in %s; not choosing one.",
+                       len(matches), identifier[-4:])
+        return None, Response(
+            {"error": "This mobile number is linked to more than one account. Please contact support."},
+            status=status.HTTP_409_CONFLICT,
+        )
+    return None, None
 
 
 def _is_reviewer_request(identifier: str) -> bool:
@@ -136,6 +142,10 @@ class ThrottledLoginView(LoginView):
         digits = re.sub(r'\D', '', raw_ident)
         if len(digits) >= 10:
             q |= Q(phone_number__endswith=digits[-10:])
+        if '@' not in raw_ident:
+            normalized_phone = _normalize_phone_identifier(raw_ident)
+            if normalized_phone:
+                q |= Q(phone_number=normalized_phone)
 
         candidates = list(
             User.objects.filter(q, is_active=True)
@@ -226,10 +236,11 @@ def _dispatch_otp(identifier: str, otp: str):
             "Content-Type": "application/json"
         }
 
-        # Interakt requires the phone number without the '+' sign
-        formatted_number = identifier.lstrip('+')
+        # India: "fullPhoneNumber" without '+' (unchanged). Other countries:
+        # countryCode + phoneNumber, Interakt's documented form (users/phone.py).
+        from .phone import interakt_recipient
         payload = {
-            "fullPhoneNumber": formatted_number,
+            **interakt_recipient(identifier),
             "type": "Template",
             "template": {
                 "name": TEMPLATE_NAME,
@@ -248,8 +259,41 @@ def _dispatch_otp(identifier: str, otp: str):
                 {"error": "Failed to send OTP via WhatsApp. Please try again shortly."},
                 status=status.HTTP_502_BAD_GATEWAY
             )
+        rejected, reason = _interakt_rejected(response)
+        if rejected:
+            # Previously ignored: the app said "OTP sent" although nothing was sent
+            # (e.g. a country the WhatsApp account cannot message).
+            from .phone import phone_region
+            logger.error(
+                "Interakt rejected the WhatsApp OTP (status=%s, region=%s, number ending in %s): %s",
+                response.status_code, phone_region(identifier) or "?", identifier[-4:], reason,
+            )
+            return False, Response(
+                {"error": "We could not send the OTP to this WhatsApp number. Please check the number "
+                          "and country code, or log in with your email instead."},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
 
     return True, None
+
+
+def _interakt_rejected(response):
+    """(True, reason) when Interakt did not accept the message; never includes the OTP."""
+    if response.status_code >= 400:
+        body = ""
+        try:
+            data = response.json()
+            body = str(data.get("message") or data.get("error") or "")[:200] if isinstance(data, dict) else ""
+        except ValueError:
+            body = (getattr(response, "text", "") or "")[:200]
+        return True, body or f"HTTP {response.status_code}"
+    try:
+        data = response.json()
+    except ValueError:
+        return False, ""
+    if isinstance(data, dict) and data.get("result") is False:
+        return True, str(data.get("message") or "result=false")[:200]
+    return False, ""
 
 
 class SendOTPView(APIView):
@@ -365,7 +409,12 @@ class VerifyOTPView(APIView):
         if '@' in identifier:
             user, created = User.objects.get_or_create(email=identifier, defaults={'username': identifier.split('@')[0] + str(random.randint(1000, 9999))})
         else:
-            user, created = User.objects.get_or_create(phone_number=identifier, defaults={'username': identifier})
+            user, conflict = _find_phone_account(identifier)
+            if conflict is not None:
+                return conflict
+            created = False
+            if user is None:
+                user, created = User.objects.get_or_create(phone_number=identifier, defaults={'username': identifier})
             
         # Generate JWT Tokens
         refresh = RefreshToken.for_user(user)
@@ -1474,7 +1523,16 @@ class SaveProfileView(APIView):
         # Handle contact details
         phone = data.get('phone_number') or data.get('phone') or data.get('mobile_no')
         if phone and not user.phone_number:
-            user.phone_number = str(phone).strip()
+            from .phone import normalize_phone, same_phone_users
+            normalized_phone = normalize_phone(phone, strict=True)
+            if not normalized_phone:
+                msg = "Enter a valid mobile number with its country code, e.g. +91 98765 43210 or +353 87 123 4567."
+                # "error" is what the mobile and web onboarding screens display.
+                return Response({"error": msg, "phone_number": [msg]}, status=status.HTTP_400_BAD_REQUEST)
+            if same_phone_users(normalized_phone, exclude_pk=user.pk):
+                msg = "This mobile number is already linked to another account."
+                return Response({"error": msg, "phone_number": [msg]}, status=status.HTTP_400_BAD_REQUEST)
+            user.phone_number = normalized_phone
 
         email = data.get('email')
         if email and (not user.email or user.email.endswith('@example.com')):
