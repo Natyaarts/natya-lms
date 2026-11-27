@@ -308,6 +308,8 @@ export default function LiveClassesPage() {
   const [batchInstructorFilter, setBatchInstructorFilter] = useState<string>("ALL");
   const [batchTypeFilter, setBatchTypeFilter] = useState<string>("ALL");
   const [batchStudentSearch, setBatchStudentSearch] = useState("");
+  // Last search text the server answered (drives the "Searching…" hint).
+  const [searchedStudentQuery, setSearchedStudentQuery] = useState("");
   const [detailsBatch, setDetailsBatch] = useState<any | null>(null);
 
   useEffect(() => {
@@ -714,6 +716,42 @@ export default function LiveClassesPage() {
     () => filteredClasses.slice((safeClassesPage - 1) * classesPageSize, safeClassesPage * classesPageSize),
     [filteredClasses, safeClassesPage, classesPageSize]
   );
+
+  // Admins: search ALL students on the server (name, username, email, phone)
+  // and add the matches to the list. The page only preloads the newest 100
+  // students, so searching just those missed most of the academy.
+  const studentQuery = batchStudentSearch.trim();
+  const studentSearchLoading = isFullAdmin && studentQuery.length >= 2 && searchedStudentQuery !== studentQuery;
+  useEffect(() => {
+    if (!isFullAdmin || studentQuery.length < 2) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await authedFetch(
+          `/api/users/admin-users/?role=students&search=${encodeURIComponent(studentQuery)}&page_size=100`
+        );
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        const found: unknown[] = Array.isArray(data) ? data : data.results || [];
+        setAllUsers((prev) => {
+          const byId = new Map((Array.isArray(prev) ? prev : []).map((u) => [u.id, u] as const));
+          for (const item of found) {
+            const row = item as { id?: unknown };
+            if (row && typeof row.id === "number") byId.set(row.id, { ...byId.get(row.id), ...row });
+          }
+          return Array.from(byId.values());
+        });
+      } catch (err) {
+        console.error("Student search failed", err);
+      } finally {
+        if (!cancelled) setSearchedStudentQuery(studentQuery);
+      }
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [studentQuery, isFullAdmin]);
 
   const filteredBatchStudents = useMemo(() => {
     const q = batchStudentSearch.trim().toLowerCase();
@@ -3599,13 +3637,15 @@ export default function LiveClassesPage() {
                     type="text"
                     value={batchStudentSearch}
                     onChange={(e) => setBatchStudentSearch(e.target.value)}
-                    placeholder="Filter students by name, username, or phone..."
+                    placeholder="Search all students by name, username, email or phone..."
                     className="w-full pl-8 pr-3 py-1.5 bg-zinc-950 border border-white/10 rounded-xl text-white text-xs focus:outline-none focus:border-[#facc15]"
                   />
                 </div>
                 <div className="max-h-40 overflow-y-auto space-y-1 bg-zinc-950 border border-white/10 rounded-xl p-2.5">
                   {filteredBatchStudents.length === 0 ? (
-                    <p className="text-xs text-zinc-500 p-2">No matching students found.</p>
+                    <p className="text-xs text-zinc-500 p-2">
+                      {studentSearchLoading ? "Searching all students…" : "No matching students found."}
+                    </p>
                   ) : filteredBatchStudents.map((s: any) => {
                     const isChecked = batchForm.studentIds.includes(s.id);
                     return (
