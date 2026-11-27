@@ -308,6 +308,12 @@ export default function LiveClassesPage() {
   const [batchInstructorFilter, setBatchInstructorFilter] = useState<string>("ALL");
   const [batchTypeFilter, setBatchTypeFilter] = useState<string>("ALL");
   const [batchStudentSearch, setBatchStudentSearch] = useState("");
+  // Batch being edited: its students as the server lists them, so every
+  // assigned student can be shown even if the page did not preload them.
+  const [assignedStudentInfo, setAssignedStudentInfo] = useState<
+    Record<number, { name: string; username: string; phone: string; email: string }>
+  >({});
+  const [showAssignedOnly, setShowAssignedOnly] = useState(false);
   // Last search text the server answered (drives the "Searching…" hint).
   const [searchedStudentQuery, setSearchedStudentQuery] = useState("");
   const [detailsBatch, setDetailsBatch] = useState<any | null>(null);
@@ -466,6 +472,9 @@ export default function LiveClassesPage() {
     setBatchError("");
     setEditingBatchId(null);
     setInitialBatchStudentIds([]);
+    setAssignedStudentInfo({});
+    setShowAssignedOnly(false);
+    setBatchStudentSearch("");
     await loadDependencies();
     setBatchForm({
       courseId: "",
@@ -483,14 +492,28 @@ export default function LiveClassesPage() {
     setEditingBatchId(b.id);
     await loadDependencies();
     let existingStudentIds: number[] = [];
+    const info: Record<number, { name: string; username: string; phone: string; email: string }> = {};
     try {
       const sRes = await authedFetch(`/api/courses/live-batches/${b.id}/students/?page_size=200`);
       if (sRes.ok) {
         const sData = await sRes.json();
         const sList = Array.isArray(sData) ? sData : sData.results || [];
         existingStudentIds = sList.map((row: any) => Number(row.student)).filter((n: number) => !isNaN(n));
+        for (const row of sList) {
+          const id = Number(row?.student);
+          if (isNaN(id)) continue;
+          info[id] = {
+            name: String(row.student_name || "").trim(),
+            username: String(row.student_username || ""),
+            phone: String(row.student_phone || ""),
+            email: String(row.student_email || ""),
+          };
+        }
       }
     } catch {}
+    setAssignedStudentInfo(info);
+    setShowAssignedOnly(false);
+    setBatchStudentSearch("");
     setInitialBatchStudentIds(existingStudentIds);
     setBatchForm({
       courseId: b.course ? String(b.course) : "",
@@ -755,8 +778,8 @@ export default function LiveClassesPage() {
 
   const filteredBatchStudents = useMemo(() => {
     const q = batchStudentSearch.trim().toLowerCase();
-    if (!q) return eligibleStudents;
-    return eligibleStudents.filter((s: any) => {
+    const matches = (s: any) => {
+      if (!q) return true;
       const fullName = `${s.first_name || ""} ${s.last_name || ""}`.toLowerCase();
       return (
         fullName.includes(q) ||
@@ -764,8 +787,37 @@ export default function LiveClassesPage() {
         (s.phone_number || "").toLowerCase().includes(q) ||
         (s.email || "").toLowerCase().includes(q)
       );
+    };
+    // The batch's assigned students come first -- also the ones the page did
+    // not preload (details from the batch's own student list) -- then other
+    // students, then teacher/mentor accounts.
+    const known = new Map(eligibleStudents.map((s) => [s.id, s] as const));
+    for (const u of Array.isArray(allUsers) ? allUsers : []) {
+      if (u && typeof u.id === "number" && !known.has(u.id)) known.set(u.id, u);
+    }
+    const assigned = batchForm.studentIds.map((id) => {
+      const found = known.get(id);
+      if (found) return found;
+      const info = assignedStudentInfo[id];
+      return {
+        id,
+        first_name: info?.name || "",
+        last_name: "",
+        username: info?.username || `student-${id}`,
+        phone_number: info?.phone || "",
+        email: info?.email || "",
+      };
     });
-  }, [eligibleStudents, batchStudentSearch]);
+    if (showAssignedOnly) return assigned.filter(matches);
+    const selected = new Set(batchForm.studentIds);
+    const others = eligibleStudents.filter((s) => !selected.has(s.id) && matches(s));
+    const teachingAccount = (s: (typeof eligibleStudents)[number]) => !!(s.is_teacher || s.is_mentor || s.is_staff || s.is_superuser);
+    return [
+      ...assigned.filter(matches),
+      ...others.filter((s) => !teachingAccount(s)),
+      ...others.filter((s) => teachingAccount(s)),
+    ];
+  }, [eligibleStudents, allUsers, batchStudentSearch, batchForm.studentIds, assignedStudentInfo, showAssignedOnly]);
 
   const toggleWeekday = (d: number) => {
     setForm((f) => ({
@@ -3610,6 +3662,20 @@ export default function LiveClassesPage() {
                   <div className="flex items-center gap-2 text-[10px]">
                     <button
                       type="button"
+                      onClick={() => setShowAssignedOnly((v) => !v)}
+                      aria-pressed={showAssignedOnly}
+                      className={`px-2 py-0.5 rounded-md border font-semibold ${
+                        showAssignedOnly
+                          ? "bg-[#facc15]/15 border-[#facc15]/40 text-[#facc15]"
+                          : "border-white/10 text-zinc-300 hover:text-white"
+                      }`}
+                      title="Show only the students assigned to this batch"
+                    >
+                      Assigned only ({batchForm.studentIds.length})
+                    </button>
+                    <span className="text-zinc-600">·</span>
+                    <button
+                      type="button"
                       onClick={() => {
                         const filteredIds = filteredBatchStudents.map((s: any) => s.id);
                         setBatchForm((f) => ({
@@ -3644,7 +3710,11 @@ export default function LiveClassesPage() {
                 <div className="max-h-40 overflow-y-auto space-y-1 bg-zinc-950 border border-white/10 rounded-xl p-2.5">
                   {filteredBatchStudents.length === 0 ? (
                     <p className="text-xs text-zinc-500 p-2">
-                      {studentSearchLoading ? "Searching all students…" : "No matching students found."}
+                      {studentSearchLoading
+                        ? "Searching all students…"
+                        : showAssignedOnly
+                        ? "No assigned students match."
+                        : "No matching students found."}
                     </p>
                   ) : filteredBatchStudents.map((s: any) => {
                     const isChecked = batchForm.studentIds.includes(s.id);
@@ -3669,6 +3739,11 @@ export default function LiveClassesPage() {
                         <span className="font-medium text-white">{s.first_name ? `${s.first_name} ${s.last_name || ""}` : s.username}</span>
                         <span className="text-zinc-500 text-[11px]">@{s.username}</span>
                         {s.phone_number && <span className="text-zinc-500 text-[11px]">• {s.phone_number}</span>}
+                        {(s.is_teacher || s.is_mentor) && (
+                          <span className="ml-auto px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300 text-[9px] font-bold uppercase">
+                            {s.is_teacher ? "Teacher" : "Mentor"}
+                          </span>
+                        )}
                       </label>
                     );
                   })}
