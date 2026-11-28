@@ -6,6 +6,7 @@ import Link from "next/link";
 import { ChevronLeft, Plus, Trash2, BookOpen, Users, DollarSign, Calendar, MessageSquare, Video, UserCircle } from "lucide-react";
 import StudentBillingSection from "@/components/admin/billing/StudentBillingSection";
 import CountrySelect from "@/components/CountrySelect";
+import AssignCourseModal, { type CatalogStatus } from "@/components/admin/AssignCourseModal";
 import { DEFAULT_DIAL_CODE, joinPhone, splitPhone } from "@/lib/phone";
 
 export default function UserDetailPage() {
@@ -66,10 +67,10 @@ export default function UserDetailPage() {
   const [studentSaved, setStudentSaved] = useState(false);
   const [studentError, setStudentError] = useState("");
 
-  // Assign Course Modal State
+  // Assign Course Modal State (the course catalog is loaded the first time the modal opens)
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [allCourses, setAllCourses] = useState<any[]>([]);
-  const [selectedCourse, setSelectedCourse] = useState("");
+  const [catalogStatus, setCatalogStatus] = useState<"idle" | CatalogStatus>("idle");
   const [assigning, setAssigning] = useState(false);
 
   const getCsrfToken = () => {
@@ -357,24 +358,29 @@ export default function UserDetailPage() {
     }
   };
 
-  // Fetch all courses list for the select box on-demand when modal opens
-  useEffect(() => {
-    if (!showAssignModal || allCourses.length > 0) return;
-    const fetchAllCourses = async () => {
-      try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/`, { credentials: "include" });
-        if (res.ok) {
-          const data = await res.json();
-          setAllCourses(Array.isArray(data) ? data : (data.results || []));
-        }
-      } catch (err) {}
-    };
-    fetchAllCourses();
-  }, [showAssignModal, allCourses.length]);
+  // Course catalog for the Assign Course modal (admins get every course, unpaged).
+  const loadCatalog = async () => {
+    setCatalogStatus("loading");
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/`, { credentials: "include" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setAllCourses(Array.isArray(data) ? data : (data.results || []));
+      setCatalogStatus("ready");
+    } catch (err) {
+      console.error(err);
+      setCatalogStatus("error");
+    }
+  };
+
+  const openAssignModal = () => {
+    setShowAssignModal(true);
+    if (catalogStatus === "idle" || catalogStatus === "error") loadCatalog();
+  };
 
   // Handle direct admin course enrollment
-  const handleAssignCourse = async () => {
-    if (!selectedCourse) return;
+  const handleAssignCourse = async (courseId: number) => {
+    if (!courseId) return;
     setAssigning(true);
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/users/admin-users/${id}/enroll_course/`, {
@@ -383,7 +389,7 @@ export default function UserDetailPage() {
           'Content-Type': 'application/json',
           'X-CSRFToken': getCsrfToken()
         },
-        body: JSON.stringify({ course_id: selectedCourse }),
+        body: JSON.stringify({ course_id: courseId }),
         credentials: 'include'
       });
       
@@ -399,7 +405,6 @@ export default function UserDetailPage() {
         }
 
         setShowAssignModal(false);
-        setSelectedCourse("");
         alert("Course successfully enrolled!");
       } else {
         const data = await res.json();
@@ -494,42 +499,16 @@ export default function UserDetailPage() {
     <div className="max-w-6xl mx-auto pb-20 font-sans text-white">
       {/* Assign Course modal */}
       {showAssignModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-center p-4 overflow-y-auto">
-          <div className="my-auto bg-zinc-900 border border-white/10 p-6 rounded-2xl w-full max-w-md shadow-2xl">
-            <h2 className="text-xl font-bold mb-1">Assign Course</h2>
-            <p className="text-zinc-400 text-xs mb-6">Create a direct student/teacher access enrollment.</p>
-            
-            <div className="mb-6">
-              <label className="block text-xs font-semibold text-zinc-400 mb-2 uppercase tracking-wider">Select Course</label>
-              <select 
-                value={selectedCourse}
-                onChange={(e) => setSelectedCourse(e.target.value)}
-                className="w-full bg-zinc-800 border border-white/10 rounded-xl p-3 text-white text-sm focus:outline-none focus:border-[#facc15] cursor-pointer"
-              >
-                <option value="">-- Choose course from catalog --</option>
-                {allCourses.map(c => (
-                  <option key={c.id} value={c.id}>{c.title}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex justify-end gap-3 pt-4 border-t border-white/5">
-              <button 
-                onClick={() => setShowAssignModal(false)}
-                className="px-4 py-2 text-sm font-semibold text-zinc-400 hover:text-white transition-colors"
-              >
-                Cancel
-              </button>
-              <button 
-                onClick={handleAssignCourse}
-                disabled={assigning || !selectedCourse}
-                className="px-5 py-2 bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 disabled:opacity-50 transition-colors text-sm"
-              >
-                {assigning ? "Assigning..." : "Assign Access"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <AssignCourseModal
+          userName={[user.first_name, user.last_name].filter(Boolean).join(" ") || user.username}
+          courses={allCourses}
+          status={catalogStatus === "idle" ? "loading" : catalogStatus}
+          onRetry={loadCatalog}
+          assigned={courses}
+          assigning={assigning}
+          onAssign={handleAssignCourse}
+          onClose={() => setShowAssignModal(false)}
+        />
       )}
 
       {/* Header */}
@@ -833,7 +812,7 @@ export default function UserDetailPage() {
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-bold">Assigned Courses</h2>
               <button 
-                onClick={() => setShowAssignModal(true)}
+                onClick={openAssignModal}
                 className="flex items-center gap-2 px-4 py-2 bg-[#facc15] hover:bg-yellow-500 text-black text-xs font-bold rounded-xl shadow-md transition-colors"
               >
                 <Plus className="w-4 h-4" /> Assign Course
