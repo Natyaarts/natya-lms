@@ -173,10 +173,20 @@ export default function AdminUsers() {
     const formattedPhone = joinPhone(countryCode, formFields.phone_number);
     const formattedParentPhone = joinPhone(parentCountryCode, formFields.parent_phone);
 
+    // Students sign in with their mobile number and an OTP: they get no password, and
+    // their (never typed) login name is their phone number -- the same as when a
+    // student signs up by OTP themselves.
+    const isStudent = modalType === 'student';
+    const username = isStudent ? formattedPhone : formFields.username.trim();
+    if (!username) {
+      setFormError(isStudent ? "Enter the student's mobile number." : "Enter a username.");
+      return;
+    }
+
     setSubmitting(true);
     
     const payload: any = {
-      username: formFields.username,
+      username,
       email: formFields.email || undefined,
       phone_number: formattedPhone || undefined,
       first_name: formFields.first_name,
@@ -188,7 +198,7 @@ export default function AdminUsers() {
       is_active: true
     };
 
-    if (formFields.password) {
+    if (!isStudent && formFields.password) {
       payload.password = formFields.password;
     }
     if (modalType === 'student') {
@@ -231,8 +241,17 @@ export default function AdminUsers() {
         fetchUsers();
       } else {
         // Display validation keys directly if dictionary returned
-        if (typeof data === 'object') {
-          const errors = Object.keys(data).map(key => `${key}: ${data[key]}`).join(" | ");
+        if (data && typeof data === 'object') {
+          const errorData = { ...data };
+          // A student's login name is their phone number, so a clash there means the
+          // number is already in use; say so once, in words the admin can act on.
+          if (isStudent && errorData.username) {
+            if (errorData.phone_number) delete errorData.username;
+            else errorData.username = `This mobile number (${formattedPhone}) is already used by another account. Search for it in the user list.`;
+          }
+          const errors = Object.keys(errorData)
+            .map(key => (isStudent && key === 'username') ? String(errorData[key]) : `${key}: ${errorData[key]}`)
+            .join(" | ");
           setFormError(errors);
         } else {
           setFormError("Failed to register user. Check inputs.");
@@ -648,7 +667,11 @@ export default function AdminUsers() {
               </button>
 
               <h2 className="text-xl font-bold mb-1">Add New {modalType === 'student' ? 'Student' : modalType === 'mentor' ? 'Mentor' : 'Teacher'}</h2>
-              <p className="text-zinc-400 text-xs mb-6">Create a profile in the database directory.</p>
+              <p className="text-zinc-400 text-xs mb-6">
+                {modalType === 'student'
+                  ? "The student signs in with their mobile number and an OTP. No username or password is needed."
+                  : "Create a profile in the database directory."}
+              </p>
 
               {formError && (
                 <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-xl mb-4 text-xs font-normal">
@@ -657,29 +680,36 @@ export default function AdminUsers() {
               )}
 
               <form onSubmit={handleAddUser} className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Username *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. johndoe"
-                      value={formFields.username}
-                      onChange={e => setFormFields({ ...formFields, username: e.target.value })}
-                      className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                    />
+                {/* Students sign in by mobile number + OTP, so they get no username or
+                    password; autoComplete stops the browser pasting the admin's own saved
+                    login into a teacher/mentor form. */}
+                {modalType !== 'student' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Username *</label>
+                      <input
+                        type="text"
+                        required
+                        autoComplete="off"
+                        placeholder="e.g. johndoe"
+                        value={formFields.username}
+                        onChange={e => setFormFields({ ...formFields, username: e.target.value })}
+                        className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Password (Optional)</label>
+                      <input
+                        type="password"
+                        autoComplete="new-password"
+                        placeholder="Leave blank for OTP-only"
+                        value={formFields.password}
+                        onChange={e => setFormFields({ ...formFields, password: e.target.value })}
+                        className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Password (Optional)</label>
-                    <input
-                      type="password"
-                      placeholder="Leave blank for OTP-only"
-                      value={formFields.password}
-                      onChange={e => setFormFields({ ...formFields, password: e.target.value })}
-                      className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                    />
-                  </div>
-                </div>
+                )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
@@ -702,6 +732,7 @@ export default function AdminUsers() {
                       <input
                         type="tel"
                         required
+                        autoComplete="off"
                         placeholder="e.g. 8113900860"
                         value={formFields.phone_number}
                         onChange={e => setFormFields({ ...formFields, phone_number: e.target.value })}
