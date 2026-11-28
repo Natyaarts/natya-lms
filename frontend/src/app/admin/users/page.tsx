@@ -7,6 +7,42 @@ import { Search, Plus, X, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight
 import CountrySelect from "@/components/CountrySelect";
 import { joinPhone } from "@/lib/phone";
 
+// Add User form styling (shared by its fields).
+const INPUT_CLASS =
+  "w-full h-11 bg-zinc-800/80 border border-white/10 rounded-xl px-4 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#facc15] focus:ring-2 focus:ring-[#facc15]/20 transition-colors";
+const SECTION_TITLE = "text-[11px] font-bold uppercase tracking-[0.14em] text-zinc-400";
+const OPTIONAL_TAG = "normal-case tracking-normal font-medium text-zinc-500";
+// Country code + number on one row; the country button (shared CountrySelect) is
+// restyled here only, to match this form's inputs.
+const PHONE_ROW_CLASS =
+  "flex gap-2 h-11 min-w-0 [&>div>button]:bg-zinc-800/80 [&>div>button]:border-white/10 [&>div>button]:px-3";
+
+const LEARNING_TRACKS = [
+  { value: "CAREER_ACADEMY", title: "Career Academy", description: "Certified & Diploma programmes" },
+  { value: "REGULAR", title: "Regular Track", description: "Flexible & hobby learning" },
+];
+
+function FormField({ label, htmlFor, required, optional, hint, children }: {
+  label: string;
+  htmlFor: string;
+  required?: boolean;
+  optional?: boolean;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="min-w-0">
+      <label htmlFor={htmlFor} className="flex items-baseline gap-1 text-sm font-medium text-zinc-200 mb-1.5">
+        {label}
+        {required && <span className="text-[#facc15]">*</span>}
+        {optional && <span className="text-xs font-normal text-zinc-500">(optional)</span>}
+      </label>
+      {children}
+      {hint && <p className="text-xs text-zinc-500 mt-1.5">{hint}</p>}
+    </div>
+  );
+}
+
 function buildPageItems(currentPage: number, totalPages: number): (number | "ellipsis")[] {
   if (totalPages <= 7) {
     return Array.from({ length: totalPages }, (_, i) => i + 1);
@@ -77,6 +113,16 @@ export default function AdminUsers() {
   const [countryCode, setCountryCode] = useState("+91");
   const [parentCountryCode, setParentCountryCode] = useState("+91");
   const [formError, setFormError] = useState("");
+
+  // Escape closes the Add form (not while it is being sent).
+  useEffect(() => {
+    if (!showAddModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !submitting) setShowAddModal(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showAddModal, submitting]);
 
   const getCsrfToken = () => {
     let csrfToken = "";
@@ -654,211 +700,279 @@ export default function AdminUsers() {
         {showAddModal && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex justify-center p-4 overflow-y-auto">
             <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
+              initial={{ scale: 0.97, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="my-auto bg-zinc-900 border border-white/10 p-6 rounded-2xl w-full max-w-lg shadow-2xl relative"
+              exit={{ scale: 0.97, opacity: 0 }}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="add-user-title"
+              className="my-auto bg-zinc-900 border border-white/10 rounded-2xl w-full max-w-2xl shadow-2xl"
             >
-              <button
-                onClick={() => setShowAddModal(false)}
-                className="absolute top-4 right-4 p-2 bg-white/5 border border-white/5 hover:bg-white/10 rounded-full transition-colors text-zinc-400 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-
-              <h2 className="text-xl font-bold mb-1">Add New {modalType === 'student' ? 'Student' : modalType === 'mentor' ? 'Mentor' : 'Teacher'}</h2>
-              <p className="text-zinc-400 text-xs mb-6">
-                {modalType === 'student'
-                  ? "The student signs in with their mobile number and an OTP. No username or password is needed."
-                  : "Create a profile in the database directory."}
-              </p>
-
-              {formError && (
-                <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-xl mb-4 text-xs font-normal">
-                  {formError}
+              {/* Header */}
+              <div className="flex items-start justify-between gap-4 px-6 sm:px-8 pt-6 pb-5 border-b border-white/5">
+                <div className="min-w-0">
+                  <h2 id="add-user-title" className="text-xl font-bold">
+                    Add New {modalType === 'student' ? 'Student' : modalType === 'mentor' ? 'Mentor' : 'Teacher'}
+                  </h2>
+                  <p className="text-zinc-400 text-sm mt-1">
+                    {modalType === 'student'
+                      ? "Students sign in with mobile number and OTP — no username or password needed."
+                      : `Create a ${modalType} profile with sign-in details.`}
+                  </p>
                 </div>
-              )}
+                <button
+                  type="button"
+                  onClick={() => setShowAddModal(false)}
+                  disabled={submitting}
+                  aria-label="Close"
+                  className="p-2 -mr-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/5 transition-colors disabled:opacity-40 shrink-0"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
 
-              <form onSubmit={handleAddUser} className="space-y-4">
-                {/* Students sign in by mobile number + OTP, so they get no username or
-                    password; autoComplete stops the browser pasting the admin's own saved
-                    login into a teacher/mentor form. */}
-                {modalType !== 'student' && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Username *</label>
-                      <input
-                        type="text"
-                        required
-                        autoComplete="off"
-                        placeholder="e.g. johndoe"
-                        value={formFields.username}
-                        onChange={e => setFormFields({ ...formFields, username: e.target.value })}
-                        className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                      />
+              <form onSubmit={handleAddUser}>
+                <div className="px-6 sm:px-8 py-6 space-y-7">
+                  {formError && (
+                    <div role="alert" className="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-3 rounded-xl text-sm">
+                      {formError}
                     </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Password (Optional)</label>
-                      <input
-                        type="password"
-                        autoComplete="new-password"
-                        placeholder="Leave blank for OTP-only"
-                        value={formFields.password}
-                        onChange={e => setFormFields({ ...formFields, password: e.target.value })}
-                        className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                      />
-                    </div>
-                  </div>
-                )}
+                  )}
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Email Address</label>
-                    <input
-                      type="email"
-                      placeholder="e.g. user@email.com"
-                      value={formFields.email}
-                      onChange={e => setFormFields({ ...formFields, email: e.target.value })}
-                      className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                    />
-                  </div>
-                  <div className="min-w-0">
-                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Phone Number *</label>
-                    <div className="flex gap-2 h-[42px] min-w-0">
-                      <CountrySelect
-                        value={countryCode}
-                        onChange={setCountryCode}
-                      />
-                      <input
-                        type="tel"
-                        required
-                        autoComplete="off"
-                        placeholder="e.g. 8113900860"
-                        value={formFields.phone_number}
-                        onChange={e => setFormFields({ ...formFields, phone_number: e.target.value })}
-                        className="flex-1 min-w-0 w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15] h-full"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">First Name</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. John"
-                      value={formFields.first_name}
-                      onChange={e => setFormFields({ ...formFields, first_name: e.target.value })}
-                      className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Last Name</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Doe"
-                      value={formFields.last_name}
-                      onChange={e => setFormFields({ ...formFields, last_name: e.target.value })}
-                      className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                    />
-                  </div>
-                </div>
-
-                {modalType === 'student' && (
-                  <div className="pt-4 border-t border-white/5 space-y-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Learning Track *</label>
-                      <select
-                        value={formFields.student_type}
-                        onChange={e => setFormFields({ ...formFields, student_type: e.target.value })}
-                        className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15] cursor-pointer"
-                      >
-                        <option value="CAREER_ACADEMY">Career Academy (Certified & Diploma)</option>
-                        <option value="REGULAR">Regular Track (Flexible & Hobby)</option>
-                      </select>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div>
-                        <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">State</label>
-                        <input
-                          type="text"
-                          placeholder="e.g. Karnataka"
-                          value={formFields.state}
-                          onChange={e => setFormFields({ ...formFields, state: e.target.value })}
-                          className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">District</label>
-                        <input
-                          type="text"
-                          placeholder="e.g. Bengaluru"
-                          value={formFields.district}
-                          onChange={e => setFormFields({ ...formFields, district: e.target.value })}
-                          className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Pincode</label>
-                        <input
-                          type="text"
-                          placeholder="e.g. 560001"
-                          value={formFields.pincode}
-                          onChange={e => setFormFields({ ...formFields, pincode: e.target.value })}
-                          className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
-                        />
-                      </div>
-                    </div>
-
-                    <h3 className="text-sm font-bold text-zinc-300 pt-2">Parent / Guardian Information</h3>
+                  {/* Basic details */}
+                  <section className="space-y-4">
+                    <h3 className={SECTION_TITLE}>Basic details</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Parent Name</label>
+                      <FormField label="First name" htmlFor="add-user-first-name">
                         <input
+                          id="add-user-first-name"
                           type="text"
-                          placeholder="e.g. Arthur Doe"
-                          value={formFields.parent_name}
-                          onChange={e => setFormFields({ ...formFields, parent_name: e.target.value })}
-                          className="w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15]"
+                          autoComplete="off"
+                          placeholder="e.g. John"
+                          value={formFields.first_name}
+                          onChange={e => setFormFields({ ...formFields, first_name: e.target.value })}
+                          className={INPUT_CLASS}
                         />
-                      </div>
-                      <div className="min-w-0">
-                        <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Parent Phone</label>
-                        <div className="flex gap-2 h-[42px] min-w-0">
-                          <CountrySelect
-                            value={parentCountryCode}
-                            onChange={setParentCountryCode}
-                          />
+                      </FormField>
+                      <FormField label="Last name" htmlFor="add-user-last-name">
+                        <input
+                          id="add-user-last-name"
+                          type="text"
+                          autoComplete="off"
+                          placeholder="e.g. Doe"
+                          value={formFields.last_name}
+                          onChange={e => setFormFields({ ...formFields, last_name: e.target.value })}
+                          className={INPUT_CLASS}
+                        />
+                      </FormField>
+                      <FormField
+                        label="Mobile number"
+                        htmlFor="add-user-phone"
+                        required
+                        hint="Used for OTP sign-in."
+                      >
+                        <div className={PHONE_ROW_CLASS}>
+                          <CountrySelect value={countryCode} onChange={setCountryCode} />
                           <input
+                            id="add-user-phone"
                             type="tel"
-                            placeholder="e.g. 8888888888"
-                            value={formFields.parent_phone}
-                            onChange={e => setFormFields({ ...formFields, parent_phone: e.target.value })}
-                            className="flex-1 min-w-0 w-full bg-zinc-800 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[#facc15] h-full"
+                            inputMode="tel"
+                            required
+                            autoComplete="off"
+                            placeholder="e.g. 8113900860"
+                            value={formFields.phone_number}
+                            onChange={e => setFormFields({ ...formFields, phone_number: e.target.value })}
+                            className={`${INPUT_CLASS} flex-1 min-w-0`}
                           />
                         </div>
-                      </div>
+                      </FormField>
+                      <FormField label="Email address" htmlFor="add-user-email" optional>
+                        <input
+                          id="add-user-email"
+                          type="email"
+                          autoComplete="off"
+                          placeholder="e.g. user@email.com"
+                          value={formFields.email}
+                          onChange={e => setFormFields({ ...formFields, email: e.target.value })}
+                          className={INPUT_CLASS}
+                        />
+                      </FormField>
                     </div>
-                  </div>
-                )}
+                  </section>
 
-                <div className="flex justify-end gap-3 pt-6 border-t border-white/5">
-                  <button
-                    type="button"
-                    onClick={() => setShowAddModal(false)}
-                    className="px-4 py-2.5 text-sm font-semibold text-zinc-400 hover:text-white transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={submitting}
-                    className="px-5 py-2.5 bg-[#facc15] hover:bg-yellow-500 text-black font-bold rounded-xl transition-colors disabled:opacity-50 text-sm"
-                  >
-                    {submitting ? "Registering..." : "Create Account"}
-                  </button>
+                  {/* Teachers / mentors only: sign-in details. autoComplete stops the browser
+                      pasting the admin's own saved login into these fields. */}
+                  {modalType !== 'student' && (
+                    <section className="space-y-4">
+                      <h3 className={SECTION_TITLE}>Sign-in details</h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <FormField label="Username" htmlFor="add-user-username" required>
+                          <input
+                            id="add-user-username"
+                            type="text"
+                            required
+                            autoComplete="off"
+                            placeholder="e.g. johndoe"
+                            value={formFields.username}
+                            onChange={e => setFormFields({ ...formFields, username: e.target.value })}
+                            className={INPUT_CLASS}
+                          />
+                        </FormField>
+                        <FormField label="Password" htmlFor="add-user-password" optional>
+                          <input
+                            id="add-user-password"
+                            type="password"
+                            autoComplete="new-password"
+                            placeholder="Leave blank for OTP-only"
+                            value={formFields.password}
+                            onChange={e => setFormFields({ ...formFields, password: e.target.value })}
+                            className={INPUT_CLASS}
+                          />
+                        </FormField>
+                      </div>
+                    </section>
+                  )}
+
+                  {modalType === 'student' && (
+                    <>
+                      {/* Learning track */}
+                      <section className="space-y-4">
+                        <h3 className={SECTION_TITLE}>Learning track <span className="text-[#facc15]">*</span></h3>
+                        <div role="radiogroup" aria-label="Learning track" className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          {LEARNING_TRACKS.map(track => {
+                            const checked = formFields.student_type === track.value;
+                            return (
+                              <label
+                                key={track.value}
+                                className={`flex items-start gap-3 p-4 rounded-xl border cursor-pointer transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#facc15]/40 ${
+                                  checked
+                                    ? "border-[#facc15]/70 bg-[#facc15]/10"
+                                    : "border-white/10 bg-zinc-800/50 hover:border-white/20"
+                                }`}
+                              >
+                                <input
+                                  type="radio"
+                                  name="learning-track"
+                                  value={track.value}
+                                  checked={checked}
+                                  onChange={() => setFormFields({ ...formFields, student_type: track.value })}
+                                  className="sr-only"
+                                />
+                                <span
+                                  aria-hidden="true"
+                                  className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
+                                    checked ? "border-[#facc15]" : "border-zinc-500"
+                                  }`}
+                                >
+                                  {checked && <span className="w-2 h-2 rounded-full bg-[#facc15]" />}
+                                </span>
+                                <span className="min-w-0">
+                                  <span className="block text-sm font-semibold text-white">{track.title}</span>
+                                  <span className="block text-xs text-zinc-400 mt-0.5">{track.description}</span>
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </section>
+
+                      {/* Location */}
+                      <section className="space-y-4">
+                        <h3 className={SECTION_TITLE}>Location <span className={OPTIONAL_TAG}>(optional)</span></h3>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                          <FormField label="State" htmlFor="add-user-state">
+                            <input
+                              id="add-user-state"
+                              type="text"
+                              autoComplete="off"
+                              placeholder="e.g. Kerala"
+                              value={formFields.state}
+                              onChange={e => setFormFields({ ...formFields, state: e.target.value })}
+                              className={INPUT_CLASS}
+                            />
+                          </FormField>
+                          <FormField label="District" htmlFor="add-user-district">
+                            <input
+                              id="add-user-district"
+                              type="text"
+                              autoComplete="off"
+                              placeholder="e.g. Thrissur"
+                              value={formFields.district}
+                              onChange={e => setFormFields({ ...formFields, district: e.target.value })}
+                              className={INPUT_CLASS}
+                            />
+                          </FormField>
+                          <FormField label="Pincode" htmlFor="add-user-pincode">
+                            <input
+                              id="add-user-pincode"
+                              type="text"
+                              inputMode="numeric"
+                              autoComplete="off"
+                              placeholder="e.g. 680001"
+                              value={formFields.pincode}
+                              onChange={e => setFormFields({ ...formFields, pincode: e.target.value })}
+                              className={INPUT_CLASS}
+                            />
+                          </FormField>
+                        </div>
+                      </section>
+
+                      {/* Parent / guardian */}
+                      <section className="space-y-4">
+                        <h3 className={SECTION_TITLE}>Parent / guardian <span className={OPTIONAL_TAG}>(optional)</span></h3>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <FormField label="Parent name" htmlFor="add-user-parent-name">
+                            <input
+                              id="add-user-parent-name"
+                              type="text"
+                              autoComplete="off"
+                              placeholder="e.g. Arthur Doe"
+                              value={formFields.parent_name}
+                              onChange={e => setFormFields({ ...formFields, parent_name: e.target.value })}
+                              className={INPUT_CLASS}
+                            />
+                          </FormField>
+                          <FormField label="Parent phone" htmlFor="add-user-parent-phone">
+                            <div className={PHONE_ROW_CLASS}>
+                              <CountrySelect value={parentCountryCode} onChange={setParentCountryCode} />
+                              <input
+                                id="add-user-parent-phone"
+                                type="tel"
+                                inputMode="tel"
+                                autoComplete="off"
+                                placeholder="e.g. 8888888888"
+                                value={formFields.parent_phone}
+                                onChange={e => setFormFields({ ...formFields, parent_phone: e.target.value })}
+                                className={`${INPUT_CLASS} flex-1 min-w-0`}
+                              />
+                            </div>
+                          </FormField>
+                        </div>
+                      </section>
+                    </>
+                  )}
+                </div>
+
+                {/* Footer */}
+                <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-3 px-6 sm:px-8 py-4 border-t border-white/5 bg-black/20 rounded-b-2xl">
+                  <p className="text-xs text-zinc-500"><span className="text-[#facc15]">*</span> Required</p>
+                  <div className="flex justify-end gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowAddModal(false)}
+                      disabled={submitting}
+                      className="px-4 py-2.5 text-sm font-semibold text-zinc-400 hover:text-white transition-colors disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={submitting}
+                      className="px-6 py-2.5 bg-[#facc15] hover:bg-yellow-500 text-black font-bold rounded-xl transition-colors disabled:opacity-50 text-sm"
+                    >
+                      {submitting ? "Creating..." : "Create Account"}
+                    </button>
+                  </div>
                 </div>
               </form>
             </motion.div>

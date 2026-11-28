@@ -39,7 +39,7 @@ describe("Admin users: Add New Student / Teacher", () => {
   it("student form has no username or password, and explains OTP login", async () => {
     await openAddForm();
     expect(screen.getByRole("heading", { name: "Add New Student" })).toBeInTheDocument();
-    expect(screen.getByText(/signs in with their mobile number and an OTP/)).toBeInTheDocument();
+    expect(screen.getByText(/sign in with mobile number and OTP/)).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("e.g. johndoe")).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText("Leave blank for OTP-only")).not.toBeInTheDocument();
     expect(document.querySelector('input[type="password"]')).toBeNull();
@@ -128,5 +128,39 @@ describe("Admin users: Add New Student / Teacher", () => {
     await waitFor(() => expect(createCalls()).toHaveLength(1));
     expect(lastPayload()).not.toHaveProperty("password");
     expect(lastPayload().username).toBe("+918113900862");
+  });
+
+  it("fields are labelled, and the learning track is a two-option choice", async () => {
+    await openAddForm();
+    expect(screen.getByLabelText(/Mobile number/)).toHaveAttribute("placeholder", "e.g. 8113900860");
+    expect(screen.getByLabelText("First name")).toHaveAttribute("placeholder", "e.g. John");
+    expect(screen.getByLabelText(/Email address/)).toHaveAttribute("type", "email");
+    expect(screen.getByText("Used for OTP sign-in.")).toBeInTheDocument();
+
+    const career = screen.getByRole("radio", { name: /Career Academy/ });
+    const regular = screen.getByRole("radio", { name: /Regular Track/ });
+    expect(career).toBeChecked();
+    fireEvent.click(regular);
+    expect(regular).toBeChecked();
+    expect(career).not.toBeChecked();
+
+    fireEvent.change(screen.getByLabelText(/Mobile number/), { target: { value: "8113900863" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Account" }));
+    await waitFor(() => expect(createCalls()).toHaveLength(1));
+    expect(lastPayload().student_type).toBe("REGULAR");
+  });
+
+  it("Escape, the close button and Cancel close the form", async () => {
+    await openAddForm();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add Student" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add Student" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 });
