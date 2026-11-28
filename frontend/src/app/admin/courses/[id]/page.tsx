@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
+import CourseInstructorBox, { type CandidatesStatus, type CourseInstructorRow, type InstructorGroup, type StaffCandidate } from "@/components/admin/CourseInstructorBox";
 import { 
   ChevronUp, 
   ChevronDown, 
@@ -156,13 +157,10 @@ export default function CourseManager() {
   // State for Instructor management (Course -> CourseInstructor -> Teacher/Mentor/Assistant)
   const [instructors, setInstructors] = useState<any[]>([]);
   const [instructorsLoading, setInstructorsLoading] = useState(true);
-  const [eligibleUsers, setEligibleUsers] = useState<any[]>([]);
-  const [showAddInstructorForm, setShowAddInstructorForm] = useState(false);
-  const [newInstructorUserId, setNewInstructorUserId] = useState("");
-  const [newInstructorRole, setNewInstructorRole] = useState("TEACHER");
-  const [newInstructorPrimary, setNewInstructorPrimary] = useState(false);
-  const [instructorSaving, setInstructorSaving] = useState(false);
-  const [instructorError, setInstructorError] = useState("");
+  // Teacher and mentor accounts for the Teachers / Mentors boxes' search, each
+  // loaded (all pages) the first time that box's "Add" panel opens.
+  const [staffCandidates, setStaffCandidates] = useState<Record<InstructorGroup, StaffCandidate[]>>({ TEACHER: [], MENTOR: [] });
+  const [staffStatus, setStaffStatus] = useState<Record<InstructorGroup, CandidatesStatus>>({ TEACHER: "idle", MENTOR: "idle" });
   const [removingInstructorId, setRemovingInstructorId] = useState<number | null>(null);
 
   // Assigned Students state (Course Enrollment + LiveBatchStudent, filtered server-side)
@@ -215,9 +213,6 @@ export default function CourseManager() {
           const userData = await userRes.json();
           setCurrentUser(userData);
           fullAdmin = !!(userData?.is_superuser || userData?.is_staff);
-          if (fullAdmin) {
-            fetchEligibleUsers();
-          }
         }
       }
       const query = fullAdmin ? "" : "?assigned_only=true";
@@ -257,33 +252,37 @@ export default function CourseManager() {
     }
   };
 
-  const fetchEligibleUsers = async () => {
+  // Every teacher (or mentor) account, following the admin user list's pages so
+  // nobody past the first page is missing from the search.
+  const loadStaffCandidates = async (group: InstructorGroup) => {
+    setStaffStatus((prev) => ({ ...prev, [group]: "loading" }));
     try {
       const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const [tRes, mRes] = await Promise.all([
-        fetch(`${apiBase}/api/users/admin-users/?role=teachers&page_size=100`, { credentials: "include" }),
-        fetch(`${apiBase}/api/users/admin-users/?role=mentors&page_size=100`, { credentials: "include" }),
-      ]);
-      const tData = tRes.ok ? await tRes.json() : [];
-      const mData = mRes.ok ? await mRes.json() : [];
-      const tList = Array.isArray(tData) ? tData : tData.results || [];
-      const mList = Array.isArray(mData) ? mData : mData.results || [];
-      const byId = new Map<number, any>();
-      for (const u of [...tList, ...mList]) {
-        if (u && (u.is_teacher || u.is_mentor)) byId.set(u.id, u);
+      const role = group === "TEACHER" ? "teachers" : "mentors";
+      const people: StaffCandidate[] = [];
+      for (let page = 1; page <= 50; page++) {
+        const res = await fetch(`${apiBase}/api/users/admin-users/?role=${role}&page_size=100&page=${page}`, { credentials: "include" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          people.push(...data);
+          break;
+        }
+        people.push(...(data.results || []));
+        if (!data.next) break;
       }
-      setEligibleUsers(Array.from(byId.values()));
+      // Only that role's accounts: teachers in the Teachers box, mentors in the Mentors box.
+      const onlyRole = people.filter((u: any) => (group === "TEACHER" ? u?.is_teacher : u?.is_mentor));
+      setStaffCandidates((prev) => ({ ...prev, [group]: onlyRole }));
+      setStaffStatus((prev) => ({ ...prev, [group]: "ready" }));
     } catch (err) {
       console.error(err);
+      setStaffStatus((prev) => ({ ...prev, [group]: "error" }));
     }
   };
 
-  const handleAddInstructor = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newInstructorUserId || instructorSaving) return;
-
-    setInstructorSaving(true);
-    setInstructorError("");
+  // Returns an error message for the box to show, or null when added.
+  const handleAddInstructor = async (userId: number, role: string, isPrimary: boolean): Promise<string | null> => {
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/courses/${id}/instructors/`, {
         method: "POST",
@@ -292,29 +291,22 @@ export default function CourseManager() {
           "X-CSRFToken": getCsrfToken()
         },
         body: JSON.stringify({
-          user: newInstructorUserId,
-          role: newInstructorRole,
-          is_primary: newInstructorPrimary
+          user: userId,
+          role,
+          is_primary: isPrimary
         }),
         credentials: "include"
       });
 
       if (res.ok) {
-        setShowAddInstructorForm(false);
-        setNewInstructorUserId("");
-        setNewInstructorRole("TEACHER");
-        setNewInstructorPrimary(false);
         fetchInstructors();
-      } else {
-        const data = await res.json();
-        const message = data.non_field_errors?.[0] || data.user?.[0] || data.detail || "Failed to add instructor.";
-        setInstructorError(message);
+        return null;
       }
+      const data = await res.json().catch(() => ({}));
+      return data.non_field_errors?.[0] || data.user?.[0] || data.role?.[0] || data.detail || "Failed to add instructor.";
     } catch (err) {
       console.error(err);
-      setInstructorError("Network error adding instructor.");
-    } finally {
-      setInstructorSaving(false);
+      return "Network error adding instructor.";
     }
   };
 
@@ -1073,137 +1065,24 @@ export default function CourseManager() {
             )}
           </div>
 
-          {/* Instructors: who is responsible for this course (Teacher/Mentor/
-              Assistant). Separate from Enrollment (who has learner access). */}
-          <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold">Assigned Instructors</h2>
-              {isFullAdmin && (
-                <button
-                  onClick={() => { setShowAddInstructorForm(true); setInstructorError(""); }}
-                  className="text-xs font-bold text-[#facc15] hover:text-yellow-400 transition-colors"
-                >
-                  + Add
-                </button>
-              )}
-            </div>
-
-            {instructorsLoading ? (
-              <div className="text-xs text-zinc-500 py-4">Loading instructors...</div>
-            ) : instructors.length === 0 && !showAddInstructorForm ? (
-              <div className="text-center py-6 text-zinc-500 text-xs border border-dashed border-white/10 rounded-xl">
-                No instructors assigned yet.
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {instructors.map((inst: any) => (
-                  <div key={inst.id} className="flex items-center justify-between bg-zinc-950 border border-white/5 rounded-xl px-4 py-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-white text-sm truncate">{inst.user_name}</span>
-                        {inst.is_primary && (
-                          <span className="px-1.5 py-0.5 bg-[#facc15]/20 text-[#facc15] text-[9px] font-bold rounded uppercase tracking-wide">Primary</span>
-                        )}
-                        {!inst.is_active_user && (
-                          <span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 text-[9px] font-bold rounded uppercase tracking-wide">Inactive</span>
-                        )}
-                      </div>
-                      <div className="text-[11px] text-zinc-500 mt-0.5 truncate">
-                        {inst.user_email || inst.user_phone || "No contact info"}
-                      </div>
-                      <span className={`inline-block mt-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${
-                        inst.role === 'TEACHER' ? 'bg-blue-500/10 text-blue-400' :
-                        inst.role === 'MENTOR' ? 'bg-purple-500/10 text-purple-400' :
-                        'bg-zinc-700/50 text-zinc-400'
-                      }`}>
-                        {inst.role}
-                      </span>
-                    </div>
-                    {isFullAdmin && (
-                      <button
-                        onClick={() => handleRemoveInstructor(inst.id, inst.user_name)}
-                        disabled={removingInstructorId === inst.id}
-                        className="p-2 hover:bg-red-500/10 rounded-lg transition-colors text-zinc-500 hover:text-red-400 disabled:opacity-50 shrink-0"
-                        title="Remove instructor"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <AnimatePresence>
-              {showAddInstructorForm && (
-                <motion.form
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  onSubmit={handleAddInstructor}
-                  className="mt-4 bg-black border border-white/10 rounded-xl p-4 space-y-3 overflow-hidden"
-                >
-                  <div>
-                    <label className="block text-[10px] font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Person</label>
-                    <select
-                      required
-                      value={newInstructorUserId}
-                      onChange={(e) => setNewInstructorUserId(e.target.value)}
-                      className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
-                    >
-                      <option value="" disabled>Select a teacher or mentor</option>
-                      {eligibleUsers.map((u: any) => (
-                        <option key={u.id} value={u.id}>
-                          {(u.first_name || u.last_name) ? `${u.first_name} ${u.last_name}`.trim() : u.username} ({u.is_teacher ? 'Teacher' : ''}{u.is_teacher && u.is_mentor ? '/' : ''}{u.is_mentor ? 'Mentor' : ''})
-                        </option>
-                      ))}
-                    </select>
-                    {eligibleUsers.length === 0 && (
-                      <p className="text-[10px] text-zinc-600 mt-1">No teacher/mentor accounts found -- create one under Users first.</p>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Role</label>
-                    <select
-                      value={newInstructorRole}
-                      onChange={(e) => setNewInstructorRole(e.target.value)}
-                      className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-xl text-white text-sm focus:outline-none focus:border-[#facc15]"
-                    >
-                      <option value="TEACHER">Teacher</option>
-                      <option value="MENTOR">Mentor</option>
-                      <option value="ASSISTANT">Assistant</option>
-                    </select>
-                  </div>
-                  <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={newInstructorPrimary}
-                      onChange={(e) => setNewInstructorPrimary(e.target.checked)}
-                      className="accent-[#facc15]"
-                    />
-                    Set as primary instructor
-                  </label>
-                  {instructorError && <p className="text-xs text-red-400">{instructorError}</p>}
-                  <div className="flex justify-end gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => { setShowAddInstructorForm(false); setInstructorError(""); }}
-                      className="px-3 py-1.5 text-xs text-zinc-400 hover:text-white"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={instructorSaving || !newInstructorUserId}
-                      className="px-4 py-1.5 text-xs bg-[#facc15] text-black font-bold rounded-xl hover:bg-yellow-500 transition-colors disabled:opacity-50"
-                    >
-                      {instructorSaving ? "Adding..." : "Add Instructor"}
-                    </button>
-                  </div>
-                </motion.form>
-              )}
-            </AnimatePresence>
-          </div>
+          {/* Instructors: who is responsible for this course, in separate Teachers
+              (with Assistants) and Mentors boxes. Separate from Enrollment (who has
+              learner access). */}
+          {(["TEACHER", "MENTOR"] as const).map((group) => (
+            <CourseInstructorBox
+              key={group}
+              group={group}
+              instructors={instructors as CourseInstructorRow[]}
+              loading={instructorsLoading}
+              canManage={isFullAdmin}
+              candidates={staffCandidates[group]}
+              candidatesStatus={staffStatus[group]}
+              onLoadCandidates={() => loadStaffCandidates(group)}
+              onAdd={handleAddInstructor}
+              onRemove={(row) => handleRemoveInstructor(row.id, row.user_name)}
+              removingId={removingInstructorId}
+            />
+          ))}
 
           {/* Assigned Students: strictly filtered server-side by selected course/batch */}
           <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6">

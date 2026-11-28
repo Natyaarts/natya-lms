@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X, Search, Loader2, CheckCircle2, AlertCircle, Video, BookOpen } from "lucide-react";
+import { compareText, matchesAllWords, searchWords } from "@/lib/textSearch";
 
 // A course from GET /api/courses/ (CourseListSerializer).
 export interface CatalogCourse {
@@ -21,38 +22,19 @@ export type CourseTypeFilter = "ALL" | "LIVE" | "RECORDED";
 
 export type CatalogStatus = "loading" | "ready" | "error";
 
-// Lower-cases, drops accents and turns punctuation into spaces, so "(CM DIPLOMA)",
-// "Unit-2" and "unit 2" all compare as plain words. Letters, digits and combining
-// marks are kept, so titles in Malayalam script still match as typed.
-function normalize(text: string): string {
-  return text
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{M}\p{N}]+/gu, " ")
-    .trim();
-}
-
-const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
-
 // Courses whose title contains every typed word (in any order), optionally limited to
 // one course type, sorted A–Z with natural number order ("Unit 2" before "Unit 10").
-// Spacing is ignored too, so "unit2" finds "UNIT 2" and "unit 2" finds "UNIT2".
+// Case, spacing and punctuation are ignored (see lib/textSearch).
 export function filterCourses<T extends CatalogCourse>(
   courses: T[],
   query: string,
   type: CourseTypeFilter = "ALL",
 ): T[] {
-  const words = normalize(query).split(" ").filter(Boolean);
+  const words = searchWords(query);
   return courses
     .filter((c) => type === "ALL" || c.course_type === type)
-    .filter((c) => {
-      if (words.length === 0) return true;
-      const title = normalize(c.title || "");
-      const haystack = `${title} ${title.replace(/ /g, "")}`;
-      return words.every((w) => haystack.includes(w));
-    })
-    .sort((a, b) => collator.compare(a.title || "", b.title || ""));
+    .filter((c) => matchesAllWords(words, [c.title]))
+    .sort((a, b) => compareText(a.title || "", b.title || ""));
 }
 
 const TYPE_TABS: { value: CourseTypeFilter; label: string }[] = [
